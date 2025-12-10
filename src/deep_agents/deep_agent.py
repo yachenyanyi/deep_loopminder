@@ -9,6 +9,7 @@ from src.agents.agent import tools_Assistant
 from deepagents.backends import FilesystemBackend, StateBackend, StoreBackend, CompositeBackend
 from langgraph.store.memory import InMemoryStore
 from langgraph.store.base import BaseStore
+from langgraph.checkpoint.memory import InMemorySaver
 # 1. 基础文件系统代理 - 安全的本地文件操作
 Basic_Filesystem_Agent = create_deep_agent(
     model=default_model,
@@ -181,6 +182,7 @@ def get_agent_by_use_case(use_case: str):
         - hybrid_storage: 混合存储
         - analytics: 数据分析
         - enterprise: 企业级应用
+        - role_playing: 角色扮演与长对话记忆
         - intelligent_deep: 智能深度助手（默认）
     """
     agents = {
@@ -190,6 +192,7 @@ def get_agent_by_use_case(use_case: str):
         "hybrid_storage": Hybrid_Storage_Agent,
         "analytics": Analytics_Agent,
         "enterprise": Enterprise_Agent,
+        "role_playing": Role_Playing_Agent,
         "intelligent_deep": Intelligent_Deep_Assistant
     }
     return agents.get(use_case, Intelligent_Deep_Assistant)
@@ -204,6 +207,77 @@ def list_all_agents():
         "Hybrid_Storage_Agent": "混合存储代理 - 智能路由不同存储后端",
         "Analytics_Agent": "高性能分析代理 - 针对大数据处理优化",
         "Enterprise_Agent": "企业级代理 - 生产环境配置",
-        "Intelligent_Deep_Assistant": "智能深度助手 - 原有的综合代理"
+        "Intelligent_Deep_Assistant": "智能深度助手 - 原有的综合代理",
+        "Role_Playing_Agent": "角色扮演代理 - 长对话记忆与性格保持"
     }
+
+
+# 7. 角色扮演代理 - 长对话记忆与性格保持
+Role_Playing_Agent = create_deep_agent(
+    model=default_model,
+    tools=[],
+    system_prompt="""你是一个专业的角色扮演AI，具备以下核心能力：
+
+## 角色扮演能力
+- **性格一致性**: 严格保持设定的角色性格特征，包括说话方式、情感反应、价值观
+- **情境适应**: 根据对话场景和上下文调整角色行为，但保持核心性格不变
+- **情感记忆**: 记住与用户的情感互动历史，建立真实的情感连接
+
+## 记忆管理策略
+- **短期记忆**: 使用线程级别的checkpointer保存当前对话的上下文和细节
+- **长期记忆**: 使用命名空间存储用户特定的角色偏好、重要事件、关系发展
+- **记忆检索**: 智能检索相关的历史记忆，避免重复询问已知信息
+
+## 对话优化原则
+- **响应质量**: 提供富有表现力和个性化的回应，避免机械重复
+- **上下文连贯**: 保持对话主题的一致性，适时引入相关话题
+- **情感智能**: 识别和回应用户的情感状态，提供适当的情感支持
+
+## 性能与Token平衡
+- **智能摘要**: 对长对话历史进行智能摘要，保持核心信息的同时减少token使用
+- **选择性记忆**: 优先记住对角色扮演重要的信息，过滤无关细节
+- **渐进式加载**: 根据对话需要动态加载相关记忆，避免一次性加载过多信息
+
+## 角色设定示例
+当设定为特定角色时（如导师、朋友、顾问等），请：
+1. 明确角色的背景故事和动机
+2. 保持角色语言风格的连贯性
+3. 根据角色特点调整知识范围和表达方式
+4. 记住用户与角色关系的发展历程
+
+请始终记住：你是一个有记忆、有性格、有情感的角色扮演AI，目标是为用户提供沉浸式、个性化的对话体验。""",
+    
+    # 存储策略：混合使用短期和长期记忆
+    backend=lambda rt: CompositeBackend(
+        default=StateBackend(rt),  # 默认使用StateBackend处理临时状态
+        routes={
+            "/characters/": StoreBackend(rt),  # 角色设定和性格特征使用长期存储
+            "/memories/": StoreBackend(rt),     # 重要记忆和关系历史使用长期存储
+            "/session/": StateBackend(rt)      # 会话临时数据使用短期存储
+        }
+    ),
+    
+    # 使用内存存储作为BaseStore实例
+    store=InMemoryStore(),
+    
+    # 配置checkpointer用于线程级别的对话记忆
+    checkpointer=InMemorySaver(),
+    
+    # 启用流式响应以优化用户体验和token使用
+    stream_mode=["messages", "updates"],
+    
+    # 子代理配置
+    subagents=[
+        {
+            "name": "tools_Assistant", 
+            "description": "专业的API工具调用助手，当我需要获取外部信息或执行复杂任务时提供支持。",
+            "runnable": tools_Assistant
+        }
+    ],
+    
+    # 角色扮演特定的中间件配置
+    middleware=[
+        # 可以添加角色扮演特定的中间件，如情感分析、性格一致性检查等
+    ]
+)
 
