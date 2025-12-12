@@ -50,7 +50,7 @@ async def chat_loop():
                 config = {
                     "configurable": {
                         "thread_id": "main_chat", 
-                        "checkpoint_ns": ""
+                        "checkpoint_ns": "main"
                     },
                     "recursion_limit": 50  # 增加递归限制
                 }

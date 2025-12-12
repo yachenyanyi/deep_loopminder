@@ -57,6 +57,12 @@ async def init_postgres_store():
     
     return global_store
 
+async def get_postgres_store():
+    global global_store
+    if global_store is None:
+        await init_postgres_store()
+    return global_store
+
 # 清理函数
 async def cleanup_postgres():
     """清理PostgreSQL连接"""
@@ -183,6 +189,7 @@ async def create_persistent_memory_agent():
     postgres_store = await init_postgres_store()
     return create_deep_agent(
         model=default_model,
+        
         tools=[],
         system_prompt="""你是一个具有长期记忆的AI助手，能够跨会话保存和检索信息。
         你可以创建持久的笔记、知识库、项目文档，这些信息会在不同会话间保持。

@@ -4,12 +4,16 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
+
 os.environ["ZhipuAI_API_KEY"] = "<api_key>"#智谱
 #
 os.environ["DASHSCOPE_API_KEY"]="<api_key>"#通义
 os.environ["GOOGLE_API_KEY"] = "<api_key>"#谷歌
 os.environ["DOUBAO_API_KEY"] = "<api_key>"#豆包api_key
 os.environ["OPENAI_API_KEY"] = "<OPENAI_API_KEY>"#替换成你的openai_key
+
+from dotenv import load_dotenv
+load_dotenv()
 zhi_pu_model = ChatZhipuAI(
     model="glm-4-flash-250414",#'glm-z1-flash',"glm-4-flash-250414"
     temperature=2,
