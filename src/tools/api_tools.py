@@ -37,17 +37,69 @@ async def _patched_load_mcp_tools(session, *, connection=None):
 langchain_mcp_adapters.tools.load_mcp_tools = _patched_load_mcp_tools
 langchain_mcp_adapters.client.load_mcp_tools = _patched_load_mcp_tools
 # End Monkey Patch
+from dotenv import load_dotenv
+load_dotenv()
+# 从环境变量加载 MCP 配置
+def load_mcp_config():
+    """从环境变量加载 MCP 配置，如果导入失败或没有识别到则不导入"""
+    config_str = os.getenv("MCP_CONFIG")
+    if not config_str:
+        print("信息: 未找到 MCP_CONFIG 环境变量，返回空配置")
+        return {}
+    
+    try:
+        config = json.loads(config_str)
+        
+        # 验证配置格式
+        if not isinstance(config, dict):
+            print(f"警告: MCP_CONFIG 必须是字典格式，实际类型: {type(config)}")
+            return {}
+        
+        # 验证每个配置项
+        valid_config = {}
+        for name, settings in config.items():
+            if not isinstance(settings, dict):
+                print(f"警告: MCP 配置项 '{name}' 必须是字典格式，跳过该项")
+                continue
+            
+            # 检查必需的字段
+            required_fields = ["transport", "url"]
+            missing_fields = [field for field in required_fields if field not in settings]
+            if missing_fields:
+                print(f"警告: MCP 配置项 '{name}' 缺少必需字段: {missing_fields}，跳过该项")
+                continue
+            
+            # 检查字段类型
+            if not isinstance(settings["transport"], str):
+                print(f"警告: MCP 配置项 '{name}' 的 transport 必须是字符串，跳过该项")
+                continue
+            
+            if not isinstance(settings["url"], str):
+                print(f"警告: MCP 配置项 '{name}' 的 url 必须是字符串，跳过该项")
+                continue
+            
+            # 检查 URL 格式（基本验证）
+            if not settings["url"].startswith(("http://", "https://")):
+                print(f"警告: MCP 配置项 '{name}' 的 URL 格式不正确: {settings['url']}，跳过该项")
+                continue
+            
+            valid_config[name] = settings
+            print(f"信息: 成功加载 MCP 配置项: {name}")
+        
+        if not valid_config:
+            print("警告: 没有有效的 MCP 配置项被加载")
+            return {}
+        
+        return valid_config
+        
+    except json.JSONDecodeError as e:
+        print(f"警告: MCP_CONFIG 环境变量格式错误: {e}，返回空配置")
+        return {}
+    except Exception as e:
+        print(f"警告: 加载 MCP_CONFIG 时发生未知错误: {e}，返回空配置")
+        return {}
 
-MCP_CONFIG = {
-    "docs-langchain": {
-        "transport": "streamable_http",
-        "url": "https://docs.langchain.com/mcp",
-    },
-    "modelscope-fetch": {
-        "transport": "streamable_http",
-        "url": "https://mcp.api-inference.modelscope.net/5a409441624d4e/mcp",
-    }
-}
+MCP_CONFIG = load_mcp_config()
 
 # 全局MCP客户端实例
 _mcp_client = None

@@ -1,18 +1,14 @@
 from langchain_core.messages import HumanMessage
 import os
 
-os.environ["DEEPSEEK_API_KEY"] = "sk-39399bdd68a34751a014e77f93d17f31"
-
 from src.tools.api_tools import call_tool_tool, list_resources_tool, cleanup_mcp_client
+from src.deep_agents.deep_agent import create_role_playing_agent, cleanup_postgres
 
-from src.deep_agents.deep_agent import Intelligent_Deep_Assistant
-
-
+from dotenv import load_dotenv
 import asyncio
 import sys
 
-# 创建智能代理
-
+load_dotenv()
 
 async def get_input(prompt: str) -> str:
     """异步获取用户输入，避免阻塞事件循环"""
@@ -21,6 +17,10 @@ async def get_input(prompt: str) -> str:
 async def chat_loop():
     """全异步的主循环"""
     print("智能助手已启动，输入 'quit' 或 'exit' 退出\n")
+    
+    # 异步创建角色扮演代理，使用PostgreSQL持久化存储
+    Role_Playing_Agent = await create_role_playing_agent()
+    print("角色扮演代理已创建，使用PostgreSQL持久化存储\n")
     
     messages = []  # 保存对话历史
     
@@ -47,8 +47,16 @@ async def chat_loop():
                 
                 # 使用 astream_events 进行异步流式调用
                 response_content = ""
-                async for event in Intelligent_Deep_Assistant.astream_events(
+                config = {
+                    "configurable": {
+                        "thread_id": "main_chat", 
+                        "checkpoint_ns": ""
+                    },
+                    "recursion_limit": 50  # 增加递归限制
+                }
+                async for event in Role_Playing_Agent.astream_events(
                     {"messages": messages},
+                    config=config,
                     version="v1"
                 ):
                     kind = event["event"]
@@ -64,31 +72,33 @@ async def chat_loop():
                 assistant_message = AIMessage(content=response_content)
                 messages.append(assistant_message)
                 
-                print("\n")
+                print("\n")  # 响应完成后换行
                 
-            except asyncio.CancelledError:
-                raise
             except KeyboardInterrupt:
-                print("\n\n再见！")
+                print("\n\n程序被中断，正在退出...")
                 break
             except Exception as e:
-                print(f"\n错误: {e}\n")
-                continue
+                print(f"\n发生错误: {e}")
+                print("请重试或输入 'quit' 退出\n")
                 
     finally:
-        # 程序退出时清理资源
+        # 清理资源
         print("正在清理资源...")
         await cleanup_mcp_client()
-        print("资源清理完成")
+        await cleanup_postgres()
+
+# 主函数
+async def main():
+    """主函数"""
+    try:
+        await chat_loop()
+    except Exception as e:
+        print(f"程序运行错误: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    # Windows 上可能需要设置 ProactorEventLoop（Python 3.8+ 默认已经是了）
+    # 修复Windows上的事件循环问题
     if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
-    try:
-        asyncio.run(chat_loop())
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        print(f"程序运行出错: {e}")
+    asyncio.run(main())

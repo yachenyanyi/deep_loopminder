@@ -5,7 +5,7 @@ from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
 os.environ["ZhipuAI_API_KEY"] = "<api_key>"#智谱
-os.environ["DEEPSEEK_API_KEY"]="sk-39399bdd68a34751a014e77f93d17f31"#deepseek
+#
 os.environ["DASHSCOPE_API_KEY"]="<api_key>"#通义
 os.environ["GOOGLE_API_KEY"] = "<api_key>"#谷歌
 os.environ["DOUBAO_API_KEY"] = "<api_key>"#豆包api_key
