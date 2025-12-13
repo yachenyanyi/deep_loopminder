@@ -12,7 +12,7 @@ from src.deep_agents.deep_agent import get_agent_by_use_case, list_all_agents
 async def example_basic_filesystem():
     """基础文件系统代理示例"""
     print("=== 基础文件系统代理示例 ===")
-    agent = get_agent_by_use_case("basic_filesystem")
+    agent = await get_agent_by_use_case("basic_filesystem")
     
     # 示例：创建和编辑文件
     result = await agent.ainvoke({
@@ -31,7 +31,7 @@ async def example_basic_filesystem():
 async def example_analytics():
     """数据分析代理示例"""
     print("=== 数据分析代理示例 ===")
-    agent = get_agent_by_use_case("analytics")
+    agent = await get_agent_by_use_case("analytics")
     
     # 示例：分析CSV数据
     result = await agent.ainvoke({
@@ -52,7 +52,7 @@ async def example_analytics():
 async def example_persistent_memory():
     """持久化记忆代理示例"""
     print("=== 持久化记忆代理示例 ===")
-    agent = get_agent_by_use_case("persistent_memory")
+    agent = await get_agent_by_use_case("persistent_memory")
     
     # 示例：创建知识库
     result = await agent.ainvoke({
@@ -73,7 +73,7 @@ async def example_persistent_memory():
 async def example_hybrid_storage():
     """混合存储代理示例"""
     print("=== 混合存储代理示例 ===")
-    agent = get_agent_by_use_case("hybrid_storage")
+    agent = await get_agent_by_use_case("hybrid_storage")
     
     # 示例：混合存储使用
     result = await agent.ainvoke({
@@ -92,7 +92,7 @@ async def example_hybrid_storage():
 async def example_enterprise():
     """企业级代理示例"""
     print("=== 企业级代理示例 ===")
-    agent = get_agent_by_use_case("enterprise")
+    agent = await get_agent_by_use_case("enterprise")
     
     # 示例：企业文档管理
     result = await agent.ainvoke({
@@ -122,7 +122,7 @@ def show_usage_examples():
     print("=== 使用示例 ===")
     print("""
 # 获取特定类型的代理
-agent = get_agent_by_use_case("basic_filesystem")
+agent = await get_agent_by_use_case("basic_filesystem")
 
 # 使用代理处理任务
 result = await agent.ainvoke({
