@@ -1,0 +1,16 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "role_playing_agent": "./src/deep_agents/deep_agent.py:create_role_playing_agent",
+    "basic_filesystem_agent": "./src/deep_agents/deep_agent.py:create_basic_filesystem_agent",
+    "state_only_agent": "./src/deep_agents/deep_agent.py:create_state_only_agent",
+    "persistent_memory_agent": "./src/deep_agents/deep_agent.py:create_persistent_memory_agent",
+    "hybrid_storage_agent": "./src/deep_agents/deep_agent.py:create_hybrid_storage_agent",
+    "analytics_agent": "./src/deep_agents/deep_agent.py:create_analytics_agent",
+    "enterprise_agent": "./src/deep_agents/deep_agent.py:create_enterprise_agent",
+    "intelligent_deep_assistant": "./src/deep_agents/deep_agent.py:create_intelligent_deep_assistant",
+    "simple_graph": "./src/graph/graph.py:create_simple_graph" 
+  },
+  "env": ".env"
+}

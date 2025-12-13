@@ -6,7 +6,7 @@ from tavily import TavilyClient
 from deepagents import create_deep_agent
 from src.models.llm import default_model
 from src.tools.api_tools import call_tool_tool, list_resources_tool, cleanup_mcp_client
-from src.middlewares.middleware import full_featured_summary, todo_middleware
+from src.middlewares.middleware import full_featured_summary, todo_middleware, role_playing_summary
 from src.agents.agent import tools_Assistant
 from deepagents.backends import FilesystemBackend, StateBackend, StoreBackend, CompositeBackend
 from langgraph.store.memory import InMemoryStore
@@ -14,6 +14,16 @@ from langgraph.store.base import BaseStore
 from langgraph.store.postgres import AsyncPostgresStore
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+# 定义基础路径，避免在异步函数中调用 os.getcwd() 导致阻塞
+# 使用 os.path.abspath 确保路径已经是绝对路径，避免后续 pathlib.resolve() 调用
+BASE_DIR = os.path.abspath(os.getcwd())
+WORKSPACE_DIR = os.path.join(BASE_DIR, "workspace")
+ENTERPRISE_DOCS_DIR = os.path.join(BASE_DIR, "enterprise_docs")
+
+# 确保目录存在
+os.makedirs(WORKSPACE_DIR, exist_ok=True)
+os.makedirs(ENTERPRISE_DOCS_DIR, exist_ok=True)
 
 # Windows系统需要设置兼容的事件循环策略
 if sys.platform == 'win32':
@@ -139,12 +149,19 @@ async def create_role_playing_agent():
         
         # 角色扮演特定的中间件配置
         middleware=[
-            # 可以添加角色扮演特定的中间件，如情感分析、性格一致性检查等
+            
         ]
     )
 
 # 1. 基础文件系统代理 - 安全的本地文件操作
 async def create_basic_filesystem_agent():
+    # 使用 asyncio.to_thread 避免 FilesystemBackend 初始化时的阻塞调用
+    fs_backend = await asyncio.to_thread(
+        FilesystemBackend,
+        root_dir=WORKSPACE_DIR,  # 使用绝对路径
+        virtual_mode=True  # 启用沙盒模式，限制文件访问范围
+    )
+    
     return create_deep_agent(
         model=default_model,
         tools=[],
@@ -152,10 +169,7 @@ async def create_basic_filesystem_agent():
         你可以创建、读取、编辑和管理本地文件，所有操作都在sandboxed环境中进行。
         适合处理文档管理、代码编辑、配置文件维护等任务。
         当需要调用外部API时，请委派给tools_Assistant子代理。""",
-        backend=FilesystemBackend(
-            root_dir=os.path.join(os.getcwd(), "workspace"),  # 使用绝对路径
-            virtual_mode=True  # 启用沙盒模式，限制文件访问范围
-        ),
+        backend=fs_backend,
         subagents=[
             {
                 "name": "tools_Assistant", 
@@ -209,6 +223,14 @@ async def create_persistent_memory_agent():
 # 4. 混合存储代理 - 智能路由不同存储后端
 async def create_hybrid_storage_agent():
     postgres_store = await init_postgres_store()
+    
+    # 使用 asyncio.to_thread 避免 FilesystemBackend 初始化时的阻塞调用
+    fs_backend = await asyncio.to_thread(
+        FilesystemBackend,
+        root_dir=WORKSPACE_DIR,
+        virtual_mode=True
+    )
+    
     return create_deep_agent(
         model=default_model,
         tools=[],
@@ -221,10 +243,7 @@ async def create_hybrid_storage_agent():
             routes={
                 "/tmp/": StateBackend(rt),  # 临时文件使用StateBackend
                 "/memories/": StoreBackend(rt),  # 记忆文件使用StoreBackend持久化
-                "/workspace/": FilesystemBackend(  # 工作文件使用本地文件系统
-                    root_dir=os.path.join(os.getcwd(), "workspace"),
-                    virtual_mode=True
-                )
+                "/workspace/": fs_backend  # 工作文件使用本地文件系统
             }
         ),
         store=postgres_store,
@@ -259,6 +278,14 @@ async def create_analytics_agent():
 # 6. 企业级代理 - 生产环境配置
 async def create_enterprise_agent():
     postgres_store = await init_postgres_store()
+    
+    # 使用 asyncio.to_thread 避免 FilesystemBackend 初始化时的阻塞调用
+    docs_backend = await asyncio.to_thread(
+        FilesystemBackend,
+        root_dir=ENTERPRISE_DOCS_DIR,
+        virtual_mode=True
+    )
+    
     return create_deep_agent(
         model=default_model,
         tools=[],
@@ -269,10 +296,7 @@ async def create_enterprise_agent():
         backend=lambda rt: CompositeBackend(
             default=StateBackend(rt),
             routes={
-                "/documents/": FilesystemBackend(
-                    root_dir=os.path.join(os.getcwd(), "enterprise_docs"),
-                    virtual_mode=True
-                ),
+                "/documents/": docs_backend,
                 "/audit/": StoreBackend(rt),
                 "/config/": StoreBackend(rt)
             }
@@ -289,14 +313,18 @@ async def create_enterprise_agent():
 
 # 原有的智能深度助手（保留兼容性）
 async def create_intelligent_deep_assistant():
+    # 使用 asyncio.to_thread 避免 FilesystemBackend 初始化时的阻塞调用
+    fs_backend = await asyncio.to_thread(
+        FilesystemBackend,
+        root_dir=WORKSPACE_DIR,  # 使用绝对路径
+        virtual_mode=True
+    )
+    
     return create_deep_agent(
         model=default_model,
         tools=[],#call_tool_tool, list_resources_tool
         system_prompt="你是一个高级AI助手，当需要查询文档或者调用外部API或工具时，请委派给 tools_Assistant 子代理处理。",
-        backend=FilesystemBackend(
-            root_dir=os.path.join(os.getcwd(), "workspace"),  # 使用绝对路径
-            virtual_mode=True
-        ),  
+        backend=fs_backend,
         
         # middleware=[full_featured_summary, todo_middleware], # Removed to avoid duplicate middleware error as create_deep_agent adds them by default
         subagents=[
@@ -309,7 +337,7 @@ async def create_intelligent_deep_assistant():
     )
 
 
-def get_agent_by_use_case(use_case: str):
+async def get_agent_by_use_case(use_case: str):
     """
     根据使用场景获取合适的代理实例
     
@@ -329,17 +357,18 @@ def get_agent_by_use_case(use_case: str):
         - role_playing: 角色扮演与长对话记忆
         - intelligent_deep: 智能深度助手（默认）
     """
-    agents = {
-        "basic_filesystem": Basic_Filesystem_Agent,
-        "state_only": State_Only_Agent,
-        "persistent_memory": Persistent_Memory_Agent,
-        "hybrid_storage": Hybrid_Storage_Agent,
-        "analytics": Analytics_Agent,
-        "enterprise": Enterprise_Agent,
-        "role_playing": Role_Playing_Agent,
-        "intelligent_deep": Intelligent_Deep_Assistant
+    factories = {
+        "basic_filesystem": create_basic_filesystem_agent,
+        "state_only": create_state_only_agent,
+        "persistent_memory": create_persistent_memory_agent,
+        "hybrid_storage": create_hybrid_storage_agent,
+        "analytics": create_analytics_agent,
+        "enterprise": create_enterprise_agent,
+        "role_playing": create_role_playing_agent,
+        "intelligent_deep": create_intelligent_deep_assistant
     }
-    return agents.get(use_case, Intelligent_Deep_Assistant)
+    factory = factories.get(use_case, create_intelligent_deep_assistant)
+    return await factory()
 
 
 def list_all_agents():
