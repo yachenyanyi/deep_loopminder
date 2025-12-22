@@ -14,6 +14,7 @@ from langgraph.store.base import BaseStore
 from langgraph.store.postgres import AsyncPostgresStore
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from src.backend.backend import NamespacedStoreBackend
 
 # 定义基础路径，避免在异步函数中调用 os.getcwd() 导致阻塞
 # 使用 os.path.abspath 确保路径已经是绝对路径，避免后续 pathlib.resolve() 调用
@@ -128,11 +129,14 @@ async def create_role_playing_agent():
         
         # 存储策略：混合使用短期和长期记忆
         backend=lambda rt: CompositeBackend(
-            default=StateBackend(rt),  # 默认使用StateBackend处理临时状态
+            default=StateBackend(rt),
             routes={
-                "/characters/": StoreBackend(rt),  # 角色设定和性格特征使用长期存储
-                "/memories/": StoreBackend(rt),     # 重要记忆和关系历史使用长期存储
-                "/session/": StateBackend(rt)      # 会话临时数据使用短期存储
+                # 使用自定义的 NamespacedStoreBackend
+                # /thread/ 路径：使用包含 thread_id 的命名空间，实现线程隔离
+                "/thread/": NamespacedStoreBackend(rt, ("{user_id}", "{thread_id}")),
+                
+                # /user/ 路径：仅包含 user_id，实现跨线程共享但用户间隔离
+                "/user/": NamespacedStoreBackend(rt, ("{user_id}", "shared_memory")),
             }
         ),
         
