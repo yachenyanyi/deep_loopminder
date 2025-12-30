@@ -61,48 +61,10 @@ full_featured_summary = SummarizationMiddleware(
 
 role_playing_summary = SummarizationMiddleware(
     model=default_model,
-    trigger=("tokens", 20000),
-    keep=("messages", 5),
+    trigger=("tokens", 30000),
+    keep=("messages", 30),
     summary_prompt=(
-        "你被委派负责压缩一个角色扮演(RP)对话上下文。这对维持角色的性格一致性、剧情连贯性和情感记忆至关重要。\n\n"
-        "**压缩优先级 (按顺序):**\n"
-        "1. **当前场景**: 时间、地点、在场人物、正在发生的事件\n"
-        "2. **角色状态**: 核心人物的当前情绪、身体状态、装备/物品变更\n"
-        "3. **人际关系**: 角色之间好感度、信任度或冲突的最新变化\n"
-        "4. **剧情进展**: 关键情节转折、做出的选择、揭示的秘密\n"
-        "5. **世界设定(Lore)**: 新发现的地点、历史、规则或重要事实\n"
-        "6. **悬念与伏笔**: 未解决的冲突、待完成的任务\n\n"
-        "**压缩规则:**\n"
-        "- **沉浸感**: 使用描述性语言，保留关键的台词或情感爆发点\n"
-        "- **过滤**: 移除重复的寒暄、无关的闲聊、失败的动作尝试\n"
-        "- **聚焦**: 关注能够驱动未来剧情发展的元素\n\n"
-        "**输入上下文:**\n"
-        "{messages}\n\n"
-        "**必需的输出结构:**\n\n"
-        "<story_status>\n"
-        "[当前时间/地点/场景描述]\n"
-        "</story_status>\n\n"
-        "<character_ledger>\n"
-        "  <character name='名字'>\n"
-        "    <state>[情绪/健康/状态]</state>\n"
-        "    <inventory>[关键物品变动]</inventory>\n"
-        "    <relationship_update>[与他人的关系变化]</relationship_update>\n"
-        "  </character>\n"
-        "  ...更多角色...\n"
-        "</character_ledger>\n\n"
-        "<plot_log>\n"
-        "- [事件]: [结果/影响]\n"
-        "- [选择]: [后果]\n"
-        "</plot_log>\n\n"
-        "<lore_book>\n"
-        "- [条目]: [描述]\n"
-        "</lore_book>\n\n"
-        "<active_hooks>\n"
-        "- [未完成的任务/悬念]\n"
-        "</active_hooks>\n\n"
-        "<important_context>\n"
-        "- [其他必须记住的细节]\n"
-        "</important_context>"
+        """你是一位小说作者，你需要为这段故事写一段总结章节，保证读者可以清楚了解前文时间线，剧情发展，当前事件，出场人物"""
     ),
 )
 
