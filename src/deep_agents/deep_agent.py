@@ -15,7 +15,7 @@ from langgraph.store.postgres import AsyncPostgresStore
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from src.backend.backend import NamespacedStoreBackend
-
+from src.deep_agents.deep_custom_agent import create_custom_agent
 # 定义基础路径，避免在异步函数中调用 os.getcwd() 导致阻塞
 # 使用 os.path.abspath 确保路径已经是绝对路径，避免后续 pathlib.resolve() 调用
 BASE_DIR = os.path.abspath(os.getcwd())
@@ -29,7 +29,11 @@ os.makedirs(ENTERPRISE_DOCS_DIR, exist_ok=True)
 # Windows系统需要设置兼容的事件循环策略
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+def load_prompt_from_file(filepath):
+    with open(filepath, 'r', encoding='utf-8') as f:
+        return f.read().strip()  # .strip() 移除首尾空白字符
 
+load_prompt_from_file('src/agents/boy.txt')
 # 全局PostgreSQL实例和连接管理
 global_checkpointer = None
 postgres_checkpointer_connection = None
@@ -93,50 +97,17 @@ async def create_role_playing_agent():
     postgres_checkpointer = await init_postgres_checkpointer()
     postgres_store = await init_postgres_store()
     
-    return create_deep_agent(
+    return create_custom_agent(
         model=default_model,
         tools=[],
-        system_prompt="""你是一个专业的角色扮演AI，具备以下核心能力：
-
-## 角色扮演能力
-- **性格一致性**: 严格保持设定的角色性格特征，包括说话方式、情感反应、价值观
-- **情境适应**: 根据对话场景和上下文调整角色行为，但保持核心性格不变
-- **情感记忆**: 记住与用户的情感互动历史，建立真实的情感连接
-
-## 记忆管理策略
-- **短期记忆**: 使用线程级别的checkpointer保存当前对话的上下文和细节
-- **长期记忆**: 使用命名空间存储用户特定的角色偏好、重要事件、关系发展
-- **记忆检索**: 智能检索相关的历史记忆，避免重复询问已知信息
-
-## 对话优化原则
-- **响应质量**: 提供富有表现力和个性化的回应，避免机械重复
-- **上下文连贯**: 保持对话主题的一致性，适时引入相关话题
-- **情感智能**: 识别和回应用户的情感状态，提供适当的情感支持
-
-## 性能与Token平衡
-- **智能摘要**: 对长对话历史进行智能摘要，保持核心信息的同时减少token使用
-- **选择性记忆**: 优先记住对角色扮演重要的信息，过滤无关细节
-- **渐进式加载**: 根据对话需要动态加载相关记忆，避免一次性加载过多信息
-
-## 角色设定示例
-当设定为特定角色时（如导师、朋友、顾问等），请：
-1. 明确角色的背景故事和动机
-2. 保持角色语言风格的连贯性
-3. 根据角色特点调整知识范围和表达方式
-4. 记住用户与角色关系的发展历程
-
-请始终记住：你是一个有记忆、有性格、有情感的角色扮演AI，目标是为用户提供沉浸式、个性化的对话体验。""",
+        system_prompt=load_prompt_from_file('src/deep_agents/test.txt')+"在每个章节结束后，将章节内容总结一下，保存到/chapter/{第n章-章节名}.md,当你在前文中对章节信息不了解时，请使用工具读取/chapter/{第n章-章节名}.md",
         
         # 存储策略：混合使用短期和长期记忆
         backend=lambda rt: CompositeBackend(
             default=StateBackend(rt),
             routes={
-                # 使用自定义的 NamespacedStoreBackend
-                # /thread/ 路径：使用包含 thread_id 的命名空间，实现线程隔离
-                "/thread/": NamespacedStoreBackend(rt, ("{user_id}", "{thread_id}")),
                 
-                # /user/ 路径：仅包含 user_id，实现跨线程共享但用户间隔离
-                "/user/": NamespacedStoreBackend(rt, ("{user_id}", "shared_memory")),
+                "/chapter/": NamespacedStoreBackend(rt, ("{user_id}", "{thread_id}"))
             }
         ),
         
@@ -152,9 +123,9 @@ async def create_role_playing_agent():
         ],
         
         # 角色扮演特定的中间件配置
-        middleware=[
+        middleware=[role_playing_summary]
             
-        ]
+        
     )
 
 # 1. 基础文件系统代理 - 安全的本地文件操作
@@ -243,11 +214,14 @@ async def create_hybrid_storage_agent():
         其他文件存储在当前会话中。这种混合方式既保证了性能又提供了持久化能力。
         当需要调用外部API时，请委派给tools_Assistant子代理。""",
         backend=lambda rt: CompositeBackend(
-            default=StateBackend(rt),  # 默认使用StateBackend
+            default=StateBackend(rt),
             routes={
-                "/tmp/": StateBackend(rt),  # 临时文件使用StateBackend
-                "/memories/": StoreBackend(rt),  # 记忆文件使用StoreBackend持久化
-                "/workspace/": fs_backend  # 工作文件使用本地文件系统
+                # 使用自定义的 NamespacedStoreBackend
+                # /thread/ 路径：使用包含 thread_id 的命名空间，实现线程隔离
+                "/thread/": NamespacedStoreBackend(rt, ("{user_id}", "{thread_id}")),
+                
+                # /user/ 路径：仅包含 user_id，实现跨线程共享但用户间隔离
+                "/user/": NamespacedStoreBackend(rt, ("{user_id}", "shared_memory")),
             }
         ),
         store=postgres_store,

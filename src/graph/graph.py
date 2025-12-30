@@ -5,6 +5,7 @@ from langchain_core.messages import BaseMessage
 from src.agents.agent import Intelligent_Assistant
 from src.deep_agents.deep_agent import init_postgres_checkpointer
 
+
 # 定义状态
 class GraphState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
