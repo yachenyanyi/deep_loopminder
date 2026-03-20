@@ -38,7 +38,7 @@ class NamespacedStoreBackend(StoreBackend):
         
         # 4. 回退到全局 PostgreSQL Store (如果已定义)
         try:
-            from src.deep_agents.deep_agent import global_store
+            from src.deep_agents.db import global_store
             if global_store is not None:
                 return global_store
         except ImportError:

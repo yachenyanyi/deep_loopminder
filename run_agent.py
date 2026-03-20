@@ -17,7 +17,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 sys.path.insert(0, BASE_DIR)
 
-from src.deep_agents.deep_agent import create_intelligent_deep_agent
+from src.deep_agents import create_intelligent_deep_agent
 from src.agents.agent import create_intelligent_deep_agent_mobile
 from src.agents.agent import create_autoglm_agent
 

@@ -3,7 +3,7 @@ from langgraph.graph import StateGraph, END, START
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 from src.agents.agent import Intelligent_Assistant
-from src.deep_agents.deep_agent import init_postgres_checkpointer
+from src.deep_agents import init_postgres_checkpointer
 
 
 # 定义状态

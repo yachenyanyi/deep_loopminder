@@ -166,18 +166,24 @@ langgraph dev
 ### 使用代理
 
 ```python
-from src.deep_agents.deep_agent import get_agent_by_use_case
+from src.deep_agents import create_intelligent_deep_agent
 
-# 获取特定类型的代理
-agent = await get_agent_by_use_case("analytics")
+# 获取本地端智能代理
+agent = await create_intelligent_deep_agent()
 
-# 或者使用默认的智能深度助手
-from src.deep_agents.deep_agent import create_intelligent_deep_assistant
-agent = await create_intelligent_deep_assistant()
+# 或使用网页端版本
+from src.deep_agents import create_intelligent_deep_agent_web
+agent_web = await create_intelligent_deep_agent_web()
 
-# 查看所有可用代理
-from src.deep_agents.deep_agent import list_all_agents
-agents = list_all_agents()
+# 其他可用代理
+from src.deep_agents import (
+    create_role_playing_agent,
+    create_basic_filesystem_agent,
+    create_state_only_agent,
+    create_persistent_memory_agent,
+    create_analytics_agent,
+    create_enterprise_agent,
+)
 ```
 
 ## 📊 使用示例
@@ -186,7 +192,8 @@ agents = list_all_agents()
 
 ```python
 # 使用Analytics代理处理CSV数据
-agent = await get_agent_by_use_case("analytics")
+from src.deep_agents import create_analytics_agent
+agent = await create_analytics_agent()
 result = await agent.ainvoke({
     "messages": ["请分析这个CSV文件中的销售数据，找出趋势和异常"],
     "file_path": "sales_data.csv"
@@ -197,7 +204,8 @@ result = await agent.ainvoke({
 
 ```python
 # 使用Persistent_Memory代理构建知识库
-agent = await get_agent_by_use_case("persistent_memory")
+from src.deep_agents import create_persistent_memory_agent
+agent = await create_persistent_memory_agent()
 result = await agent.ainvoke({
     "messages": ["记住这个重要的项目信息..."]
 })
@@ -212,7 +220,8 @@ result = await agent.ainvoke({
 
 ```python
 # 使用Enterprise代理管理企业文档
-agent = await get_agent_by_use_case("enterprise")
+from src.deep_agents import create_enterprise_agent
+agent = await create_enterprise_agent()
 result = await agent.ainvoke({
     "messages": ["创建项目报告并保存到/documents/目录"]
 })
@@ -222,7 +231,8 @@ result = await agent.ainvoke({
 
 ```python
 # 使用Role_Playing代理进行长对话
-agent = await get_agent_by_use_case("role_playing")
+from src.deep_agents import create_role_playing_agent
+agent = await create_role_playing_agent()
 result = await agent.ainvoke({
     "messages": ["从现在开始，你是一个经验丰富的编程导师..."],
     "character": "programming_mentor"
