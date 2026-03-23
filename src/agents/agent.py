@@ -3,7 +3,7 @@ from src.backend.backend import NamespacedStoreBackend
 from langchain.agents import create_agent
 from deepagents import create_deep_agent
 from src.tools.api_tools import call_tool_tool, list_resources_tool
-from src.middlewares import full_featured_summary, role_playing_summary, mobile_action_middleware
+from src.middlewares import full_featured_summary, role_playing_summary
 from langchain.agents.middleware import SummarizationMiddleware
 from langchain.messages import SystemMessage
 import os

@@ -8,7 +8,13 @@
   "graphs": {
 
     "intelligent_deep_agent_mobile": "./src/agents/agent.py:create_intelligent_deep_agent_mobile",
-    "autoglm_agent": "./src/agents/agent.py:create_autoglm_agent"
+    "autoglm_agent": "./src/agents/agent.py:create_autoglm_agent",
+
+    "chat_agent": "./src/deep_agents/agents/collaborative_agents.py:create_chat_agent",
+    "coordinator_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coordinator_agent",
+    "coder_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coder_agent",
+    "researcher_agent": "./src/deep_agents/agents/collaborative_agents.py:create_researcher_agent",
+    "assistant_agent": "./src/deep_agents/agents/collaborative_agents.py:create_assistant_agent"
   },
   "env": ".env",
   "checkpointer": {
