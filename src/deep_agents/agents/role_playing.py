@@ -1,6 +1,6 @@
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend, CompositeBackend
-from src.models.llm import default_model
+from src.models.llm import get_default_model
 from src.backend.backend import NamespacedStoreBackend
 from src.deep_agents.db import init_postgres_checkpointer, init_postgres_store
 from src.deep_agents.create_custom_agents.deep_custom_agent import create_custom_agent
@@ -14,7 +14,7 @@ async def create_role_playing_agent():
     postgres_store = await init_postgres_store()
 
     return create_custom_agent(
-        model=default_model,
+        model=get_default_model(),
         tools=[],
         system_prompt=load_prompt_from_file('src/deep_agents/test.txt')+"在每个章节结束后，将章节内容总结一下，保存到/chapter/{第n章-章节名}.md,当你在前文中对章节信息不了解时，请使用工具读取/chapter/{第n章-章节名}.md",
 

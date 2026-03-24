@@ -13,7 +13,7 @@
 
 from src.deep_agents.create_custom_agents.deep_custom_agent import create_custom_agent
 from src.deep_agents.db import init_postgres_checkpointer, init_postgres_store
-from src.models.llm import default_model
+from src.models.llm import get_default_model
 from src.tools.shell_tool import shell_tools
 from src.tools.api_tools import call_tool_tool, list_resources_tool
 from src.middlewares.agent_communication import AgentCommunicationMiddleware
@@ -23,7 +23,7 @@ from src.deep_agents.agents.employee_registry import COLLABORATIVE_EMPLOYEES
 def create_communication_middleware(current_agent_name: str) -> AgentCommunicationMiddleware:
     """为指定代理创建通信中间件"""
     return AgentCommunicationMiddleware(
-        server_url="http://localhost:8123",
+        server_url="http://127.0.0.1:2024",
         employees=COLLABORATIVE_EMPLOYEES,
         current_employee=current_agent_name,
     )
@@ -67,7 +67,7 @@ async def create_chat_agent():
     middleware = create_communication_middleware("chat_agent")
 
     return create_custom_agent(
-        model=default_model,
+        model=get_default_model(),
         tools=[],
         system_prompt=CHAT_AGENT_PROMPT,
         middleware=[middleware],
@@ -118,7 +118,7 @@ async def create_coordinator_agent():
     middleware = create_communication_middleware("coordinator_agent")
 
     return create_custom_agent(
-        model=default_model,
+        model=get_default_model(),
         tools=[],
         system_prompt=COORDINATOR_AGENT_PROMPT,
         middleware=[middleware],
@@ -171,7 +171,7 @@ async def create_coder_agent():
     middleware = create_communication_middleware("coder_agent")
 
     return create_custom_agent(
-        model=default_model,
+        model=get_default_model(),
         tools=shell_tools,  # 包含 run_shell_command
         system_prompt=CODER_AGENT_PROMPT,
         middleware=[middleware],
@@ -236,7 +236,7 @@ async def create_researcher_agent():
     middleware = create_communication_middleware("researcher_agent")
 
     return create_custom_agent(
-        model=default_model,
+        model=get_default_model(),
         tools=[call_tool_tool, list_resources_tool],  # MCP 工具
         system_prompt=RESEARCHER_AGENT_PROMPT,
         middleware=[middleware],
@@ -294,7 +294,7 @@ async def create_assistant_agent():
     middleware = create_communication_middleware("assistant_agent")
 
     return create_custom_agent(
-        model=default_model,
+        model=get_default_model(),
         tools=[],
         system_prompt=ASSISTANT_AGENT_PROMPT,
         middleware=[middleware],

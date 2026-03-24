@@ -1,7 +1,7 @@
 import asyncio
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend, StateBackend, StoreBackend, CompositeBackend
-from src.models.llm import default_model
+from src.models.llm import get_default_model
 from src.backend.backend import NamespacedStoreBackend
 from src.agents.agent import tools_Assistant
 from src.deep_agents.db import init_postgres_checkpointer, init_postgres_store
@@ -22,7 +22,7 @@ async def create_intelligent_deep_agent():
     )
 
     return create_deep_agent(
-        model=default_model,
+        model=get_default_model(),
         tools=[],
         system_prompt="""你是一个高级AI助手，负责帮用户解决问题。
 

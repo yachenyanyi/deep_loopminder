@@ -1,7 +1,7 @@
 import asyncio
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
-from src.models.llm import default_model
+from src.models.llm import get_default_model
 from src.agents.agent import tools_Assistant
 from src.deep_agents.config import WORKSPACE_DIR
 
@@ -15,7 +15,7 @@ async def create_basic_filesystem_agent():
     )
 
     return create_deep_agent(
-        model=default_model,
+        model=get_default_model(),
         tools=[],
         system_prompt="""你是一个文件系统管理助手，专注于安全的本地文件操作。
         你可以创建、读取、编辑和管理本地文件，所有操作都在sandboxed环境中进行。

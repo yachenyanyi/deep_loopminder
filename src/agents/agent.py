@@ -1,4 +1,4 @@
-from src.models.llm import default_model
+from src.models.llm import get_default_model
 from src.backend.backend import NamespacedStoreBackend
 from langchain.agents import create_agent
 from deepagents import create_deep_agent
@@ -18,14 +18,14 @@ def load_prompt_from_file(filepath):
 boy_agnet = load_prompt_from_file('src/agents/boy.txt') if os.path.exists(os.path.join(BASE_DIR, 'src/agents/boy.txt')) else ""
 tools_Assistant = create_agent(
 
-    model=default_model,
+    model=get_default_model(),
     tools=[call_tool_tool, list_resources_tool],
     system_prompt="你是我的工具助手，我可以调用工具来完成任务。",
     name="tools_Assistant",
     middleware=[]
 )
 Intelligent_Assistant = create_agent(
-    model=default_model,
+    model=get_default_model(),
     tools=[],
     system_prompt=boy_agnet,
 
