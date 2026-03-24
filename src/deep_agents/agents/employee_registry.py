@@ -11,7 +11,7 @@ COLLABORATIVE_EMPLOYEES: list[Employee] = [
     Employee(
         name="chat_agent",
         role="前台接待",
-        expertise=["闲聊", "意图识别", "简单问答", "文本生成"],
+        expertise=["闲聊", "意图识别", "简单任务", "文本生成"],
         description="系统的第一接触点，负责识别用户意图并路由到正确的专家。擅长处理日常对话、简单问答和情感陪伴。"
     ),
     Employee(

@@ -12,6 +12,9 @@ if sys.platform == 'win32':
 else:
     shell_cmd = "/bin/bash"
 
+# 获取当前环境变量，确保后台服务也能访问用户安装的工具
+current_env = os.environ.copy()
+
 local_shell_middleware = ShellToolMiddleware(
     workspace_root=WORKSPACE_DIR,
     execution_policy=HostExecutionPolicy(
@@ -19,4 +22,5 @@ local_shell_middleware = ShellToolMiddleware(
     ),
     startup_commands=[],
     shell_command=shell_cmd,
+    env=current_env,  # 传递当前环境变量
 )

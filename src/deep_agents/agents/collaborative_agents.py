@@ -1,7 +1,8 @@
 """
 协作智能体定义
 
-定义5个具有明确分工的智能体，每个代理配置 AgentCommunicationMiddleware 中间件。
+使用 create_deep_agent 创建5个具有明确分工的智能体。
+所有代理共享同一个记忆文件（/memories/agent.md）。
 
 代理列表：
 1. chat_agent - 通用对话代理（前台接待）
@@ -9,15 +10,39 @@
 3. coder_agent - 代码专家代理（高级工程师）
 4. researcher_agent - 研究专家代理（情报分析师）
 5. assistant_agent - 个人助理代理（私人秘书）
+
+目录结构：
+workspace/
+├── memories/
+│   └── agent.md      # 共享记忆文件
+└── (其他工作文件)     # 代理创建的文件
 """
 
-from src.deep_agents.create_custom_agents.deep_custom_agent import create_custom_agent
+import os
+import asyncio
+from pathlib import Path
+
+from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend, FilesystemBackend
+
 from src.deep_agents.db import init_postgres_checkpointer, init_postgres_store
+from src.deep_agents.config import WORKSPACE_DIR
 from src.models.llm import get_default_model
 from src.tools.shell_tool import shell_tools
 from src.tools.api_tools import call_tool_tool, list_resources_tool
 from src.middlewares.agent_communication import AgentCommunicationMiddleware
+from src.middlewares.shell.local_shell import local_shell_middleware
 from src.deep_agents.agents.employee_registry import COLLABORATIVE_EMPLOYEES
+
+
+# 确保记忆目录存在
+MEMORIES_DIR = os.path.join(WORKSPACE_DIR, "memories")
+Path(MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
+
+# 共享的记忆文件路径（虚拟路径）
+# 由于 root_dir=WORKSPACE_DIR，代理访问 /memories/agent.md
+# 会映射到 WORKSPACE_DIR/memories/agent.md
+SHARED_MEMORY_FILE = "/memories/agent.md"
 
 
 def create_communication_middleware(current_agent_name: str) -> AgentCommunicationMiddleware:
@@ -27,6 +52,31 @@ def create_communication_middleware(current_agent_name: str) -> AgentCommunicati
         employees=COLLABORATIVE_EMPLOYEES,
         current_employee=current_agent_name,
     )
+
+
+async def create_agent_backend():
+    """创建代理的 backend 配置
+
+    FilesystemBackend(root_dir=WORKSPACE_DIR) 意味着：
+    - 虚拟根目录 / 对应实际的 WORKSPACE_DIR
+
+    所以：
+    - /memories/agent.md → workspace/memories/agent.md
+    - /any_file.txt → workspace/any_file.txt
+    """
+    fs_backend_instance = await asyncio.to_thread(
+        FilesystemBackend,
+        root_dir=WORKSPACE_DIR,
+        virtual_mode=True
+    )
+
+    def backend_factory(runtime):
+        return CompositeBackend(
+            default=fs_backend_instance,  # 默认使用文件系统后端
+            routes={}  # 不需要额外路由，所有路径都在 workspace 下
+        )
+
+    return backend_factory
 
 
 # ============================================================================
@@ -50,12 +100,9 @@ CHAT_AGENT_PROMPT = """你是系统的"前台接待"，负责识别用户意图�
 
 ## 使用工具
 当你不确定或需要其他专家的意见时，使用 consult_colleague 工具向相应专家咨询。
-例如：consult_colleague(colleague="coder_agent", question="这个问题你能处理吗？")
 
-## 自知之明
-- 不懂的技术问题不要硬撑，转给 coder_agent
-- 复杂的多步骤任务交给 coordinator_agent
-- 需要最新信息时咨询 researcher_agent
+## 共享记忆
+所有代理共享 /memories/agent.md 记忆文件，记录用户偏好和重要信息。
 """
 
 
@@ -63,14 +110,17 @@ async def create_chat_agent():
     """创建通用对话代理"""
     postgres_checkpointer = await init_postgres_checkpointer()
     postgres_store = await init_postgres_store()
+    backend = await create_agent_backend()
 
     middleware = create_communication_middleware("chat_agent")
 
-    return create_custom_agent(
+    return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=CHAT_AGENT_PROMPT,
-        middleware=[middleware],
+        middleware=[middleware, local_shell_middleware],
+        memory=[SHARED_MEMORY_FILE],
+        backend=backend,
         checkpointer=postgres_checkpointer,
         store=postgres_store,
         name="chat_agent",
@@ -97,16 +147,8 @@ COORDINATOR_AGENT_PROMPT = """你是系统的"项目经理"，负责协调多个
 - researcher_agent: 信息搜索、文档查阅
 - assistant_agent: 日程安排、用户偏好
 
-## 使用工具
-使用 delegate_task 工具委派任务给专家。
-例如：delegate_task(colleague="coder_agent", task="编写一个Python脚本计算斐波那契数列")
-
-## 工作流程示例
-1. 收到任务："帮我做一个能监控 GitHub 仓库的脚本"
-2. 拆解：
-   - 子任务A：查GitHub API文档 → researcher_agent
-   - 子任务B：写Python脚本 → coder_agent
-3. 整合结果，生成最终报告
+## 共享记忆
+所有代理共享 /memories/agent.md 记忆文件，记录项目状态和决策历史。
 """
 
 
@@ -114,14 +156,17 @@ async def create_coordinator_agent():
     """创建协调员代理"""
     postgres_checkpointer = await init_postgres_checkpointer()
     postgres_store = await init_postgres_store()
+    backend = await create_agent_backend()
 
     middleware = create_communication_middleware("coordinator_agent")
 
-    return create_custom_agent(
+    return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=COORDINATOR_AGENT_PROMPT,
-        middleware=[middleware],
+        middleware=[middleware, local_shell_middleware],
+        memory=[SHARED_MEMORY_FILE],
+        backend=backend,
         checkpointer=postgres_checkpointer,
         store=postgres_store,
         name="coordinator_agent",
@@ -144,22 +189,14 @@ CODER_AGENT_PROMPT = """你是系统的"高级工程师"，负责所有代码相
 ❌ 立即求助：
 - 不懂的业务逻辑 → 咨询 coordinator_agent
 - 最新API文档 → 咨询 researcher_agent
-- 用户偏好 → 咨询 assistant_agent
 
 ## 安全约束
-- 只在 workspace 目录下操作
-- 危险命令（如 rm -rf）需要确认
-- 敏感信息（密码、密钥）不要硬编码
 
-## 使用工具
-- run_shell_command: 执行 shell 命令
-- consult_colleague: 咨询其他专家
+- 危险命令需要确认
+- 敏感信息不要硬编码
 
-## 工作流程
-1. 先理解需求，必要时咨询 coordinator_agent
-2. 编写代码，遵循最佳实践
-3. 运行测试验证
-4. 提交结果
+## 共享记忆
+所有代理共享 /memories/agent.md 记忆文件，记录技术栈和代码规范。
 """
 
 
@@ -167,14 +204,17 @@ async def create_coder_agent():
     """创建代码专家代理"""
     postgres_checkpointer = await init_postgres_checkpointer()
     postgres_store = await init_postgres_store()
+    backend = await create_agent_backend()
 
     middleware = create_communication_middleware("coder_agent")
 
-    return create_custom_agent(
+    return create_deep_agent(
         model=get_default_model(),
-        tools=shell_tools,  # 包含 run_shell_command
+        tools=[],
         system_prompt=CODER_AGENT_PROMPT,
-        middleware=[middleware],
+        middleware=[middleware, local_shell_middleware],
+        memory=[SHARED_MEMORY_FILE],
+        backend=backend,
         checkpointer=postgres_checkpointer,
         store=postgres_store,
         name="coder_agent",
@@ -200,31 +240,9 @@ RESEARCHER_AGENT_PROMPT = """你是系统的"情报分析师"，负责收集和�
 - 必须标注信息来源
 - 多个来源交叉验证
 - 按时间戳标注时效性
-- 不确定的信息要明确说明
 
-## 使用工具
-1. 先调用 list_resources 查看可用工具
-2. 再调用 call_tool 执行具体搜索
-
-## 工作流程
-1. 理解信息需求
-2. 搜索多个来源
-3. 交叉验证
-4. 整理结构化输出
-
-## 示例输出格式
-### 搜索结果
-
-**来源1**: [标题](链接)
-- 要点：...
-- 时间：...
-
-**来源2**: [标题](链接)
-- 要点：...
-- 时间：...
-
-### 总结
-...
+## 共享记忆
+所有代理共享 /memories/agent.md 记忆文件，积累知识库。
 """
 
 
@@ -232,14 +250,18 @@ async def create_researcher_agent():
     """创建研究专家代理"""
     postgres_checkpointer = await init_postgres_checkpointer()
     postgres_store = await init_postgres_store()
+    backend = await create_agent_backend()
 
     middleware = create_communication_middleware("researcher_agent")
 
-    return create_custom_agent(
+    return create_deep_agent(
         model=get_default_model(),
-        tools=[call_tool_tool, list_resources_tool],  # MCP 工具
+        tools=[call_tool_tool, list_resources_tool],
         system_prompt=RESEARCHER_AGENT_PROMPT,
-        middleware=[middleware],
+        middleware=[middleware, local_shell_middleware],
+        skills=["/skills/playwright-cli/"],
+        memory=[SHARED_MEMORY_FILE],
+        backend=backend,
         checkpointer=postgres_checkpointer,
         store=postgres_store,
         name="researcher_agent",
@@ -257,32 +279,26 @@ ASSISTANT_AGENT_PROMPT = """你是用户的"私人秘书"，管理个人信息�
 2. 管理日历和待办事项
 3. 提供个性化建议
 
-## 记忆系统
-你可以使用文件系统存储用户信息：
-- 用户偏好存储在 /user/preferences.md
-- 待办事项存储在 /user/todos.md
-- 重要日期存储在 /user/calendar.md
-- 用户画像存储在 /user/profile.md
+## 共享记忆系统
+所有代理共享 /memories/agent.md 记忆文件，你应该主动维护：
+
+### 记忆内容应包括：
+- 用户画像：姓名、职业、联系方式
+- 用户偏好：沟通风格、技术栈、常用工具
+- 重要日期：生日、纪念日、会议
+- 待办事项：需要提醒的任务
+- 历史记录：重要的对话摘要
+
+### 更新规则：
+每次发现新信息时，更新共享记忆文件。
 
 ## 决策边界
-✅ 自己处理：日程安排、邮件草稿、提醒设置、个人文件整理
-❌ 立即确认：发送正式邮件、删除重要数据、涉及金钱的操作
+✅ 自己处理：日程安排、邮件草稿、提醒设置
+❌ 立即确认：发送正式邮件、删除重要数据
 
 ## 隐私保护
 - 敏感信息（密码、身份证号）不存储
 - 重要操作需要用户确认
-- 尊重用户隐私边界
-
-## 主动记忆
-在对话中发现以下信息时，主动存储：
-- 用户喜好（如"我喜欢简洁的风格"）
-- 重要日期（如"下周三有会议"）
-- 待办事项（如"记得提醒我..."）
-- 联系方式（如"我的邮箱是..."）
-
-## 使用工具
-- 文件读写工具（系统内置）
-- consult_colleague: 咨询其他专家
 """
 
 
@@ -290,14 +306,17 @@ async def create_assistant_agent():
     """创建个人助理代理"""
     postgres_checkpointer = await init_postgres_checkpointer()
     postgres_store = await init_postgres_store()
+    backend = await create_agent_backend()
 
     middleware = create_communication_middleware("assistant_agent")
 
-    return create_custom_agent(
+    return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=ASSISTANT_AGENT_PROMPT,
-        middleware=[middleware],
+        middleware=[middleware, local_shell_middleware],
+        memory=[SHARED_MEMORY_FILE],
+        backend=backend,
         checkpointer=postgres_checkpointer,
         store=postgres_store,
         name="assistant_agent",
