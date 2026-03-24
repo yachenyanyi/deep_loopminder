@@ -12,7 +12,7 @@ import pandas as pd
 
 from deepagents.backends.utils import create_file_data, file_data_to_string, format_read_response
 from langgraph.store.base import BaseStore, Item
-from src.deep_agents.deep_agent import get_postgres_store
+from src.deep_agents import get_postgres_store
 
 router = APIRouter(prefix="/files", tags=["files"])
 

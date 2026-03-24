@@ -6,9 +6,13 @@
     "langchain-ollama>=0.1.0"
   ],
   "graphs": {
-
-    "intelligent_deep_agent_mobile": "./src/agents/agent.py:create_intelligent_deep_agent_mobile",
-    "autoglm_agent": "./src/agents/agent.py:create_autoglm_agent"
+    "tools_Assistant": "./src/agents/agent.py:tools_Assistant",
+    "Intelligent_Assistant": "./src/agents/agent.py:Intelligent_Assistant",
+    "chat_agent": "./src/deep_agents/agents/collaborative_agents.py:create_chat_agent",
+    "coordinator_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coordinator_agent",
+    "coder_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coder_agent",
+    "researcher_agent": "./src/deep_agents/agents/collaborative_agents.py:create_researcher_agent",
+    "assistant_agent": "./src/deep_agents/agents/collaborative_agents.py:create_assistant_agent"
   },
   "env": ".env",
   "checkpointer": {

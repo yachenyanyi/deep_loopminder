@@ -1,9 +1,9 @@
 from langchain.agents.middleware import SummarizationMiddleware
-from src.models.llm import default_model
+from src.models.llm import get_default_model
 
 
 role_playing_summary = SummarizationMiddleware(
-    model=default_model,
+    model=get_default_model(),
     trigger=("tokens", 30000),
     keep=("messages", 30),
     summary_prompt=(
