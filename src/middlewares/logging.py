@@ -27,6 +27,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+from langgraph.config import get_config
 
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
@@ -232,7 +233,11 @@ class LoggingMiddleware(AgentMiddleware):
 
     def before_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
         """Agent 开始执行"""
-        thread_id = runtime.config.get("configurable", {}).get("thread_id", "unknown")
+        try:
+            config = get_config()
+            thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+        except Exception:
+            thread_id = "unknown"
         self._log(f"[Session 开始] thread_id: {thread_id}")
         return None
 
@@ -242,8 +247,13 @@ class LoggingMiddleware(AgentMiddleware):
 
     def after_model(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
         """Agent 执行结束后的状态"""
+        try:
+            config = get_config()
+            thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+        except Exception:
+            thread_id = "unknown"
         msg_count = len(state.get("messages", []))
-        self._log(f"[Session 状态] 当前消息数: {msg_count}")
+        self._log(f"[Session 状态] thread_id: {thread_id} | 消息数: {msg_count}")
         return None
 
     async def aafter_model(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
