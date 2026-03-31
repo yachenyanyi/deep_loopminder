@@ -27,6 +27,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+from langgraph.config import get_config
 
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
@@ -212,6 +213,24 @@ class LoggingMiddleware(AgentMiddleware):
         else:
             self.formatter = TextFormatter()
 
+    def __getstate__(self):
+        """排除不可序列化的属性（logger 内部有 _thread.lock）"""
+        state = self.__dict__.copy()
+        # 移除 logger，它包含不可序列化的 _thread.lock
+        state['_logger_name'] = self.logger.name if hasattr(self, 'logger') else None
+        state.pop('logger', None)
+        return state
+
+    def __setstate__(self, state):
+        """恢复 logger"""
+        logger_name = state.pop('_logger_name', None)
+        self.__dict__.update(state)
+        # 重新创建 logger
+        if logger_name:
+            self.logger = logging.getLogger(logger_name)
+        else:
+            self.logger = logging.getLogger(f"agent.logging.{id(self)}")
+
     def _log(self, message: str, level: int | None = None):
         """输出日志"""
         self.logger.log(level or self.level, message)
@@ -232,7 +251,11 @@ class LoggingMiddleware(AgentMiddleware):
 
     def before_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
         """Agent 开始执行"""
-        thread_id = runtime.config.get("configurable", {}).get("thread_id", "unknown")
+        try:
+            config = get_config()
+            thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+        except Exception:
+            thread_id = "unknown"
         self._log(f"[Session 开始] thread_id: {thread_id}")
         return None
 
@@ -242,8 +265,13 @@ class LoggingMiddleware(AgentMiddleware):
 
     def after_model(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
         """Agent 执行结束后的状态"""
+        try:
+            config = get_config()
+            thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+        except Exception:
+            thread_id = "unknown"
         msg_count = len(state.get("messages", []))
-        self._log(f"[Session 状态] 当前消息数: {msg_count}")
+        self._log(f"[Session 状态] thread_id: {thread_id} | 消息数: {msg_count}")
         return None
 
     async def aafter_model(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
