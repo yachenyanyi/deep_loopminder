@@ -118,7 +118,7 @@ async def create_chat_agent():
         model=get_default_model(),
         tools=[],
         system_prompt=CHAT_AGENT_PROMPT,
-        middleware=[middleware,local_shell_middleware],  # 暂时移除 communication middleware
+        middleware=[middleware, local_shell_middleware],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
         checkpointer=postgres_checkpointer,
@@ -158,13 +158,13 @@ async def create_coordinator_agent():
     postgres_store = await init_postgres_store()
     backend = await create_agent_backend()
 
-    # middleware = create_communication_middleware("coordinator_agent")
+    middleware = create_communication_middleware("coordinator_agent")
 
     return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=COORDINATOR_AGENT_PROMPT,
-        middleware=[local_shell_middleware],  # 暂时移除 communication middleware
+        middleware=[middleware, local_shell_middleware],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
         checkpointer=postgres_checkpointer,
@@ -206,13 +206,13 @@ async def create_coder_agent():
     postgres_store = await init_postgres_store()
     backend = await create_agent_backend()
 
-    # middleware = create_communication_middleware("coder_agent")
+    middleware = create_communication_middleware("coder_agent")
 
     return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=CODER_AGENT_PROMPT,
-        middleware=[local_shell_middleware],  # 暂时移除 communication middleware
+        middleware=[middleware, local_shell_middleware],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
         checkpointer=postgres_checkpointer,
@@ -300,7 +300,7 @@ async def create_researcher_agent():
         model=get_default_model(),
         tools=[call_tool_tool, list_resources_tool],
         system_prompt=RESEARCHER_AGENT_PROMPT,
-        middleware=[middleware,local_shell_middleware],  # 暂时移除 communication middleware
+        middleware=[middleware, local_shell_middleware],
         skills=["/skills/playwright-cli/"],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
@@ -350,13 +350,13 @@ async def create_assistant_agent():
     postgres_store = await init_postgres_store()
     backend = await create_agent_backend()
 
-    # middleware = create_communication_middleware("assistant_agent")
+    middleware = create_communication_middleware("assistant_agent")
 
     return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=ASSISTANT_AGENT_PROMPT,
-        middleware=[local_shell_middleware],  # 暂时移除 communication middleware
+        middleware=[middleware, local_shell_middleware],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
         checkpointer=postgres_checkpointer,
