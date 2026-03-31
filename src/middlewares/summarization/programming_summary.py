@@ -1,60 +1,71 @@
+"""编程专用摘要中间件
+
+针对编程场景优化的对话摘要组件，具有以下特点：
+- 高准确率状态检测（90-100%）
+- 结构化输出格式
+- 技术细节保留度达 90%+
+"""
+
 from langchain.agents.middleware import SummarizationMiddleware
+from langchain.agents.middleware.summarization import count_tokens_approximately
 from src.models.llm import get_default_model
+from deepagents.backends import StateBackend
+from typing import Callable
 
 
-full_featured_summary = SummarizationMiddleware(
-    model=get_default_model(),
-    trigger=("tokens", 30000),
-    keep=("messages", 20),
-    summary_prompt=(
-        "你是一个编程对话上下文压缩器。请严格按照以下规则压缩对话。\n\n"
-    
+# ==============================================================================
+# 编程专用摘要提示词
+# ==============================================================================
+
+PROGRAMMING_SUMMARY_PROMPT = (
+    "你是一个编程对话上下文压缩器。请严格按照以下规则压缩对话。\n\n"
+
     "=== 核心原则 ===\n"
     "1. 忠实于原文：不要添加原文没有的信息，不要遗漏原文的关键信息\n"
     "2. 准确判断状态：根据对话内容判断任务/问题的实际状态\n"
     "3. 保留技术细节：错误类型、函数签名、配置参数必须准确\n\n"
-    
+
     "=== 状态判断规则 ===\n"
     "- [已完成]: 对话中给出了完整实现代码\n"
     "- [已解决]: 对话中给出了明确的解决方案\n"
     "- [进行中]: 对话中正在讨论但未给出最终方案\n"
     "- [待处理]: 对话中明确提到'需要'、'待办'、'下一步'\n\n"
-    
+
     "=== 必须保留的信息 ===\n"
     "1. 错误类型全名 (如: ImportError, requests.exceptions.ReadTimeout)\n"
     "2. 解决方案的核心代码或命令\n"
     "3. 文件名和函数签名\n"
     "4. 配置参数的具体值\n"
     "5. 设计决策的理由\n\n"
-    
+
     "=== 可以移除的信息 ===\n"
     "1. 重复的讨论内容\n"
     "2. 失败的尝试过程 (保留失败原因和最终方案)\n"
     "3. 冗长的解释和评论\n"
     "4. 超过20行的代码 (保留签名和关键逻辑)\n\n"
-    
+
     "=== 输入上下文 ===\n"
     "{messages}\n\n"
-    
+
     "=== 输出格式 ===\n\n"
     "## 当前焦点\n"
     "<current_focus>\n"
     "[正在进行的任务，无则填'无']\n"
     "</current_focus>\n\n"
-    
+
     "## 环境\n"
     "<environment>\n"
     "依赖: [列出所有依赖包]\n"
     "配置: [关键配置项]\n"
     "</environment>\n\n"
-    
+
     "## 已完成任务\n"
     "<completed_tasks>\n"
     "| 任务 | 结果 | 状态 |\n"
     "|------|------|------|\n"
     "| [任务名] | [关键代码/结果] | 已完成 |\n"
     "</completed_tasks>\n\n"
-    
+
     "## 已解决问题\n"
     "<resolved_issues>\n"
     "| 错误类型 | 解决方案 | 状态 |\n"
@@ -62,14 +73,14 @@ full_featured_summary = SummarizationMiddleware(
     "| ImportError | pip install datasets | 已解决 |\n"
     "| ReadTimeout | timeout=300 | 已解决 |\n"
     "</resolved_issues>\n\n"
-    
+
     "## 待解决问题\n"
     "<active_issues>\n"
     "| 问题 | 状态 | 下一步 |\n"
     "|------|------|--------|\n"
     "[仅列出明确未解决的问题]\n"
     "</active_issues>\n\n"
-    
+
     "## 代码状态\n"
     "<code_state>\n"
     "```\n"
@@ -79,77 +90,141 @@ full_featured_summary = SummarizationMiddleware(
     "    def load(self, split: str, num_samples: int)\n"
     "```\n"
     "</code_state>\n\n"
-    
+
     "## 待办事项\n"
     "<pending_tasks>\n"
     "- [仅列出明确声明的待办，不要将已完成任务放入此处]\n"
     "</pending_tasks>\n\n"
-    
+
     "## 重要上下文\n"
     "<important_context>\n"
     "- [其他关键信息]\n"
     "</important_context>"
-    ),
 )
-#提示词性能指标报告
 
-## 一、基础性能指标
 
-#| 指标项 | 数值 | 说明 |
-#|--------|------|------|
-#| 原始文本长度 | 50,000+ 字符 | 模拟复杂编程对话上下文 |
-#| 压缩后长度 | 3,000-4,500 字符 | 平均约 3,800 字符 |
-#| 压缩比 | 45:1 ~ 66:1 | 高效压缩，保留核心信息 |
-#| 处理时间 | 67-80 秒 | 相比 V2 版本提升 34-45% |
+# ==============================================================================
+# 工厂函数
+# ==============================================================================
 
-## 二、状态检测准确率
+def create_programming_summary_middleware(
+    model=None,
+    backend=None,
+    trigger=("tokens", 30000),  # 使用绝对 token 数，避免需要 model profile
+    keep=("messages", 20),
+    trim_tokens_to_summarize: int | None = None,
+    token_counter: Callable = count_tokens_approximately,
+) -> SummarizationMiddleware:
+    """
+    创建编程专用摘要中间件
 
-#| 状态类型 | 检测准确率 | 测试样本数 | 说明 |
-#|----------|------------|------------|------|
-#| 已完成任务 | 90.9% | 11/12 | 准确识别已实现的功能模块 |
-#| 已解决问题 | 100% | 8/8 | 精确捕获已解决的错误和异常 |
-#| 进行中任务 | 100% | 2/2 | 正确标记正在讨论的议题 |
-#| 待处理任务 | 100% | 1/1 | 准确提取待办事项 |
+    Args:
+        model: 语言模型实例，默认使用 get_default_model()
+        backend: 后端存储实例，默认使用 StateBackend
+        trigger: 触发摘要的阈值
+            - ("tokens", 30000): 达到 30k tokens 时触发（默认）
+            - ("fraction", 0.85): 达到 85% context 时触发（需要 model profile）
+            - ("messages", 100): 达到 100 条消息时触发
+            - 可传列表：[("tokens", 30000), ("messages", 100)] 任一满足即触发
+        keep: 摘要后保留的内容
+            - ("messages", 20): 保留最近 20 条消息（默认）
+            - ("tokens", 5000): 保留最近 5000 tokens
+            - ("fraction", 0.1): 保留最近 10% context
+        trim_tokens_to_summarize: 传给摘要 LLM 的最大 token 数，None 表示不限制
+        token_counter: Token 计数函数
 
-## 三、结构化输出质量
+    Returns:
+        SummarizationMiddleware 实例
 
-#| 结构元素 | 包含率 | 说明 |
-#|----------|--------|------|
-#| `<current_focus>` | 100% | 当前焦点明确 |
-#| `<environment>` | 100% | 环境信息完整 |
-#| `<completed_tasks>` | 100% | 已完成任务表格化 |
-#| `<resolved_issues>` | 100% | 已解决问题独立呈现 |
-#| `<active_issues>` | 100% | 活跃问题清晰列出 |
-#| `<pending_tasks>` | 100% | 待办事项准确提取 |
-#| `<code_state>` | 100% | 代码状态完整记录 |
+    Example:
+        ```python
+        # 使用默认配置
+        middleware = create_programming_summary_middleware()
 
-## 四、技术细节保留度
+        # 自定义配置
+        middleware = create_programming_summary_middleware(
+            model=my_model,
+            backend=my_backend,
+            trigger=[("tokens", 50000), ("messages", 50)],
+            keep=("messages", 15),
+        )
+        ```
+    """
+    model = model or get_default_model()
+    backend = backend or StateBackend
 
-#| 技术信息类型 | 保留率 | 示例 |
-#|--------------|--------|------|
-#| 错误类型全名 | 100% | `ModuleNotFoundError`, `PIL.UnidentifiedImageError` |
-#| 解决方案代码 | 95%+ | 核心修复代码片段 |
-#| 函数签名 | 90%+ | `def process_image(path: str) -> Image` |
-#| 配置参数 | 85%+ | `max_tokens=4000`, `temperature=0.7` |
-#| 文件路径 | 90%+ | `src/utils/image_processor.py` |
+    return SummarizationMiddleware(
+        model=model,
+        backend=backend,
+        trigger=trigger,
+        keep=keep,
+        token_counter=token_counter,
+        summary_prompt=PROGRAMMING_SUMMARY_PROMPT,
+        trim_tokens_to_summarize=trim_tokens_to_summarize,
+    )
 
-## 五、版本对比
 
-#| 对比维度 | V1 (原始版) | V2 (优化版) | V3 (最终版) |
-#|----------|-------------|-------------|-------------|
-#| 状态判断准确率 | 60-70% | 75-85% | **90-100%** |
-#| 结构完整性 | 70% | 85% | **100%** |
-#| 处理速度 | 90秒 | 121秒 | **67-80秒** |
-#| 输出格式一致性 | 中等 | 良好 | **优秀** |
-#| 技术细节保留 | 80% | 85% | **90%+** |
+# ==============================================================================
+# 预配置实例
+# ==============================================================================
 
-## 六、关键改进点
+# 使用默认参数的预配置实例
+full_featured_summary = create_programming_summary_middleware()
 
-#1. **显式状态规则** - 消除模糊推断，状态判断准确率提升 30%+
-#2. **结构分离设计** - `resolved_issues` 与 `active_issues` 分离，信息混淆率降至 0%
-#3. **示例引导机制** - 输出格式一致性达到 100%
-#4. **精简指令集** - 处理时间缩短 34-45%
 
-#---
-#*测试环境: Ollama ministral-3:3b (8K context) | 测试样本: 50K 字符复杂编程对话*
-#有钱了再去测试api
+# ==============================================================================
+# 性能指标报告
+# ==============================================================================
+#
+# 一、基础性能指标
+# | 指标项 | 数值 | 说明 |
+# |--------|------|------|
+# | 原始文本长度 | 50,000+ 字符 | 模拟复杂编程对话上下文 |
+# | 压缩后长度 | 3,000-4,500 字符 | 平均约 3,800 字符 |
+# | 压缩比 | 45:1 ~ 66:1 | 高效压缩，保留核心信息 |
+# | 处理时间 | 67-80 秒 | 相比 V2 版本提升 34-45% |
+#
+# 二、状态检测准确率
+# | 状态类型 | 检测准确率 | 测试样本数 | 说明 |
+# |----------|------------|------------|------|
+# | 已完成任务 | 90.9% | 11/12 | 准确识别已实现的功能模块 |
+# | 已解决问题 | 100% | 8/8 | 精确捕获已解决的错误和异常 |
+# | 进行中任务 | 100% | 2/2 | 正确标记正在讨论的议题 |
+# | 待处理任务 | 100% | 1/1 | 准确提取待办事项 |
+#
+# 三、结构化输出质量
+# | 结构元素 | 包含率 | 说明 |
+# |----------|--------|------|
+# | `<current_focus>` | 100% | 当前焦点明确 |
+# | `<environment>` | 100% | 环境信息完整 |
+# | `<completed_tasks>` | 100% | 已完成任务表格化 |
+# | `<resolved_issues>` | 100% | 已解决问题独立呈现 |
+# | `<active_issues>` | 100% | 活跃问题清晰列出 |
+# | `<pending_tasks>` | 100% | 待办事项准确提取 |
+# | `<code_state>` | 100% | 代码状态完整记录 |
+#
+# 四、技术细节保留度
+# | 技术信息类型 | 保留率 | 示例 |
+# |--------------|--------|------|
+# | 错误类型全名 | 100% | `ModuleNotFoundError`, `PIL.UnidentifiedImageError` |
+# | 解决方案代码 | 95%+ | 核心修复代码片段 |
+# | 函数签名 | 90%+ | `def process_image(path: str) -> Image` |
+# | 配置参数 | 85%+ | `max_tokens=4000`, `temperature=0.7` |
+# | 文件路径 | 90%+ | `src/utils/image_processor.py` |
+#
+# 五、版本对比
+# | 对比维度 | V1 (原始版) | V2 (优化版) | V3 (最终版) |
+# |----------|-------------|-------------|-------------|
+# | 状态判断准确率 | 60-70% | 75-85% | **90-100%** |
+# | 结构完整性 | 70% | 85% | **100%** |
+# | 处理速度 | 90秒 | 121秒 | **67-80秒** |
+# | 输出格式一致性 | 中等 | 良好 | **优秀** |
+# | 技术细节保留 | 80% | 85% | **90%+** |
+#
+# 六、关键改进点
+# 1. **显式状态规则** - 消除模糊推断，状态判断准确率提升 30%+
+# 2. **结构分离设计** - `resolved_issues` 与 `active_issues` 分离，信息混淆率降至 0%
+# 3. **示例引导机制** - 输出格式一致性达到 100%
+# 4. **精简指令集** - 处理时间缩短 34-45%
+#
+# 测试环境: Ollama ministral-3:3b (8K context) | 测试样本: 50K 字符复杂编程对话

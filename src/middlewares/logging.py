@@ -213,6 +213,24 @@ class LoggingMiddleware(AgentMiddleware):
         else:
             self.formatter = TextFormatter()
 
+    def __getstate__(self):
+        """排除不可序列化的属性（logger 内部有 _thread.lock）"""
+        state = self.__dict__.copy()
+        # 移除 logger，它包含不可序列化的 _thread.lock
+        state['_logger_name'] = self.logger.name if hasattr(self, 'logger') else None
+        state.pop('logger', None)
+        return state
+
+    def __setstate__(self, state):
+        """恢复 logger"""
+        logger_name = state.pop('_logger_name', None)
+        self.__dict__.update(state)
+        # 重新创建 logger
+        if logger_name:
+            self.logger = logging.getLogger(logger_name)
+        else:
+            self.logger = logging.getLogger(f"agent.logging.{id(self)}")
+
     def _log(self, message: str, level: int | None = None):
         """输出日志"""
         self.logger.log(level or self.level, message)

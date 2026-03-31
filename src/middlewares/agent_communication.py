@@ -90,13 +90,29 @@ class AgentCommunicationMiddleware(AgentMiddleware):
         # 预创建工具列表
         self._tools_cache = None
 
+    def __getstate__(self):
+        """排除不可序列化的属性"""
+        state = self.__dict__.copy()
+        # _tools_cache 包含 StructuredTool 对象，可能有不可序列化的属性
+        # thread_manager 是全局单例，不需要序列化
+        state.pop('_tools_cache', None)
+        state.pop('thread_manager', None)
+        return state
+
+    def __setstate__(self, state):
+        """恢复被排除的属性"""
+        self.__dict__.update(state)
+        # 重新获取全局单例
+        self.thread_manager = get_thread_config_manager(server_url=self.server_url)
+        # _tools_cache 会在下次访问时重新创建
+        self._tools_cache = None
+
     @property
     def tools(self) -> list:
         """返回中间件提供的工具列表（作为属性，兼容 LangChain）"""
         if self._tools_cache is None:
             self._tools_cache = [
-                self._create_consult_tool(),
-                self._create_delegate_tool(),
+                self._create_collaborate_tool(),
                 self._create_thread_info_tool(),
             ]
         return self._tools_cache
@@ -131,43 +147,56 @@ class AgentCommunicationMiddleware(AgentMiddleware):
                 lines.append(f"  专业领域: {expertise}")
         return "\n".join(lines)
 
-    def _create_consult_tool(self):
-        """创建咨询工具 - 向其他员工请求帮助"""
+    def _create_collaborate_tool(self):
+        """创建协作工具 - 与同事协作的统一入口"""
 
         employee_list = self._build_employee_list_description()
 
-        description = f"""向其他员工咨询问题、请求帮助或分享信息。
+        description = f"""与同事协作完成任务或讨论问题。
 
 ## 同事列表
 {employee_list}
 
-## 使用场景
-- 遇到不熟悉的问题，需要其他专业员工的意见
-- 需要其他员工的特定技能或知识
-- 想分享信息给相关同事
-- 协作解决复杂问题
+## 使用方式
+你可以自由决定如何与同事交流：
+- **咨询问题**：描述问题背景，请求建议或答案
+- **委派任务**：明确任务要求，让同事独立完成并报告结果
+- **分享信息**：传递重要信息给相关同事
+- **协作讨论**：多轮对话解决复杂问题
 
-## 注意事项
-- 每个员工有独立的对话历史，可以记住之前的交流
-- 清晰描述你的问题，让同事更好地帮助你
-- 选择专业领域匹配的同事"""
+## 参数说明
+- `colleague`: 选择专业领域匹配的同事
+- `message`: 你要发送的完整消息（自行组织内容）
+- `new_thread`: 是否开始新对话（默认 False，继续之前对话）
 
-        def consult(
-            colleague: Annotated[str, "同事名称（员工名称）"],
-            question: Annotated[str, "要咨询的问题或请求"],
-            context: Annotated[str | None, "可选的背景信息，帮助同事理解上下文"] = None,
+## 示例
+```python
+# 咨询代码问题
+collaborate(colleague="coder_agent", message="我在实现用户认证时遇到 JWT 过期问题，请帮我看看处理逻辑是否正确...")
+
+# 委派任务
+collaborate(colleague="researcher_agent", message="请调研市面上主流的实时通信方案（WebSocket vs SSE vs长轮询），对比优缺点并给出推荐。请详细报告你的调研过程和结论。")
+
+# 继续之前的讨论
+collaborate(colleague="coder_agent", message="根据上次讨论的建议，我修改了认证逻辑，现在请帮我审查新的实现...")
+```"""
+
+        def collaborate(
+            colleague: Annotated[str, "同事名称"],
+            message: Annotated[str, "要发送的完整消息内容"],
+            new_thread: Annotated[bool, "是否开始新对话。默认 False，继续之前的对话历史"] = False,
             config: dict | None = None,
         ) -> str:
-            """向同事咨询问题（同步版本，返回提示信息）"""
-            return "请使用异步版本 consult_colleague 进行咨询。"
+            """与同事协作（同步版本，返回提示信息）"""
+            return "请使用异步版本 collaborate 进行协作。"
 
-        async def consult_async(
+        async def collaborate_async(
             colleague: str,
-            question: str,
-            context: str | None = None,
+            message: str,
+            new_thread: bool = False,
             config: dict | None = None,
         ) -> str:
-            """向同事咨询问题（异步版本）"""
+            """与同事协作（异步版本）"""
             if not HAS_SDK:
                 return "错误：需要安装 langgraph-sdk 库才能使用此功能"
 
@@ -176,100 +205,7 @@ class AgentCommunicationMiddleware(AgentMiddleware):
                 return f"错误：未找到同事 '{colleague}'。可用同事: {available}"
 
             if colleague == self.current_employee:
-                return "提示：不能向自己咨询，请选择其他同事。"
-
-            # 获取 assistant_id
-            assistant_id = await self._get_assistant_id(colleague)
-            if not assistant_id:
-                return f"错误：无法找到 {colleague} 的 assistant_id"
-
-            # 从配置文件获取 thread_id
-            thread_info = await self.thread_manager.get_thread(colleague)
-            thread_id = thread_info.current
-
-            # 构建消息
-            message = question
-            if context:
-                message = f"[背景信息]\n{context}\n\n[问题]\n{question}"
-
-            try:
-                client = get_client(url=self.server_url)
-
-                # 运行并获取结果（线程已在 get_thread 中注册）
-                input_data = {"messages": [HumanMessage(content=message)]}
-                result_content = ""
-
-                async for chunk in client.runs.stream(
-                    thread_id,
-                    assistant_id,
-                    input=input_data,
-                ):
-                    if chunk.event == "values" and "messages" in chunk.data:
-                        msg = chunk.data["messages"][-1]
-                        if isinstance(msg, dict):
-                            result_content = msg.get("content", "")
-                        else:
-                            result_content = getattr(msg, "content", str(msg))
-
-                if result_content:
-                    return f"[{colleague} 回复]\n{result_content}"
-                return f"[{colleague}] 未返回有效内容"
-
-            except Exception as e:
-                return f"联系 {colleague} 失败: {str(e)}"
-
-        return StructuredTool.from_function(
-            func=consult,
-            coroutine=consult_async,
-            name="consult_colleague",
-            description=description,
-        )
-
-    def _create_delegate_tool(self):
-        """创建委派工具 - 将任务完全交给其他员工处理"""
-
-        employee_list = self._build_employee_list_description()
-
-        description = f"""将任务委派给其他员工独立完成。
-
-## 同事列表
-{employee_list}
-
-## 使用场景
-- 任务更适合其他专业领域的同事
-- 需要并行处理多个独立任务
-- 任务需要特定员工的技能
-
-## 特点
-- 委派后，同事会独立完成任务
-- 可以开始新对话或继续之前的工作
-- 适合需要同事独立负责的任务"""
-
-        def delegate(
-            colleague: Annotated[str, "负责该任务的同事名称"],
-            task: Annotated[str, "要委派的任务描述"],
-            new_project: Annotated[bool, "是否开始新项目（新对话）。默认 False，继续之前的工作"] = False,
-            config: dict | None = None,
-        ) -> str:
-            """委派任务给同事（同步版本，返回提示信息）"""
-            return "请使用异步版本 delegate_task 进行委派。"
-
-        async def delegate_async(
-            colleague: str,
-            task: str,
-            new_project: bool = False,
-            config: dict | None = None,
-        ) -> str:
-            """委派任务给同事（异步版本）"""
-            if not HAS_SDK:
-                return "错误：需要安装 langgraph-sdk 库才能使用此功能"
-
-            if colleague not in self.employees:
-                available = ", ".join(self.employees.keys())
-                return f"错误：未找到同事 '{colleague}'。可用同事: {available}"
-
-            if colleague == self.current_employee:
-                return "提示：不能委派给自己，请选择其他同事。"
+                return "提示：不能向自己协作，请选择其他同事。"
 
             # 获取 assistant_id
             assistant_id = await self._get_assistant_id(colleague)
@@ -277,29 +213,16 @@ class AgentCommunicationMiddleware(AgentMiddleware):
                 return f"错误：无法找到 {colleague} 的 assistant_id"
 
             # 获取或创建 thread_id
-            if new_project:
-                # 创建新线程
+            if new_thread:
                 thread_id = await self.thread_manager.create_new_thread(colleague)
             else:
-                # 使用当前线程
                 thread_info = await self.thread_manager.get_thread(colleague)
                 thread_id = thread_info.current
-
-            # 构建委派消息
-            employee = self.employees[colleague]
-            role = employee.get("role", "同事")
-            message = f"""[任务委派]
-
-作为公司的 {role}，请独立完成以下任务：
-
-{task}
-
-请详细报告你的工作过程和结果。"""
 
             try:
                 client = get_client(url=self.server_url)
 
-                # 运行并获取结果（线程已在 get_thread/create_new_thread 中注册）
+                # 直接发送消息，不添加任何固定格式
                 input_data = {"messages": [HumanMessage(content=message)]}
                 result_content = ""
 
@@ -316,16 +239,16 @@ class AgentCommunicationMiddleware(AgentMiddleware):
                             result_content = getattr(msg, "content", str(msg))
 
                 if result_content:
-                    return f"[{colleague} 完成报告]\n{result_content}"
+                    return f"[{colleague}]\n{result_content}"
                 return f"[{colleague}] 未返回有效内容"
 
             except Exception as e:
-                return f"委派给 {colleague} 失败: {str(e)}"
+                return f"与 {colleague} 协作失败: {str(e)}"
 
         return StructuredTool.from_function(
-            func=delegate,
-            coroutine=delegate_async,
-            name="delegate_task",
+            func=collaborate,
+            coroutine=collaborate_async,
+            name="collaborate",
             description=description,
         )
 
