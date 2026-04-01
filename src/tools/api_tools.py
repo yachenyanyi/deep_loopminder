@@ -302,7 +302,48 @@ list_resources_tool = StructuredTool.from_function(
     func=list_resources_sync,
     coroutine=list_resources,
     name="list_resources",
-    description="【第一步】列出可用的 MCP 工具，支持 query / page / page_size 筛选。必须先调用此工具获取可用工具列表，然后才能使用 call_tool 调用其中的工具。返回结果中的每个工具都有 name 和 description 字段，这些 name 就是 call_tool 可以使用的工具名称。",
+    description="""列出可用的 MCP 工具。
+
+## 使用流程
+1. 先调用此工具获取可用工具列表
+2. 从返回结果中选择需要的工具名称
+3. 使用 call_tool 调用选中的工具
+
+## 参数
+- query: 关键词过滤（可选，匹配 name 和 description）
+- page: 页码，从 1 开始
+- page_size: 每页数量（1-200）
+
+## 示例
+```python
+# 搜索与 fetch 相关的工具
+list_resources(query="fetch")
+
+# 分页获取工具列表
+list_resources(page=1, page_size=50)
+
+# 搜索与搜索相关的工具
+list_resources(query="search")
+```
+
+## 返回格式
+```json
+{
+    "total": 100,
+    "page": 1,
+    "page_size": 20,
+    "total_pages": 5,
+    "results": [
+        {"name": "fetch", "description": "..."},
+        ...
+    ]
+}
+```
+
+## 注意
+- 这是使用 MCP 工具的第一步，必须先调用此工具
+- 返回的 name 字段就是 call_tool 可以使用的工具名称
+""",
     args_schema=ListResourcesInput
 )
 
@@ -340,7 +381,33 @@ call_tool_tool = StructuredTool.from_function(
     func=call_tool_sync,
     coroutine=call_tool,
     name="call_tool",
-    description="【第二步】调用 MCP 工具。只能使用 list_resources 工具返回列表中存在的工具名称，不能调用未列出的工具。例如：{'tool_name': 'fetch', 'args': {'url': 'https://example.com'}}。在调用此工具前，必须先调用 list_resources 获取可用工具列表。",
+    description="""调用 MCP 工具。
+
+## 前提条件
+必须先调用 list_resources 获取可用工具列表，只能使用返回列表中存在的工具。
+
+## 参数
+- tool_name: 工具名称（必须是 list_resources 返回的）
+- args: 传递给工具的参数（字典格式）
+
+## 示例
+```python
+# 第一步：获取工具列表
+list_resources(query="fetch")
+# 返回: [{"name": "fetch", "description": "获取网页内容..."}]
+
+# 第二步：调用工具
+call_tool(tool_name="fetch", args={"url": "https://example.com"})
+
+# 调用搜索工具
+call_tool(tool_name="search", args={"query": "Python tutorial"})
+```
+
+## 注意事项
+- tool_name 必须在 list_resources 返回结果中存在，不能凭空调用
+- args 格式因工具而异，查看工具的 description 了解参数要求
+- 如果工具调用失败，检查工具名称和参数格式是否正确
+""",
     args_schema=CallToolInput
 )
 #print(asyncio.run(list_resources(query="fetch")))

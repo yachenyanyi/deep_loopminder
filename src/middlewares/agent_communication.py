@@ -414,9 +414,31 @@ check_colleague(colleague="researcher_agent", wait=True, timeout=60)
     def _create_thread_info_tool(self):
         """创建线程信息查询工具"""
 
-        description = """查询员工（代理）的线程信息，包括当前线程和历史对话。
+        description = """查询员工（代理）的线程信息。
 
-可以查看某个员工的对话历史记录，帮助了解之前的工作内容。"""
+## 参数
+- colleague: 同事名称（可选，不填则查询所有员工）
+
+## 示例
+```python
+# 查询所有员工的线程信息
+get_thread_info()
+
+# 查询特定员工的线程信息
+get_thread_info(colleague="coder_agent")
+
+# 查询研究专家的线程信息
+get_thread_info(colleague="researcher_agent")
+```
+
+## 返回内容
+- 当前线程 ID（用于与 LangGraph API 交互）
+- 历史对话数量
+
+## 用途
+- 了解员工的对话历史情况
+- 获取 thread_id 用于调试或直接 API 调用
+"""
 
         def get_thread_info(
             colleague: Annotated[str, "要查询的同事名称，不填则查询所有"] = "",

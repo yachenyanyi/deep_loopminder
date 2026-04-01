@@ -6,6 +6,32 @@ allowed-tools: Bash(playwright-cli:*)
 
 # Browser Automation with playwright-cli
 
+## 安装检查
+
+**在使用 Playwright CLI 之前，必须先检查是否已安装：**
+
+```bash
+# 检查是否安装
+playwright-cli --help
+```
+
+**如果上述命令失败（提示 command not found），请先安装：**
+
+```bash
+# 全局安装 Playwright CLI
+npm install -g @anthropic-ai/playwright-cli@latest
+
+# 安装后验证
+playwright-cli --help
+```
+
+**注意：如果 npm 全局安装失败，可以使用 npx 运行：**
+
+```bash
+npx @anthropic-ai/playwright-cli@latest --help
+npx @anthropic-ai/playwright-cli@latest open https://example.com
+```
+
 ## Quick start
 
 ```bash
