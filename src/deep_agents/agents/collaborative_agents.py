@@ -41,6 +41,10 @@ from src.deep_agents.agents.employee_registry import COLLABORATIVE_EMPLOYEES
 MEMORIES_DIR = os.path.join(WORKSPACE_DIR, "memories")
 Path(MEMORIES_DIR).mkdir(parents=True, exist_ok=True)
 
+# 确保日志目录存在（预先创建，避免在异步上下文中执行阻塞操作）
+LOGS_DIR = os.path.join(WORKSPACE_DIR, "logs")
+Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
+
 # 共享的记忆文件路径（虚拟路径）
 # 由于 root_dir=WORKSPACE_DIR，代理访问 /memories/agent.md
 # 会映射到 WORKSPACE_DIR/memories/agent.md
@@ -62,15 +66,13 @@ def create_logging_middleware(agent_name: str) -> LoggingMiddleware:
     日志输出到:
     - 控制台（INFO 级别）
     - logs/{agent_name}.log 文件（DEBUG 级别）
-    """
-    import os
-    logs_dir = os.path.join(WORKSPACE_DIR, "logs")
-    os.makedirs(logs_dir, exist_ok=True)
 
+    注意：日志目录在模块加载时预先创建，避免在异步上下文中执行阻塞操作。
+    """
     return LoggingMiddleware(
         level=logging.DEBUG,
         format="text",
-        log_file=os.path.join(logs_dir, f"{agent_name}.log"),
+        log_file=os.path.join(LOGS_DIR, f"{agent_name}.log"),
     )
 
 
