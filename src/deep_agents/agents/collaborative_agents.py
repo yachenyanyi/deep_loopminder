@@ -34,6 +34,7 @@ from src.tools.api_tools import call_tool_tool, list_resources_tool
 from src.middlewares.agent_communication import AgentCommunicationMiddleware
 from src.middlewares.shell.local_shell import local_shell_middleware
 from src.middlewares.logging import LoggingMiddleware
+from src.middlewares.human_approval import HumanApprovalMiddleware, ApprovalConfig
 from src.deep_agents.agents.employee_registry import COLLABORATIVE_EMPLOYEES
 
 
@@ -73,6 +74,36 @@ def create_logging_middleware(agent_name: str) -> LoggingMiddleware:
         level=logging.DEBUG,
         format="text",
         log_file=os.path.join(LOGS_DIR, f"{agent_name}.log"),
+    )
+
+
+def create_approval_middleware(agent_name: str) -> HumanApprovalMiddleware:
+    """为指定代理创建审批中间件
+
+    审批策略从 config/approval_policy.yaml 加载。
+    支持全自动模式（通过环境变量 APPROVAL_AUTO_MODE=true）。
+
+    中间件顺序：
+    1. LoggingMiddleware - 记录日志
+    2. HumanApprovalMiddleware - 审批敏感操作
+    3. AgentCommunicationMiddleware - 协作通信
+    4. local_shell_middleware - Shell 工具
+
+    注意：使用预创建的 LOGS_DIR 作为审计日志目录，避免异步上下文中的阻塞操作。
+    """
+    config_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        "config",
+        "approval_policy.yaml",
+    )
+    config = ApprovalConfig.from_yaml(config_path)
+
+    # 使用预创建的 LOGS_DIR 作为审计日志目录
+    config.audit_log_path = os.path.join(LOGS_DIR, "approval_audit.jsonl")
+
+    return HumanApprovalMiddleware(
+        config=config,
+        current_agent=agent_name,
     )
 
 
@@ -136,12 +167,13 @@ async def create_chat_agent():
 
     communication_middleware = create_communication_middleware("chat_agent")
     logging_middleware = create_logging_middleware("chat_agent")
+    approval_middleware = create_approval_middleware("chat_agent")
 
     return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=CHAT_AGENT_PROMPT,
-        middleware=[logging_middleware, communication_middleware, local_shell_middleware],
+        middleware=[logging_middleware, approval_middleware, communication_middleware, local_shell_middleware],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
         checkpointer=postgres_checkpointer,
@@ -183,12 +215,13 @@ async def create_coordinator_agent():
 
     communication_middleware = create_communication_middleware("coordinator_agent")
     logging_middleware = create_logging_middleware("coordinator_agent")
+    approval_middleware = create_approval_middleware("coordinator_agent")
 
     return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=COORDINATOR_AGENT_PROMPT,
-        middleware=[logging_middleware, communication_middleware, local_shell_middleware],
+        middleware=[logging_middleware, approval_middleware, communication_middleware, local_shell_middleware],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
         checkpointer=postgres_checkpointer,
@@ -232,12 +265,13 @@ async def create_coder_agent():
 
     communication_middleware = create_communication_middleware("coder_agent")
     logging_middleware = create_logging_middleware("coder_agent")
+    approval_middleware = create_approval_middleware("coder_agent")
 
     return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=CODER_AGENT_PROMPT,
-        middleware=[logging_middleware, communication_middleware, local_shell_middleware],
+        middleware=[logging_middleware, approval_middleware, communication_middleware, local_shell_middleware],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
         checkpointer=postgres_checkpointer,
@@ -321,12 +355,13 @@ async def create_researcher_agent():
 
     communication_middleware = create_communication_middleware("researcher_agent")
     logging_middleware = create_logging_middleware("researcher_agent")
+    approval_middleware = create_approval_middleware("researcher_agent")
 
     return create_deep_agent(
         model=get_default_model(),
         tools=[call_tool_tool, list_resources_tool],
         system_prompt=RESEARCHER_AGENT_PROMPT,
-        middleware=[logging_middleware, communication_middleware, local_shell_middleware],
+        middleware=[logging_middleware, approval_middleware, communication_middleware, local_shell_middleware],
         skills=["/skills/playwright-cli/"],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
@@ -378,12 +413,13 @@ async def create_assistant_agent():
 
     communication_middleware = create_communication_middleware("assistant_agent")
     logging_middleware = create_logging_middleware("assistant_agent")
+    approval_middleware = create_approval_middleware("assistant_agent")
 
     return create_deep_agent(
         model=get_default_model(),
         tools=[],
         system_prompt=ASSISTANT_AGENT_PROMPT,
-        middleware=[logging_middleware, communication_middleware, local_shell_middleware],
+        middleware=[logging_middleware, approval_middleware, communication_middleware, local_shell_middleware],
         memory=[SHARED_MEMORY_FILE],
         backend=backend,
         checkpointer=postgres_checkpointer,

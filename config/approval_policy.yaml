@@ -1,0 +1,130 @@
+# 审批策略配置（企业级安全规范）
+
+# 黑名单（绝对禁止，即使在全自动模式下也会阻止）
+blacklist:
+  - "rm -rf /"
+  - "rm -rf /*"
+  - "mkfs"
+  - "dd if=/dev/zero"
+  - "dd if=/dev/urandom"
+  - "shutdown"
+  - "reboot"
+  - "init 0"
+  - ":(){ :|:& };:"  # fork bomb
+  - "> /dev/sda"
+  - "> /dev/hda"
+  - "chmod -R 777 /"
+  - "chmod 777 /etc"
+  - "wget http://* | sh"  # 远程脚本执行
+  - "curl http://* | sh"
+  - "nc -l -p"  # netcat 监听
+  - "iptables -F"  # 清空防火墙规则
+
+# 高危操作（必须审批）
+high_risk:
+  - "rm"          # 删除文件
+  - "sudo"        # 提权
+  - "DROP"        # SQL 删除表
+  - "DELETE"      # SQL 删除
+  - "truncate"    # 清空表
+  - "chmod 777"   # 危险权限
+  - "chown"       # 改变所有权
+  - "kill -9"     # 强制杀进程
+  - "pkill"       # 杀进程
+  - "killall"     # 杀所有进程
+  - "> .env"      # 覆盖环境配置
+  - "> config/"   # 覆盖配置文件
+  - "mv .env"     # 移动敏感文件
+  - "cp .env"     # 复制敏感文件
+  - "git push --force"  # 强制推送
+  - "git reset --hard"  # 硬重置
+
+# 中危操作（需要审批）
+medium_risk:
+  - "write"
+  - "insert"
+  - "update"
+  - "send"
+  - "email"
+  - "pip install"   # 安装 Python 包
+  - "npm install"   # 安装 npm 包
+  - "apt install"   # 安装系统包
+  - "yum install"   # 安装系统包
+  - "git push"      # 推送代码
+  - "git merge"     # 合并分支
+  - "docker run"    # 运行容器
+  - "kubectl"       # Kubernetes 操作
+  - "helm"          # Helm 操作
+  - "terraform"     # Terraform 操作
+  - "ansible"       # Ansible 操作
+
+# 白名单（自动执行，不需审批）
+whitelist:
+  - "ls"
+  - "ls -la"
+  - "ls -l"
+  - "cat"
+  - "grep"
+  - "head"
+  - "tail"
+  - "find"
+  - "echo"
+  - "pwd"
+  - "which"
+  - "whoami"
+  - "date"
+  - "python -c"     # Python 单行执行
+  - "python --version"
+  - "pip list"
+  - "pip show"
+  - "git status"
+  - "git log"
+  - "git diff"
+  - "git branch"
+  - "git remote -v"
+  - "git clone"     # 克隆仓库（只读操作）
+  - "npm list"
+  - "npm version"
+  - "node --version"
+  - "docker ps"
+  - "docker images"
+  - "docker logs"
+
+# 工具级配置（覆盖命令级配置）
+tool_config:
+  run_shell_command:
+    enabled: true
+    allowed_decisions: ["approve", "edit", "reject"]
+  collaborate:
+    enabled: false  # 不需要审批（协作通信）
+  check_colleague:
+    enabled: false  # 不需要审批（查询结果）
+  get_thread_info:
+    enabled: false  # 不需要审批（查询线程信息）
+  call_tool:
+    enabled: true
+    allowed_decisions: ["approve", "reject"]  # 不允许编辑 MCP 工具参数
+  list_resources:
+    enabled: false  # 不需要审批（只是列出工具）
+
+# 审计配置
+audit:
+  log_path: "logs/approval_audit.jsonl"
+  log_level: "info"
+  # 记录保留天数（可选）
+  retention_days: 30
+
+# 全自动模式（开发/紧急模式）
+auto_mode:
+  # 启用全自动模式后，所有操作自动通过，不触发人工审批
+  enabled: false  # 默认关闭
+
+  # 全自动模式下的行为：
+  # - 黑名单：仍然阻止（安全底线，不可绕过）
+  # - 高危/中危：自动 approve，不等待人工确认
+  # - 白名单：自动执行（和正常模式一样）
+
+  # 触发方式：
+  # - 环境变量: APPROVAL_AUTO_MODE=true
+  # - 配置文件: auto_mode.enabled: true
+  # 注意：黑名单命令在全自动模式下仍然会被阻止

@@ -13,6 +13,14 @@ from .logging import (
     JSONFormatter,
     create_logging_middleware,
 )
+from .human_approval import (
+    HumanApprovalMiddleware,
+    ApprovalConfig,
+    RiskAnalyzer,
+    AuditLogger,
+    RiskLevel,
+    create_approval_middleware,
+)
 
 __all__ = [
     "full_featured_summary",
@@ -31,4 +39,11 @@ __all__ = [
     "TextFormatter",
     "JSONFormatter",
     "create_logging_middleware",
+    # Human Approval
+    "HumanApprovalMiddleware",
+    "ApprovalConfig",
+    "RiskAnalyzer",
+    "AuditLogger",
+    "RiskLevel",
+    "create_approval_middleware",
 ]
