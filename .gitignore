@@ -211,10 +211,7 @@ __marimo__/
 threads.json
 
 # 运行时产物
-workspace/
+workspace/*
+!workspace/skills/
 .langgraph_api/
-*.pckl
-
-# 运行时产物
-workspace/
 *.pckl
