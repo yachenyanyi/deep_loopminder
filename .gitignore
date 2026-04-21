@@ -214,3 +214,7 @@ threads.json
 workspace/
 .langgraph_api/
 *.pckl
+
+# 运行时产物
+workspace/
+*.pckl
