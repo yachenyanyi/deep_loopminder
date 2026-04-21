@@ -209,3 +209,8 @@ __marimo__/
 # LangGraph 运行时文件
 .langgraph_api/
 threads.json
+
+# 运行时产物
+workspace/
+.langgraph_api/
+*.pckl

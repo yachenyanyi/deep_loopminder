@@ -13,14 +13,34 @@ from .logging import (
     JSONFormatter,
     create_logging_middleware,
 )
+
+# Approval 模块（Provider 模式）
+from .approval import (
+    ApprovalProvider,
+    ApprovalRequest,
+    ApprovalDecision,
+    ApprovalReason,
+    RiskLevel,
+    ApprovalMiddleware,
+    YamlPolicyProvider,
+    AllowlistProvider,
+    RemoteApprovalProvider,
+    AuditLogger,
+    ApprovalMiddlewareConfig,
+    ApprovalProviderConfig,
+    load_approval_config,
+    resolve_provider,
+    create_approval_middleware_from_config,
+)
+
+# 兼容层（旧代码）
 from .human_approval import (
     HumanApprovalMiddleware,
     ApprovalConfig,
     RiskAnalyzer,
-    AuditLogger,
-    RiskLevel,
     create_approval_middleware,
 )
+
 
 __all__ = [
     "full_featured_summary",
@@ -39,11 +59,25 @@ __all__ = [
     "TextFormatter",
     "JSONFormatter",
     "create_logging_middleware",
-    # Human Approval
+    # Approval (Provider 模式)
+    "ApprovalProvider",
+    "ApprovalRequest",
+    "ApprovalDecision",
+    "ApprovalReason",
+    "RiskLevel",
+    "ApprovalMiddleware",
+    "YamlPolicyProvider",
+    "AllowlistProvider",
+    "RemoteApprovalProvider",
+    "AuditLogger",
+    "ApprovalMiddlewareConfig",
+    "ApprovalProviderConfig",
+    "load_approval_config",
+    "resolve_provider",
+    "create_approval_middleware_from_config",
+    # 兼容层
     "HumanApprovalMiddleware",
     "ApprovalConfig",
     "RiskAnalyzer",
-    "AuditLogger",
-    "RiskLevel",
     "create_approval_middleware",
 ]

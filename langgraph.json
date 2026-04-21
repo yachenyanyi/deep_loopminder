@@ -8,6 +8,7 @@
   "graphs": {
     "tools_Assistant": "./src/agents/agent.py:tools_Assistant",
     "Intelligent_Assistant": "./src/agents/agent.py:Intelligent_Assistant",
+    "intelligent_deep_agent": "./src/deep_agents/agents/intelligent_local.py:create_intelligent_deep_agent",
     "chat_agent": "./src/deep_agents/agents/collaborative_agents.py:create_chat_agent",
     "coordinator_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coordinator_agent",
     "coder_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coder_agent",
@@ -18,5 +19,15 @@
   "checkpointer": {
     "type": "postgres",
     "connection_string": "LANGGRAPH_POSTGRES_URI"
+  },
+  "watch": {
+    "exclude": [
+      ".langgraph_api/**",
+      "logs/**",
+      "workspace/**",
+      "threads.json",
+      "*.pckl",
+      "*.jsonl"
+    ]
   }
 }

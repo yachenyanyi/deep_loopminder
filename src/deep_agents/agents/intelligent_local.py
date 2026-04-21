@@ -1,5 +1,10 @@
+import os
 import asyncio
+import logging
+from pathlib import Path
+
 from deepagents import create_deep_agent
+from src.deep_agents.create_custom_agents.deep_custom_agent import create_custom_agent
 from deepagents.backends import FilesystemBackend, StateBackend, StoreBackend, CompositeBackend
 from src.models.llm import get_default_model
 from src.backend.backend import NamespacedStoreBackend
@@ -7,7 +12,24 @@ from src.agents.agent import tools_Assistant
 from src.deep_agents.db import init_postgres_checkpointer, init_postgres_store
 from src.deep_agents.config import WORKSPACE_DIR, SKILLS_REPO_DIR
 from src.middlewares.shell import local_shell_middleware
+from src.middlewares.summarization.programming_summary import full_featured_summary
+from src.middlewares.human_approval import HumanApprovalMiddleware, ApprovalConfig
 
+# 确保日志目录存在（避免异步上下文中的阻塞操作）
+LOGS_DIR = os.path.join(WORKSPACE_DIR, "logs")
+Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
+
+
+def create_approval_middleware() -> HumanApprovalMiddleware:
+    """创建审批中间件"""
+    config_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        "config",
+        "approval_policy.yaml",
+    )
+    config = ApprovalConfig.from_yaml(config_path)
+    config.audit_log_path = os.path.join(LOGS_DIR, "approval_audit.jsonl")
+    return HumanApprovalMiddleware(config=config, current_agent="intelligent_deep_agent")
 async def create_intelligent_deep_agent():
 
     postgres_checkpointer = await init_postgres_checkpointer()
@@ -21,7 +43,7 @@ async def create_intelligent_deep_agent():
         FilesystemBackend, root_dir=SKILLS_REPO_DIR, virtual_mode=True
     )
 
-    return create_deep_agent(
+    return create_custom_agent(
         model=get_default_model(),
         tools=[],
         system_prompt="""你是一个高级AI助手，负责帮用户解决问题。
@@ -102,7 +124,7 @@ async def create_intelligent_deep_agent():
         store=postgres_store,
         checkpointer=postgres_checkpointer,
         skills=["/skills/frontend-design/","/skills/ocr-batch"],
-        middleware=[local_shell_middleware],
+        middleware=[create_approval_middleware(), full_featured_summary, local_shell_middleware],
 
         subagents=[
             {
