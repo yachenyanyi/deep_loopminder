@@ -33,6 +33,9 @@ from .approval import (
     create_approval_middleware_from_config,
 )
 
+# 用户可选模型/提示词中间件
+from .user_configurable import UserConfigurableMiddleware
+
 # 兼容层（旧代码）
 from .human_approval import (
     HumanApprovalMiddleware,
@@ -75,6 +78,8 @@ __all__ = [
     "load_approval_config",
     "resolve_provider",
     "create_approval_middleware_from_config",
+    # User Configurable
+    "UserConfigurableMiddleware",
     # 兼容层
     "HumanApprovalMiddleware",
     "ApprovalConfig",

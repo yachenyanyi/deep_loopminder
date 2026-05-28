@@ -11,6 +11,7 @@ from src.backend.backend import NamespacedStoreBackend
 from src.agents.agent import tools_Assistant
 from src.deep_agents.db import init_postgres_checkpointer, init_postgres_store
 from src.deep_agents.config import WORKSPACE_DIR, SKILLS_REPO_DIR
+from langchain_quickjs import CodeInterpreterMiddleware
 from src.middlewares.shell import local_shell_middleware
 from src.middlewares.summarization.programming_summary import full_featured_summary
 from src.middlewares.human_approval import HumanApprovalMiddleware, ApprovalConfig
@@ -124,7 +125,12 @@ async def create_intelligent_deep_agent():
         store=postgres_store,
         checkpointer=postgres_checkpointer,
         skills=["/skills/frontend-design/","/skills/ocr-batch"],
-        middleware=[create_approval_middleware(), full_featured_summary, local_shell_middleware],
+        middleware=[
+            create_approval_middleware(),
+            full_featured_summary,
+            local_shell_middleware,
+            CodeInterpreterMiddleware(ptc=["task"]),
+        ],
 
         subagents=[
             {
