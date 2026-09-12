@@ -58,7 +58,7 @@ class ThreadConfigManager:
         else:
             # 默认在项目根目录
             # 路径: thread_config.py -> middlewares -> src -> deep_loopminder
-            self.config_path = Path(__file__).parent.parent.parent / self.DEFAULT_CONFIG_NAME
+            self.config_path = Path(__file__).parent.parent.parent.parent / self.DEFAULT_CONFIG_NAME
 
         self.server_url = server_url
         self._config: dict[str, dict] = {}

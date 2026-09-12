@@ -4,7 +4,7 @@
 动态替换本次调用的模型和系统提示词。
 
 使用方式：
-    from src.middlewares.user_configurable import UserConfigurableMiddleware
+    from src.middlewares.agent.user_configurable import UserConfigurableMiddleware
 
     agent = create_deep_agent(
         model="deepseek:deepseek-chat",

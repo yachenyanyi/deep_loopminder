@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+from langchain_anthropic import ChatAnthropic
 from langchain_community.chat_models import ChatZhipuAI
 from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
@@ -134,7 +135,7 @@ def get_deepseek_model() -> Optional[ChatDeepSeek]:
         return None
 
     _models["deepseek"] = ChatDeepSeek(
-        model="deepseek-chat",
+        model="deepseek-v4-flash",
         temperature=1.5
     )
     return _models["deepseek"]
@@ -157,6 +158,33 @@ def get_doubao_model() -> Optional[ChatOpenAI]:
     return _models["doubao"]
 
 
+def get_anthropic_model() -> Optional[ChatAnthropic]:
+    """获取 Anthropic 模型（通过 DashScope 代理）
+
+    环境变量:
+        ANTHROPIC_AUTH_TOKEN: API Key
+        ANTHROPIC_BASE_URL: 代理地址，默认 https://dashscope.aliyuncs.com/apps/anthropic
+        ANTHROPIC_MODEL: 模型名，默认 deepseek-v4-flash
+    """
+    if "anthropic" in _models:
+        return _models["anthropic"]
+
+    api_key = os.getenv("ANTHROPIC_AUTH_TOKEN", "")
+    if not api_key:
+        return None
+
+    base_url = os.getenv("ANTHROPIC_BASE_URL", "https://dashscope.aliyuncs.com/apps/anthropic")
+    model = os.getenv("ANTHROPIC_MODEL", "deepseek-v4-flash")
+
+    _models["anthropic"] = ChatAnthropic(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=1.5,
+    )
+    return _models["anthropic"]
+
+
 # ============================================================================
 # 默认模型 - 按优先级自动选择
 # ============================================================================
@@ -164,7 +192,7 @@ def get_doubao_model() -> Optional[ChatOpenAI]:
 def get_default_model():
     """
     获取默认模型，按优先级自动选择可用模型：
-    1. DeepSeek (推荐，便宜好用)
+    1. Anthropic (通过 DashScope 代理，主力)
     2. OpenRouter (多模型支持)
     3. Ollama (本地，无需 API Key)
     """
@@ -172,9 +200,9 @@ def get_default_model():
         return _models["default"]
 
     # 按优先级尝试
-    model = get_deepseek_model()
+    model = get_anthropic_model()
     if model:
-        print("✅ 使用 DeepSeek 模型")
+        print("✅ 使用 Anthropic 模型 (DashScope 代理)")
         _models["default"] = model
         return model
 
@@ -230,6 +258,10 @@ class _ModelProxy:
     def doubao(self):
         return get_doubao_model()
 
+    @property
+    def anthropic(self):
+        return get_anthropic_model()
+
 
 # 导出
 models = _ModelProxy()
@@ -253,6 +285,7 @@ default_model = _DefaultModelProxy()
 def list_available_models() -> dict:
     """列出所有可用模型"""
     return {
+        "anthropic": get_anthropic_model() is not None,
         "deepseek": get_deepseek_model() is not None,
         "open_router": get_open_router_model() is not None,
         "gpt": get_gpt_model() is not None,

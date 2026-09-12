@@ -17,7 +17,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import StructuredTool
 from langchain_core.messages import HumanMessage
 
-from .thread_config import get_thread_config_manager
+from ..agent.thread_config import get_thread_config_manager
 
 try:
     from langgraph_sdk import get_client
@@ -44,7 +44,7 @@ class AgentCommunicationMiddleware(AgentMiddleware):
 
     使用方法：
     ```python
-    from src.middlewares.agent_communication import AgentCommunicationMiddleware, Employee
+    from src.middlewares.communication import AgentCommunicationMiddleware, Employee
 
     employees = [
         Employee(
@@ -141,16 +141,26 @@ class AgentCommunicationMiddleware(AgentMiddleware):
 ## 参数说明
 - `colleague`: 选择专业领域匹配的同事
 - `message`: 你要发送的完整消息（自行组织内容）
-- `new_thread`: 是否开始新对话（默认 False，继续之前对话）
+- `new_thread`: 是否开始新对话（默认 False）
+
+  **`False`（默认）— 继续对话：**
+  复用已有的对话线程，同事能看到之前的聊天记录，上下文连贯。
+  适合同一个项目的持续协作，多次沟通不用重述背景。
+
+  **`True` — 开启全新对话：**
+  创建一个新线程，同事从头开始，看不到之前的对话。
+  适合以下场景：
+  - **任务不相关：** 上一个任务和当前任务毫无关系，放在一起容易混淆
+  - **并发派单：** 同时派多个独立任务给同一个同事，各跑各的不互相打断
+  - **隐私隔离：** 不想让同事看到之前聊过的敏感内容
 
 ## 示例
 ```python
-# 发送消息
-collaborate(colleague="researcher_agent", message="请调研...")
-# 返回: run_id = "xxx", thread_id = "yyy"
+# 继续之前的对话（默认）
+collaborate(colleague="coder_agent", message="把上个脚本改一下，加个重试机制")
 
-# 然后查询结果
-check_colleague(colleague="researcher_agent", wait=True, timeout=60)
+# 开启新对话，派一个独立任务
+collaborate(colleague="coder_agent", message="帮我写一个排序算法", new_thread=True)
 ```"""
 
         def collaborate(
@@ -250,7 +260,20 @@ check_colleague(colleague="researcher_agent", wait=True, timeout=60)
 ## 返回状态
 - 有回复：返回同事的回答
 - 处理中：返回当前状态
-- 出错：返回错误信息"""
+- 出错：返回错误信息
+
+## 示例
+```python
+# 发送任务
+result = collaborate(colleague="coder_agent", message="帮我写个排序算法", new_thread=True)
+# 返回: run_id = "xxx", thread_id = "yyy"
+
+# 等待同事完成并获取结果
+check_colleague(colleague="coder_agent", run_id="xxx", wait=True, timeout=120)
+
+# 只检查状态，不等待
+check_colleague(colleague="coder_agent", run_id="xxx", wait=False)
+```"""
 
         def check_colleague(
             colleague: Annotated[str, "同事名称"],

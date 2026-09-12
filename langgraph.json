@@ -13,7 +13,8 @@
     "coordinator_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coordinator_agent",
     "coder_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coder_agent",
     "researcher_agent": "./src/deep_agents/agents/collaborative_agents.py:create_researcher_agent",
-    "assistant_agent": "./src/deep_agents/agents/collaborative_agents.py:create_assistant_agent"
+    "assistant_agent": "./src/deep_agents/agents/collaborative_agents.py:create_assistant_agent",
+    "teacher_agent": "./src/deep_agents/agents/teacher_agent.py:create_teacher_agent"
   },
   "env": ".env",
   "checkpointer": {

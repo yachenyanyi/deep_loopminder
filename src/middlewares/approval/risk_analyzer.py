@@ -67,6 +67,35 @@ class ApprovalConfig:
         self.whitelist = whitelist or self.DEFAULT_WHITELIST
         self.tool_config = tool_config or {}
         self.auto_mode_enabled = auto_mode_enabled
+        self.audit_log_path = "logs/approval_audit.jsonl"  # 默认审计日志路径
+
+    @classmethod
+    def from_yaml(cls, config_path: str) -> "ApprovalConfig":
+        """从 YAML 文件加载配置"""
+        import yaml
+        from pathlib import Path
+        import logging
+
+        path = Path(config_path)
+        if not path.exists():
+            logging.warning(f"审批配置文件不存在: {config_path}，使用默认配置")
+            return cls()
+
+        try:
+            with open(path, encoding="utf-8") as f:
+                yaml_config = yaml.safe_load(f) or {}
+
+            return cls(
+                blacklist=yaml_config.get("blacklist"),
+                high_risk=yaml_config.get("high_risk"),
+                medium_risk=yaml_config.get("medium_risk"),
+                whitelist=yaml_config.get("whitelist"),
+                tool_config=yaml_config.get("tool_config"),
+                auto_mode_enabled=yaml_config.get("auto_mode", {}).get("enabled", False),
+            )
+        except Exception as e:
+            logging.error(f"加载审批配置失败: {e}，使用默认配置")
+            return cls()
 
     def is_tool_enabled(self, tool_name: str) -> bool:
         """检查工具是否启用审批"""
@@ -107,7 +136,7 @@ class RiskAnalyzer:
             return RiskLevel.LOW
 
         # 根据工具类型分析
-        if tool_name in ["run_shell_command", "shell"]:
+        if tool_name in ["run_shell_command", "shell", "execute"]:
             return self._analyze_shell_command(args.get("command", ""))
         elif tool_name == "call_tool":
             return self._analyze_mcp_tool(args.get("tool_name", ""), args.get("args", {}))

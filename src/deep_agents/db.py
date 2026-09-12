@@ -1,8 +1,14 @@
 import asyncio
+import os
+
+from dotenv import load_dotenv
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.memory import InMemoryStore
 from langgraph.store.postgres import AsyncPostgresStore
+
+# 加载 .env 文件
+load_dotenv()
 
 # 全局PostgreSQL实例和连接管理
 global_checkpointer = None
@@ -24,7 +30,7 @@ async def init_postgres_checkpointer():
         if global_checkpointer is not None:
             return global_checkpointer
 
-        DB_URI = 'postgresql://postgres:11226647jqk@localhost:5432/postgres?sslmode=disable'
+        DB_URI = os.environ.get("LANGGRAPH_POSTGRES_URI", "")
 
         try:
             postgres_checkpointer_connection = AsyncPostgresSaver.from_conn_string(DB_URI)
@@ -50,7 +56,7 @@ async def init_postgres_store():
         if global_store is not None:
             return global_store
 
-        DB_URI = 'postgresql://postgres:11226647jqk@localhost:5432/postgres?sslmode=disable'
+        DB_URI = os.environ.get("LANGGRAPH_POSTGRES_URI", "")
 
         try:
             postgres_store_connection = AsyncPostgresStore.from_conn_string(DB_URI)

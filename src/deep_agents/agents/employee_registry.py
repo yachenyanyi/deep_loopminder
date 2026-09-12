@@ -4,7 +4,7 @@
 定义所有协作智能体的 Employee 配置，用于 AgentCommunicationMiddleware。
 """
 
-from src.middlewares.agent_communication import Employee
+from src.middlewares.communication import Employee
 
 
 COLLABORATIVE_EMPLOYEES: list[Employee] = [

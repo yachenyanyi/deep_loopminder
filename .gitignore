@@ -215,3 +215,14 @@ workspace/*
 !workspace/skills/
 .langgraph_api/
 *.pckl
+
+# 本地目录，不提交
+.vscode/
+doc/
+docs/
+frontend/
+logs/
+skills_repo/
+tests/
+test.jsonl
+大赛大大.zip

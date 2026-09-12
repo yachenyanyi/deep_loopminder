@@ -8,7 +8,7 @@
 
 import json
 import logging
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ToolCallRequest
@@ -25,6 +25,7 @@ from src.middlewares.approval.provider import ApprovalProvider
 from src.middlewares.approval.request import ApprovalRequest
 from src.middlewares.approval.decision import ApprovalDecision
 from src.middlewares.approval.audit_logger import AuditLogger
+from src.middlewares.approval.builtin import YamlPolicyProvider
 
 
 class ApprovalMiddleware(AgentMiddleware):
@@ -54,13 +55,23 @@ class ApprovalMiddleware(AgentMiddleware):
 
     def __init__(
         self,
-        provider: ApprovalProvider,
+        provider: ApprovalProvider | None = None,
         *,
+        config: Any | None = None,  # 兼容旧代码
         fail_closed: bool = True,
         audit_logger: AuditLogger | None = None,
         current_agent: str = "unknown",
     ):
         super().__init__()
+
+        # 兼容旧的构造方式: HumanApprovalMiddleware(config=config, ...)
+        if config is not None and provider is None:
+            provider = YamlPolicyProvider(config=config)
+            audit_logger = audit_logger or AuditLogger(getattr(config, "audit_log_path", "logs/approval_audit.jsonl"))
+
+        if provider is None:
+            raise ValueError("必须提供 provider 或 config")
+
         self.provider = provider
         self.fail_closed = fail_closed
         self.audit_logger = audit_logger or AuditLogger()

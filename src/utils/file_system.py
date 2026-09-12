@@ -16,8 +16,8 @@ from src.deep_agents import get_postgres_store
 
 router = APIRouter(prefix="/files", tags=["files"])
 
-# 数据库连接配置 (从环境变量或默认值获取)
-DB_URI = os.getenv("DATABASE_URL", "postgresql://postgres:11226647jqk@localhost:5432/postgres")
+# 数据库连接配置 (从环境变量获取)
+DB_URI = os.getenv("DATABASE_URL") or os.getenv("LANGGRAPH_POSTGRES_URI", "")
 engine = create_engine(DB_URI, pool_pre_ping=True)
 
 

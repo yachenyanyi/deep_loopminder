@@ -144,7 +144,6 @@ def create_custom_agent(
                 backend=backend,
                 subagents=all_subagents,
             ),
-            create_summarization_middleware(model, backend),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),
         ]

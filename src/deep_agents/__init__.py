@@ -17,6 +17,8 @@ from .agents import (
     create_intelligent_deep_agent,
     create_role_playing_agent,
     create_basic_filesystem_agent,
+    # B站教授代理
+    create_teacher_agent,
     # 协作智能体
     create_chat_agent,
     create_coordinator_agent,
@@ -47,6 +49,8 @@ __all__ = [
     "create_intelligent_deep_agent",
     "create_role_playing_agent",
     "create_basic_filesystem_agent",
+    # B站教授代理
+    "create_teacher_agent",
     # 协作智能体
     "create_chat_agent",
     "create_coordinator_agent",
