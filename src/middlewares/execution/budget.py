@@ -40,8 +40,9 @@ class BudgetContext:
 
     ``max_tokens`` is the trusted ceiling for this scope. ``consumed_tokens``
     only contains machine-readable usage that could actually be measured.
-    Unknown usage is represented by ``usage_unverifiable`` rather than being
-    silently converted to zero.
+    Unknown or partial usage is represented by ``usage_unverifiable`` and
+    conservatively closes remaining capacity rather than treating uncertainty
+    as verified zero cost.
     """
 
     scope_id: str
@@ -59,20 +60,23 @@ class BudgetContext:
 
     @property
     def remaining_tokens(self) -> int:
-        """Return measurable remaining capacity without going below zero."""
+        """Return trusted remaining capacity, failing closed on uncertain usage."""
 
+        if self.usage_unverifiable:
+            return 0
         return max(0, self.max_tokens - self.consumed_tokens)
 
     @property
     def exhausted(self) -> bool:
-        """Return whether measured usage has reached the trusted ceiling."""
+        """Return whether no trusted capacity remains for another expensive leg."""
 
         return self.remaining_tokens == 0
 
     def narrow(self, *, scope_id: str, requested_max_tokens: int | None = None) -> "BudgetContext":
         """Create a child envelope that can only narrow the parent's remainder.
 
-        A child request is never authority to enlarge the parent budget.
+        A child request is never authority to enlarge the parent budget. If the
+        parent's usage is uncertain, the child receives no trusted capacity.
         """
 
         if not scope_id:

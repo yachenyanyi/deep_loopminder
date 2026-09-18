@@ -11,7 +11,7 @@ def test_child_budget_can_only_narrow_parent_remaining_capacity():
     assert narrower.max_tokens == 300
 
 
-def test_unknown_usage_is_not_silently_treated_as_verified_zero():
+def test_unknown_usage_fails_closed_instead_of_becoming_free_capacity():
     budget = BudgetContext(scope_id="workflow", max_tokens=1000)
 
     charged = budget.charge(
@@ -19,17 +19,23 @@ def test_unknown_usage_is_not_silently_treated_as_verified_zero():
     )
 
     assert charged.consumed_tokens == 0
-    assert charged.remaining_tokens == 1000
+    assert charged.remaining_tokens == 0
+    assert charged.exhausted is True
     assert charged.usage_unverifiable is True
 
+    child = charged.narrow(scope_id="child", requested_max_tokens=500)
+    assert child.max_tokens == 0
+    assert child.remaining_tokens == 0
 
-def test_partial_usage_charges_measured_tokens_and_marks_uncertainty():
+
+def test_partial_usage_charges_measured_tokens_but_fails_closed_on_unknown_remainder():
     budget = BudgetContext(scope_id="workflow", max_tokens=1000)
 
     charged = budget.charge(UsageRecord(tokens=120, confidence=UsageConfidence.PARTIAL))
 
     assert charged.consumed_tokens == 120
-    assert charged.remaining_tokens == 880
+    assert charged.remaining_tokens == 0
+    assert charged.exhausted is True
     assert charged.usage_unverifiable is True
 
 
