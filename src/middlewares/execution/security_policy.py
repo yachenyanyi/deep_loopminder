@@ -72,6 +72,22 @@ class AuthorizationResult:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class EffectiveToolCall:
+    """Final execution identity after any HITL edit/resume decision."""
+
+    original_tool: str
+    effective_tool: str
+
+    def __post_init__(self) -> None:
+        if not self.original_tool.strip() or not self.effective_tool.strip():
+            raise ValueError("tool identities must be non-empty")
+
+    @property
+    def identity_changed(self) -> bool:
+        return self.original_tool != self.effective_tool
+
+
 def authorize(
     *,
     required_capability: str,
@@ -87,6 +103,36 @@ def authorize(
     if required_capability not in enforcement.enforced_capabilities:
         return AuthorizationResult(SecurityDecision.CAPABILITY_GAP, "surface_does_not_enforce_capability")
     return AuthorizationResult(SecurityDecision.ALLOW, "authorized_and_enforceable")
+
+
+def authorize_effective_tool_call(
+    *,
+    call: EffectiveToolCall,
+    required_capability: str,
+    effective_grant: SecurityGrant,
+    enforcement: EnforcementFact,
+    allow_cross_tool_edit: bool = False,
+    target_human_approval_proven: bool = False,
+    target_requires_human_approval: bool = False,
+) -> AuthorizationResult:
+    """Authorize the final tool identity rather than trusting an earlier review.
+
+    This does not implement HITL or resume. It is a boundary invariant for the
+    execution adapter: a human review of Tool A is not authority for edited
+    Tool B. If cross-tool editing is disabled, identity changes fail closed. If
+    it is enabled and the target requires human approval, current target
+    approval must be independently proven before normal capability checks.
+    """
+
+    if call.identity_changed and not allow_cross_tool_edit:
+        return AuthorizationResult(SecurityDecision.DENY, "cross_tool_edit_forbidden")
+    if call.identity_changed and target_requires_human_approval and not target_human_approval_proven:
+        return AuthorizationResult(SecurityDecision.DENY, "target_human_approval_unproven")
+    return authorize(
+        required_capability=required_capability,
+        effective_grant=effective_grant,
+        enforcement=enforcement,
+    )
 
 
 def effective_grant(
