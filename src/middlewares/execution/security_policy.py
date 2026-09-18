@@ -48,15 +48,21 @@ class EnforcementFact:
 
     surface: str
     capability: EnforcementCapability
+    enforced_capabilities: frozenset[str]
     mechanism: str | None = None
     gap: str | None = None
 
     def __post_init__(self) -> None:
         if not self.surface.strip():
             raise ValueError("surface must be non-empty")
-        if self.capability is EnforcementCapability.ENFORCEABLE and not self.mechanism:
-            raise ValueError("enforceable surface requires a mechanism")
-        if self.capability is not EnforcementCapability.ENFORCEABLE and not self.gap:
+        if any(not item.strip() for item in self.enforced_capabilities):
+            raise ValueError("enforced_capabilities must contain non-empty strings")
+        if self.capability is EnforcementCapability.ENFORCEABLE:
+            if not self.mechanism:
+                raise ValueError("enforceable surface requires a mechanism")
+            if not self.enforced_capabilities:
+                raise ValueError("enforceable surface requires enforced capabilities")
+        elif not self.gap:
             raise ValueError("partial/unsupported surface requires an explicit gap")
 
 
@@ -72,12 +78,14 @@ def authorize(
     effective_grant: SecurityGrant,
     enforcement: EnforcementFact,
 ) -> AuthorizationResult:
-    """Fail closed unless both authority and enforcement are currently proven."""
+    """Fail closed unless both authority and matching enforcement are proven."""
 
     if not effective_grant.allows(required_capability):
         return AuthorizationResult(SecurityDecision.DENY, "capability_not_granted")
     if enforcement.capability is not EnforcementCapability.ENFORCEABLE:
         return AuthorizationResult(SecurityDecision.CAPABILITY_GAP, "enforcement_unproven")
+    if required_capability not in enforcement.enforced_capabilities:
+        return AuthorizationResult(SecurityDecision.CAPABILITY_GAP, "surface_does_not_enforce_capability")
     return AuthorizationResult(SecurityDecision.ALLOW, "authorized_and_enforceable")
 
 
