@@ -8,7 +8,6 @@ surface can truthfully enforce a requested policy.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
 
 
 class EnforcementCapability(str, Enum):
