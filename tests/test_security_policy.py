@@ -1,11 +1,13 @@
 import pytest
 
 from src.middlewares.execution.security_policy import (
+    EffectiveToolCall,
     EnforcementCapability,
     EnforcementFact,
     SecurityDecision,
     SecurityGrant,
     authorize,
+    authorize_effective_tool_call,
     effective_grant,
 )
 
@@ -81,6 +83,56 @@ def test_authorized_and_matching_enforcement_allows_execution():
         required_capability="fs:read",
         effective_grant=grant("fs:read"),
         enforcement=enforcement,
+    )
+    assert result.decision is SecurityDecision.ALLOW
+
+
+def test_cross_tool_hitl_edit_is_denied_by_default():
+    result = authorize_effective_tool_call(
+        call=EffectiveToolCall("tool_a", "tool_b"),
+        required_capability="tool:b",
+        effective_grant=grant("tool:b"),
+        enforcement=fact("tool-boundary", EnforcementCapability.ENFORCEABLE, "tool:b", mechanism="wrap_tool_call"),
+    )
+    assert result.decision is SecurityDecision.DENY
+    assert result.reason == "cross_tool_edit_forbidden"
+
+
+def test_cross_tool_edit_cannot_reuse_original_human_review():
+    result = authorize_effective_tool_call(
+        call=EffectiveToolCall("tool_a", "tool_b"),
+        required_capability="tool:b",
+        effective_grant=grant("tool:b"),
+        enforcement=fact("tool-boundary", EnforcementCapability.ENFORCEABLE, "tool:b", mechanism="wrap_tool_call"),
+        allow_cross_tool_edit=True,
+        target_requires_human_approval=True,
+        target_human_approval_proven=False,
+    )
+    assert result.decision is SecurityDecision.DENY
+    assert result.reason == "target_human_approval_unproven"
+
+
+def test_cross_tool_edit_uses_target_capability_not_original_capability():
+    result = authorize_effective_tool_call(
+        call=EffectiveToolCall("tool_a", "tool_b"),
+        required_capability="tool:b",
+        effective_grant=grant("tool:a"),
+        enforcement=fact("tool-boundary", EnforcementCapability.ENFORCEABLE, "tool:b", mechanism="wrap_tool_call"),
+        allow_cross_tool_edit=True,
+    )
+    assert result.decision is SecurityDecision.DENY
+    assert result.reason == "capability_not_granted"
+
+
+def test_cross_tool_edit_can_proceed_only_after_target_policy_is_proven():
+    result = authorize_effective_tool_call(
+        call=EffectiveToolCall("tool_a", "tool_b"),
+        required_capability="tool:b",
+        effective_grant=grant("tool:b"),
+        enforcement=fact("tool-boundary", EnforcementCapability.ENFORCEABLE, "tool:b", mechanism="wrap_tool_call"),
+        allow_cross_tool_edit=True,
+        target_requires_human_approval=True,
+        target_human_approval_proven=True,
     )
     assert result.decision is SecurityDecision.ALLOW
 
