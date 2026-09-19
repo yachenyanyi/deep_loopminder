@@ -2,7 +2,7 @@
 
 Semantic grading, structured-output parsing, task lifecycle, persistence, and
 review execution remain owned by official LangChain/LangGraph/Deep Agents
-mechanisms.  This module only evaluates trusted facts already produced by
+mechanisms. This module only evaluates trusted facts already produced by
 those runtimes/providers.
 """
 
@@ -80,6 +80,26 @@ def validate_evidence(*, current_subject: SubjectRef, evidence: EvidenceFact | N
     if not evidence.passed:
         return ValidationResult(ValidationStatus.FAIL, "subject_failed")
     return ValidationResult(ValidationStatus.PASS, "current_subject_passed")
+
+
+def validate_rubric_terminal_status(*, status: str | None) -> ValidationResult:
+    """Interpret an official RubricMiddleware terminal fact without re-grading.
+
+    Callers must supply the trusted ``_rubric_status``/callback/stream outcome,
+    never infer completion from the last AIMessage. ``grader_error`` is an
+    availability failure; rubric rejection or exhausted revision budget is a
+    validation failure.
+    """
+
+    if status is None:
+        return ValidationResult(ValidationStatus.UNAVAILABLE, "rubric_status_unavailable")
+    if status == "satisfied":
+        return ValidationResult(ValidationStatus.PASS, "rubric_satisfied")
+    if status == "grader_error":
+        return ValidationResult(ValidationStatus.UNAVAILABLE, "rubric_grader_error")
+    if status in {"failed", "max_iterations_reached"}:
+        return ValidationResult(ValidationStatus.FAIL, f"rubric_{status}")
+    return ValidationResult(ValidationStatus.UNAVAILABLE, "rubric_status_not_terminal")
 
 
 def validate_required_mechanism(*, required: bool, observed: bool | None) -> Conformance | None:
