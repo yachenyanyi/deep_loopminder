@@ -93,3 +93,31 @@ def test_current_subject_independent_approval_passes():
     result = validate_independent_review(current_subject=subject(), review=review, required=True)
     assert result.status is ValidationStatus.PASS
     assert result.independence is Independence.INDEPENDENT
+
+
+def test_correctness_pass_does_not_override_unverifiable_independence():
+    correctness = validate_evidence(
+        current_subject=subject(),
+        evidence=EvidenceFact(subject(), True, "test:pass"),
+    )
+    review = ReviewFact(subject(), "worker:1", None, True, "review:unknown")
+    independence = validate_independent_review(
+        current_subject=subject(), review=review, required=True
+    )
+    assert correctness.status is ValidationStatus.PASS
+    assert independence.status is ValidationStatus.UNAVAILABLE
+    assert independence.independence is Independence.UNVERIFIABLE
+
+
+def test_independent_review_pass_does_not_override_correctness_failure():
+    correctness = validate_evidence(
+        current_subject=subject(),
+        evidence=EvidenceFact(subject(), False, "test:fail"),
+    )
+    review = ReviewFact(subject(), "worker:1", "worker:2", True, "review:pass")
+    independence = validate_independent_review(
+        current_subject=subject(), review=review, required=True
+    )
+    assert correctness.status is ValidationStatus.FAIL
+    assert independence.status is ValidationStatus.PASS
+    assert independence.independence is Independence.INDEPENDENT
