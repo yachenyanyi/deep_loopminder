@@ -70,6 +70,7 @@ class ProviderOperationFact:
     receipt_ref: str | None = None
 
     def __post_init__(self) -> None:
+        """Validate the provider operation identity and normalized outcome."""
         if not self.operation_id.strip():
             raise ValueError("operation_id must be non-empty")
         if self.outcome not in {None, "completed", "failed", "running", "unknown"}:
@@ -122,6 +123,7 @@ class GenerationFact:
     provider_fencing_guaranteed: bool = False
 
     def __post_init__(self) -> None:
+        """Require non-empty opaque generation identities."""
         if not self.current_generation.strip():
             raise ValueError("current_generation must be non-empty")
         if not self.result_generation.strip():
@@ -138,7 +140,6 @@ class GenerationAuthority:
 
 def reconcile_operation(fact: ProviderOperationFact) -> ReconcileAction:
     """Choose the safest action without blindly replaying external mutation."""
-
     if not fact.lookup_supported:
         return ReconcileAction.PRESERVE_UNKNOWN
     if fact.outcome == "completed":
@@ -152,7 +153,6 @@ def reconcile_operation(fact: ProviderOperationFact) -> ReconcileAction:
 
 def execution_resume_capability(fact: ExecutionResumeFact) -> ResumeCapability:
     """Evaluate provider execution resume capability from provider facts only."""
-
     if not fact.lookup_supported or fact.execution_found is None:
         return ResumeCapability.UNVERIFIABLE
     if not fact.execution_found:
@@ -169,7 +169,6 @@ def cancellation_safety(fact: CancellationFact) -> CancellationSafety:
     it from request delivery, stream termination, or even execution termination
     because external side effects may still require operation reconciliation.
     """
-
     if fact.commit_safe is True:
         return CancellationSafety.COMMIT_SAFE
     if fact.commit_safe is False:
@@ -186,7 +185,6 @@ def generation_authority(fact: GenerationFact) -> GenerationAuthority:
     lease, generation, CAS, or conditional-write guarantee; a local token alone
     must not be advertised as strong fencing.
     """
-
     fencing = (
         FencingStrength.STRONG
         if fact.provider_fencing_guaranteed
