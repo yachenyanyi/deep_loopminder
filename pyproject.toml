@@ -13,6 +13,7 @@ dependencies = [
     "langchain>=0.3.9",
     "langchain-ollama>=0.1.0",
     "langchain-openai>=0.1.22",
+    "langchain-anthropic>=0.1.23",
     "langchain-fireworks>=0.1.7",
     "langchain-deepseek>=0.1.0",
     "langchain-google-genai>=2.0.0",
