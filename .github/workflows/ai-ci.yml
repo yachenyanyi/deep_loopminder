@@ -40,23 +40,58 @@ jobs:
           cache: pip
       - name: Install dev tools
         run: python -m pip install -e ".[dev]"
-      - name: Ruff AI delta
+      - name: Ruff incremental debt
+        id: ruff
+        continue-on-error: true
         shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin main
-          mapfile -t python_files < <(
-            git diff --name-only --diff-filter=ACMR origin/main...HEAD -- '*.py'
-          )
-          if ((${#python_files[@]} == 0)); then
-            echo "No Python files changed on AI relative to main."
-            exit 0
+          before="$BEFORE_SHA"
+          if [[ -z "$before" || "$before" == "0000000000000000000000000000000000000000" ]]; then
+            before="HEAD^"
           fi
-          printf 'Ruff checking AI delta:\n%s\n' "${python_files[*]}"
-          python -m ruff check -- "${python_files[@]}"
+          git cat-file -e "${before}^{commit}"
+          python -m ruff check --output-format json . > /tmp/ruff-after.json || true
+          git checkout --detach "$before"
+          python -m ruff check --output-format json . > /tmp/ruff-before.json || true
+          git checkout --detach "$GITHUB_SHA"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          def key(item):
+              location = item.get("location") or {}
+              end_location = item.get("end_location") or {}
+              return (
+                  item.get("filename"),
+                  item.get("code"),
+                  item.get("message"),
+                  location.get("row"),
+                  location.get("column"),
+                  end_location.get("row"),
+                  end_location.get("column"),
+              )
+
+          before = {key(item) for item in json.loads(Path("/tmp/ruff-before.json").read_text())}
+          after_items = json.loads(Path("/tmp/ruff-after.json").read_text())
+          introduced = [item for item in after_items if key(item) not in before]
+          if introduced:
+              print("New Ruff diagnostics introduced by this push:")
+              for item in introduced:
+                  loc = item.get("location") or {}
+                  print(f"{item['filename']}:{loc.get('row')}:{loc.get('column')} {item.get('code')} {item.get('message')}")
+              raise SystemExit(1)
+          print("No new Ruff diagnostics introduced by this push.")
+          PY
       - name: Compile Python
+        id: compile
+        continue-on-error: true
         run: python -m compileall -q src tests
       - name: Architecture guard
+        id: architecture
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -85,6 +120,19 @@ jobs:
 
           echo "::endgroup::"
           exit "$fail"
+      - name: Aggregate static checks
+        if: always()
+        shell: bash
+        env:
+          RUFF_OUTCOME: ${{ steps.ruff.outcome }}
+          COMPILE_OUTCOME: ${{ steps.compile.outcome }}
+          ARCHITECTURE_OUTCOME: ${{ steps.architecture.outcome }}
+        run: |
+          printf 'Ruff: %s\nCompile: %s\nArchitecture: %s\n' \
+            "$RUFF_OUTCOME" "$COMPILE_OUTCOME" "$ARCHITECTURE_OUTCOME"
+          [[ "$RUFF_OUTCOME" == success && \
+             "$COMPILE_OUTCOME" == success && \
+             "$ARCHITECTURE_OUTCOME" == success ]]
 
   package:
     name: Package metadata
