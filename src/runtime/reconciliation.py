@@ -10,10 +10,10 @@ actually made replacement/commit safe.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class ReconcileAction(str, Enum):
+class ReconcileAction(StrEnum):
     """Conservative next action after looking up a provider operation."""
 
     REUSE_COMPLETED = "reuse_completed"
@@ -22,7 +22,7 @@ class ReconcileAction(str, Enum):
     PRESERVE_UNKNOWN = "preserve_unknown"
 
 
-class ResumeCapability(str, Enum):
+class ResumeCapability(StrEnum):
     """Provider execution resumability, independent from graph resumability."""
 
     RESUMABLE = "resumable"
@@ -30,7 +30,7 @@ class ResumeCapability(str, Enum):
     UNVERIFIABLE = "unverifiable"
 
 
-class CancellationSafety(str, Enum):
+class CancellationSafety(StrEnum):
     """Authority decision derived from provider cancellation facts."""
 
     COMMIT_SAFE = "commit_safe"
