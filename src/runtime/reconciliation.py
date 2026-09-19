@@ -3,8 +3,9 @@
 The types in this module deliberately consume provider/runtime facts rather
 than mirroring LangGraph run, thread, checkpoint, or stream state. They help
 callers decide whether an external operation may be retried, whether a
-persisted execution reference is safe to resume, and whether cancellation has
-actually made replacement/commit safe.
+persisted execution reference is safe to resume, whether cancellation has
+actually made replacement/commit safe, and whether a late result still belongs
+to the current runtime generation.
 """
 
 from __future__ import annotations
@@ -36,6 +37,20 @@ class CancellationSafety(StrEnum):
     COMMIT_SAFE = "commit_safe"
     NOT_COMMIT_SAFE = "not_commit_safe"
     UNVERIFIABLE = "unverifiable"
+
+
+class GenerationDecision(StrEnum):
+    """Whether a result may commit against the current runtime generation."""
+
+    ACCEPT_CURRENT = "accept_current"
+    REJECT_STALE = "reject_stale"
+
+
+class FencingStrength(StrEnum):
+    """Strength of the fencing evidence backing a generation decision."""
+
+    STRONG = "strong"
+    BEST_EFFORT = "best_effort"
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +107,35 @@ class CancellationFact:
     commit_safe: bool | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class GenerationFact:
+    """Opaque generation facts supplied by the owning runtime/provider adapter.
+
+    The generation tokens are not a new lifecycle store. Callers supply the
+    current owner token and the token attached to a returned result. A provider
+    lease/generation/CAS guarantee upgrades the decision to strong fencing;
+    otherwise rejection is deliberately labelled best-effort.
+    """
+
+    current_generation: str
+    result_generation: str
+    provider_fencing_guaranteed: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.current_generation.strip():
+            raise ValueError("current_generation must be non-empty")
+        if not self.result_generation.strip():
+            raise ValueError("result_generation must be non-empty")
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationAuthority:
+    """Commit decision plus an explicit statement of fencing strength."""
+
+    decision: GenerationDecision
+    fencing: FencingStrength
+
+
 def reconcile_operation(fact: ProviderOperationFact) -> ReconcileAction:
     """Choose the safest action without blindly replaying external mutation."""
 
@@ -131,3 +175,26 @@ def cancellation_safety(fact: CancellationFact) -> CancellationSafety:
     if fact.commit_safe is False:
         return CancellationSafety.NOT_COMMIT_SAFE
     return CancellationSafety.UNVERIFIABLE
+
+
+def generation_authority(fact: GenerationFact) -> GenerationAuthority:
+    """Reject late results from a superseded generation without inventing fencing.
+
+    Equality is enough to identify a result as belonging to the caller's
+    current generation. Inequality rejects a stale result locally. The fencing
+    label remains best-effort unless the provider/owner exposes an actual
+    lease, generation, CAS, or conditional-write guarantee; a local token alone
+    must not be advertised as strong fencing.
+    """
+
+    fencing = (
+        FencingStrength.STRONG
+        if fact.provider_fencing_guaranteed
+        else FencingStrength.BEST_EFFORT
+    )
+    decision = (
+        GenerationDecision.ACCEPT_CURRENT
+        if fact.result_generation == fact.current_generation
+        else GenerationDecision.REJECT_STALE
+    )
+    return GenerationAuthority(decision=decision, fencing=fencing)

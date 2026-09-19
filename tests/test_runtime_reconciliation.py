@@ -2,11 +2,15 @@ from src.runtime.reconciliation import (
     CancellationFact,
     CancellationSafety,
     ExecutionResumeFact,
+    FencingStrength,
+    GenerationDecision,
+    GenerationFact,
     ProviderOperationFact,
     ReconcileAction,
     ResumeCapability,
     cancellation_safety,
     execution_resume_capability,
+    generation_authority,
     reconcile_operation,
 )
 
@@ -146,3 +150,40 @@ def test_provider_proof_is_required_for_commit_safe_cancel() -> None:
     )
 
     assert cancellation_safety(fact) is CancellationSafety.COMMIT_SAFE
+
+
+def test_late_result_from_old_generation_is_rejected() -> None:
+    authority = generation_authority(
+        GenerationFact(
+            current_generation="runtime:2",
+            result_generation="runtime:1",
+        )
+    )
+
+    assert authority.decision is GenerationDecision.REJECT_STALE
+    assert authority.fencing is FencingStrength.BEST_EFFORT
+
+
+def test_current_generation_result_is_accepted() -> None:
+    authority = generation_authority(
+        GenerationFact(
+            current_generation="runtime:2",
+            result_generation="runtime:2",
+        )
+    )
+
+    assert authority.decision is GenerationDecision.ACCEPT_CURRENT
+    assert authority.fencing is FencingStrength.BEST_EFFORT
+
+
+def test_provider_fencing_guarantee_is_reported_as_strong() -> None:
+    authority = generation_authority(
+        GenerationFact(
+            current_generation="lease:9",
+            result_generation="lease:8",
+            provider_fencing_guaranteed=True,
+        )
+    )
+
+    assert authority.decision is GenerationDecision.REJECT_STALE
+    assert authority.fencing is FencingStrength.STRONG
