@@ -1,0 +1,97 @@
+name: AI Branch CI
+
+on:
+  push:
+    branches: [AI]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install project
+        run: python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest -q
+
+  static:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dev tools
+        run: python -m pip install -e ".[dev]"
+      - name: Ruff
+        run: python -m ruff check src tests
+      - name: Compile Python
+        run: python -m compileall -q src tests
+      - name: Architecture guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+
+          echo "::group::Repository architecture guard"
+
+          if [ -d tools ]; then
+            echo "::error::Top-level tools/ is forbidden; tools must belong to their middleware."
+            fail=1
+          fi
+
+          # Official Interface First: these are intentionally conservative
+          # path-level guards. Semantic duplication is reviewed separately.
+          forbidden_paths_regex='(^|/)(event_store|trace_store|run_store|thread_store|checkpoint_store)(/|\.|$)'
+          if git ls-files | grep -Ei "$forbidden_paths_regex"; then
+            echo "::error::Potential shadow runtime/persistence store detected. Use official LangGraph/LangChain interfaces unless an Issue documents a reproducible API gap."
+            fail=1
+          fi
+
+          # Do not commit runtime debris or secrets.
+          if git ls-files | grep -E '(^|/)(\.env($|\.)|.*\.pem$|.*\.key$|id_rsa$|id_ed25519$)'; then
+            echo "::error::Potential secret/private-key file is tracked."
+            fail=1
+          fi
+
+          echo "::endgroup::"
+          exit "$fail"
+
+  package:
+    name: Package metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate pyproject
+        run: |
+          python - <<'PY'
+          import pathlib, tomllib
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          assert data["project"]["requires-python"]
+          assert data["project"]["dependencies"]
+          print("pyproject.toml: OK")
+          PY
