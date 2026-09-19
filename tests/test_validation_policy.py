@@ -8,6 +8,7 @@ from src.middlewares.execution.validation_policy import (
     validate_evidence,
     validate_independent_review,
     validate_required_mechanism,
+    validate_rubric_terminal_status,
 )
 
 
@@ -35,6 +36,15 @@ def test_old_pass_does_not_prove_mutated_subject():
 def test_validator_unavailable_is_not_subject_failure():
     result = validate_evidence(current_subject=subject(), evidence=None)
     assert result.status is ValidationStatus.UNAVAILABLE
+
+
+def test_rubric_terminal_status_must_be_consumed_explicitly():
+    assert validate_rubric_terminal_status(status="satisfied").status is ValidationStatus.PASS
+    assert validate_rubric_terminal_status(status="failed").status is ValidationStatus.FAIL
+    assert validate_rubric_terminal_status(status="max_iterations_reached").status is ValidationStatus.FAIL
+    assert validate_rubric_terminal_status(status="grader_error").status is ValidationStatus.UNAVAILABLE
+    assert validate_rubric_terminal_status(status=None).status is ValidationStatus.UNAVAILABLE
+    assert validate_rubric_terminal_status(status="needs_revision").reason == "rubric_status_not_terminal"
 
 
 def test_required_mechanism_is_independent_from_correctness():
