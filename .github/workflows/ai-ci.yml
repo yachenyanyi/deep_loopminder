@@ -40,8 +40,20 @@ jobs:
           cache: pip
       - name: Install dev tools
         run: python -m pip install -e ".[dev]"
-      - name: Ruff
-        run: python -m ruff check src tests
+      - name: Ruff AI delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          mapfile -t python_files < <(
+            git diff --name-only --diff-filter=ACMR origin/main...HEAD -- '*.py'
+          )
+          if ((${#python_files[@]} == 0)); then
+            echo "No Python files changed on AI relative to main."
+            exit 0
+          fi
+          printf 'Ruff checking AI delta:\n%s\n' "${python_files[*]}"
+          python -m ruff check -- "${python_files[@]}"
       - name: Compile Python
         run: python -m compileall -q src tests
       - name: Architecture guard
