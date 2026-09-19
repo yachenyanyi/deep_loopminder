@@ -31,6 +31,14 @@ class ResumeCapability(StrEnum):
     UNVERIFIABLE = "unverifiable"
 
 
+class LivenessStatus(StrEnum):
+    """Use-time provider liveness result for a persisted runtime reference."""
+
+    LIVE = "live"
+    NOT_FOUND = "not_found"
+    UNVERIFIABLE = "unverifiable"
+
+
 class CancellationSafety(StrEnum):
     """Authority decision derived from provider cancellation facts."""
 
@@ -89,6 +97,19 @@ class ExecutionResumeFact:
     lookup_supported: bool
     execution_found: bool | None = None
     provider_guarantees_resume: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeLivenessFact:
+    """Fresh provider lookup result for an already-persisted runtime identity.
+
+    Persisted session, sandbox, workspace, or process references are inputs to
+    the provider lookup path, not liveness evidence themselves. ``None`` means
+    the lookup could not establish existence and must remain unverifiable.
+    """
+
+    lookup_supported: bool
+    resource_found: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +181,15 @@ def execution_resume_capability(fact: ExecutionResumeFact) -> ResumeCapability:
     if fact.provider_guarantees_resume:
         return ResumeCapability.RESUMABLE
     return ResumeCapability.UNVERIFIABLE
+
+
+def runtime_liveness(fact: RuntimeLivenessFact) -> LivenessStatus:
+    """Classify liveness only from a fresh provider/runtime lookup result."""
+    if not fact.lookup_supported or fact.resource_found is None:
+        return LivenessStatus.UNVERIFIABLE
+    if fact.resource_found:
+        return LivenessStatus.LIVE
+    return LivenessStatus.NOT_FOUND
 
 
 def cancellation_safety(fact: CancellationFact) -> CancellationSafety:

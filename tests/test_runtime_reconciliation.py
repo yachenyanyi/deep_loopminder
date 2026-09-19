@@ -5,13 +5,16 @@ from src.runtime.reconciliation import (
     FencingStrength,
     GenerationDecision,
     GenerationFact,
+    LivenessStatus,
     ProviderOperationFact,
     ReconcileAction,
     ResumeCapability,
+    RuntimeLivenessFact,
     cancellation_safety,
     execution_resume_capability,
     generation_authority,
     reconcile_operation,
+    runtime_liveness,
 )
 
 
@@ -103,6 +106,26 @@ def test_unavailable_lookup_is_execution_resume_unverifiable() -> None:
     )
 
     assert execution_resume_capability(fact) is ResumeCapability.UNVERIFIABLE
+
+
+def test_fresh_provider_lookup_can_prove_runtime_is_live() -> None:
+    fact = RuntimeLivenessFact(lookup_supported=True, resource_found=True)
+
+    assert runtime_liveness(fact) is LivenessStatus.LIVE
+
+
+def test_fresh_provider_lookup_can_prove_runtime_is_missing() -> None:
+    fact = RuntimeLivenessFact(lookup_supported=True, resource_found=False)
+
+    assert runtime_liveness(fact) is LivenessStatus.NOT_FOUND
+
+
+def test_persisted_identity_without_lookup_is_not_liveness_proof() -> None:
+    unsupported = RuntimeLivenessFact(lookup_supported=False, resource_found=True)
+    ambiguous = RuntimeLivenessFact(lookup_supported=True, resource_found=None)
+
+    assert runtime_liveness(unsupported) is LivenessStatus.UNVERIFIABLE
+    assert runtime_liveness(ambiguous) is LivenessStatus.UNVERIFIABLE
 
 
 def test_cancel_delivery_and_stream_stop_do_not_prove_commit_safety() -> None:
