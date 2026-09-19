@@ -1,8 +1,11 @@
 from src.runtime.reconciliation import (
+    CancellationFact,
+    CancellationSafety,
     ExecutionResumeFact,
     ProviderOperationFact,
     ReconcileAction,
     ResumeCapability,
+    cancellation_safety,
     execution_resume_capability,
     reconcile_operation,
 )
@@ -96,3 +99,50 @@ def test_unavailable_lookup_is_execution_resume_unverifiable() -> None:
     )
 
     assert execution_resume_capability(fact) is ResumeCapability.UNVERIFIABLE
+
+
+def test_cancel_delivery_and_stream_stop_do_not_prove_commit_safety() -> None:
+    fact = CancellationFact(
+        requested=True,
+        delivered=True,
+        stream_stopped=True,
+        execution_stopped=None,
+        commit_safe=None,
+    )
+
+    assert cancellation_safety(fact) is CancellationSafety.UNVERIFIABLE
+
+
+def test_execution_stop_alone_does_not_prove_external_side_effect_safety() -> None:
+    fact = CancellationFact(
+        requested=True,
+        delivered=True,
+        stream_stopped=True,
+        execution_stopped=True,
+        commit_safe=None,
+    )
+
+    assert cancellation_safety(fact) is CancellationSafety.UNVERIFIABLE
+
+
+def test_provider_can_explicitly_deny_commit_safety_after_cancel() -> None:
+    fact = CancellationFact(
+        requested=True,
+        delivered=True,
+        execution_stopped=False,
+        commit_safe=False,
+    )
+
+    assert cancellation_safety(fact) is CancellationSafety.NOT_COMMIT_SAFE
+
+
+def test_provider_proof_is_required_for_commit_safe_cancel() -> None:
+    fact = CancellationFact(
+        requested=True,
+        delivered=True,
+        stream_stopped=True,
+        execution_stopped=True,
+        commit_safe=True,
+    )
+
+    assert cancellation_safety(fact) is CancellationSafety.COMMIT_SAFE

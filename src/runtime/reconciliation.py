@@ -1,9 +1,10 @@
 """Deterministic provider reconciliation policy for remote execution.
 
 The types in this module deliberately consume provider/runtime facts rather
-than mirroring LangGraph run, thread, checkpoint, or stream state.  They help
-callers decide whether an external operation may be retried or whether a
-persisted execution reference is safe to resume.
+than mirroring LangGraph run, thread, checkpoint, or stream state. They help
+callers decide whether an external operation may be retried, whether a
+persisted execution reference is safe to resume, and whether cancellation has
+actually made replacement/commit safe.
 """
 
 from __future__ import annotations
@@ -29,12 +30,20 @@ class ResumeCapability(str, Enum):
     UNVERIFIABLE = "unverifiable"
 
 
+class CancellationSafety(str, Enum):
+    """Authority decision derived from provider cancellation facts."""
+
+    COMMIT_SAFE = "commit_safe"
+    NOT_COMMIT_SAFE = "not_commit_safe"
+    UNVERIFIABLE = "unverifiable"
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderOperationFact:
     """Machine-readable fact returned by the provider/runtime lookup path.
 
     ``outcome`` is intentionally small: the provider adapter must normalize
-    only outcomes it can prove.  Missing lookup support is represented by
+    only outcomes it can prove. Missing lookup support is represented by
     ``lookup_supported=False`` rather than by guessing that the operation did
     not happen.
     """
@@ -66,6 +75,23 @@ class ExecutionResumeFact:
     provider_guarantees_resume: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class CancellationFact:
+    """Provider cancellation observations without inventing a run lifecycle.
+
+    Each field is independent. ``None`` means the provider cannot prove that
+    fact. In particular, request delivery or a stopped stream must never be
+    promoted into proof that the underlying execution stopped or lost commit
+    authority.
+    """
+
+    requested: bool
+    delivered: bool | None = None
+    stream_stopped: bool | None = None
+    execution_stopped: bool | None = None
+    commit_safe: bool | None = None
+
+
 def reconcile_operation(fact: ProviderOperationFact) -> ReconcileAction:
     """Choose the safest action without blindly replaying external mutation."""
 
@@ -90,3 +116,18 @@ def execution_resume_capability(fact: ExecutionResumeFact) -> ResumeCapability:
     if fact.provider_guarantees_resume:
         return ResumeCapability.RESUMABLE
     return ResumeCapability.UNVERIFIABLE
+
+
+def cancellation_safety(fact: CancellationFact) -> CancellationSafety:
+    """Decide whether a cancelled execution has provably lost commit authority.
+
+    ``commit_safe`` is intentionally provider/runtime evidence. We do not infer
+    it from request delivery, stream termination, or even execution termination
+    because external side effects may still require operation reconciliation.
+    """
+
+    if fact.commit_safe is True:
+        return CancellationSafety.COMMIT_SAFE
+    if fact.commit_safe is False:
+        return CancellationSafety.NOT_COMMIT_SAFE
+    return CancellationSafety.UNVERIFIABLE
