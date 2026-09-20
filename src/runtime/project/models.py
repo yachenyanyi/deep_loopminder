@@ -43,6 +43,7 @@ class Task:
     execution_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        """Validate required business identity and task invariants."""
         if not self.task_id.strip():
             raise ValueError("task_id must be non-empty")
         if not self.title.strip():
@@ -63,6 +64,7 @@ class ProjectSnapshot:
     tasks: tuple[Task, ...]
 
     def __post_init__(self) -> None:
+        """Validate project identity and snapshot-level task uniqueness."""
         if not self.project_id.strip():
             raise ValueError("project_id must be non-empty")
         if not self.goal.strip():
