@@ -1,17 +1,14 @@
-"""Pure application service for typed project-domain commands.
+"""Pure deterministic reducer for typed project-domain commands.
 
-The service mutates only immutable DeepLoop business snapshots. Persistence,
-execution lifecycle, streams, checkpoints, traces, and artifact bytes remain
-owned by their official LangGraph/Deep Agents/provider interfaces.
+The reducer mutates only immutable DeepLoop business snapshots. It is not an
+authorization boundary: callers must supply commands only from their owning
+trusted policy/validation layers. Persistence, execution lifecycle, streams,
+checkpoints, traces, and artifact bytes remain owned by official interfaces.
 """
 
 from dataclasses import replace
 
-from src.runtime.project.commands import (
-    CreateTaskCommand,
-    TransitionTaskCommand,
-    UpdateAcceptanceCriteriaCommand,
-)
+from src.runtime.project.commands import CreateTaskCommand, TransitionTaskCommand
 from src.runtime.project.models import ProjectSnapshot, Task
 from src.runtime.project.transitions import (
     TransitionDecision,
@@ -19,23 +16,19 @@ from src.runtime.project.transitions import (
     validate_dependency_graph,
 )
 
-ProjectCommand = (
-    CreateTaskCommand | TransitionTaskCommand | UpdateAcceptanceCriteriaCommand
-)
+ProjectCommand = CreateTaskCommand | TransitionTaskCommand
 
 
 def apply_project_command(
     snapshot: ProjectSnapshot,
     command: ProjectCommand,
 ) -> ProjectSnapshot:
-    """Apply one authorized business command and return a new snapshot."""
+    """Deterministically reduce one domain command into a new snapshot."""
     if command.project_id != snapshot.project_id:
         raise ValueError("command project_id does not match snapshot")
     if isinstance(command, CreateTaskCommand):
         return _create_task(snapshot, command)
-    if isinstance(command, TransitionTaskCommand):
-        return _transition_task(snapshot, command)
-    return _update_acceptance_criteria(snapshot, command)
+    return _transition_task(snapshot, command)
 
 
 def _create_task(
@@ -67,22 +60,6 @@ def _transition_task(
         snapshot,
         command.task_id,
         replace(_task(snapshot, command.task_id), status=command.target_status),
-    )
-
-
-def _update_acceptance_criteria(
-    snapshot: ProjectSnapshot,
-    command: UpdateAcceptanceCriteriaCommand,
-) -> ProjectSnapshot:
-    task = _task(snapshot, command.task_id)
-    current = set(task.acceptance_criteria)
-    proposed = set(command.acceptance_criteria)
-    if not current.issubset(proposed):
-        raise ValueError("acceptance criteria cannot be removed or weakened")
-    return _replace_task(
-        snapshot,
-        command.task_id,
-        replace(task, acceptance_criteria=command.acceptance_criteria),
     )
 
 

@@ -1,10 +1,6 @@
 import pytest
 
-from src.runtime.project.commands import (
-    CreateTaskCommand,
-    TransitionTaskCommand,
-    UpdateAcceptanceCriteriaCommand,
-)
+from src.runtime.project.commands import CreateTaskCommand, TransitionTaskCommand
 from src.runtime.project.models import ProjectSnapshot, Task, TaskStatus
 from src.runtime.project.service import apply_project_command
 
@@ -74,6 +70,7 @@ def test_transition_is_applied_only_through_policy() -> None:
 
     assert snapshot.tasks[0].status is TaskStatus.READY
     assert updated.tasks[0].status is TaskStatus.ASSIGNED
+    assert updated.tasks[0].acceptance_criteria == snapshot.tasks[0].acceptance_criteria
 
 
 def test_rejected_transition_does_not_mutate_snapshot() -> None:
@@ -90,37 +87,26 @@ def test_rejected_transition_does_not_mutate_snapshot() -> None:
     assert snapshot.tasks[0].status is TaskStatus.IN_PROGRESS
 
 
-def test_acceptance_criteria_can_be_strengthened_additively() -> None:
-    snapshot = make_snapshot(make_task("task-1"))
-    command = UpdateAcceptanceCriteriaCommand(
+def test_public_project_commands_do_not_expose_acceptance_criteria_mutation() -> None:
+    import src.runtime.project.commands as commands
+
+    assert not hasattr(commands, "UpdateAcceptanceCriteriaCommand")
+
+
+def test_conflicting_criterion_cannot_be_injected_through_domain_reducer() -> None:
+    snapshot = make_snapshot(
+        make_task("task-1", acceptance_criteria=("strict validation required",))
+    )
+    command = TransitionTaskCommand(
         project_id="project-1",
         task_id="task-1",
-        acceptance_criteria=("original criterion", "new criterion"),
+        target_status=TaskStatus.READY,
     )
 
     updated = apply_project_command(snapshot, command)
 
-    assert updated.tasks[0].acceptance_criteria == (
-        "original criterion",
-        "new criterion",
-    )
-
-
-def test_acceptance_criteria_cannot_be_lowered() -> None:
-    snapshot = make_snapshot(
-        make_task(
-            "task-1",
-            acceptance_criteria=("original criterion", "security criterion"),
-        )
-    )
-    command = UpdateAcceptanceCriteriaCommand(
-        project_id="project-1",
-        task_id="task-1",
-        acceptance_criteria=("original criterion",),
-    )
-
-    with pytest.raises(ValueError, match="cannot be removed or weakened"):
-        apply_project_command(snapshot, command)
+    assert updated.tasks[0].acceptance_criteria == ("strict validation required",)
+    assert "allow skipping validation" not in updated.tasks[0].acceptance_criteria
 
 
 def test_command_cannot_mutate_another_project() -> None:
