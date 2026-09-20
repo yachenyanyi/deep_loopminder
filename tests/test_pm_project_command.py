@@ -19,7 +19,7 @@ def test_pm_surface_accepts_the_existing_typed_project_command() -> None:
     task = Task(
         task_id="task-1",
         title="Implement",
-        status=TaskStatus.PLANNED,
+        status=TaskStatus.READY,
         owner_role="developer",
         required_capabilities=frozenset({"python"}),
         dependencies=frozenset(),
