@@ -2,6 +2,7 @@
 
 from src.runtime.project.commands import CreateTaskCommand, TransitionTaskCommand
 from src.runtime.project.models import ProjectSnapshot, Task, TaskStatus
+from src.runtime.project.persistence import ProjectStore
 from src.runtime.project.service import ProjectCommand, apply_project_command
 from src.runtime.project.transitions import (
     DependencyReadiness,
@@ -16,6 +17,7 @@ __all__ = [
     "DependencyReadiness",
     "ProjectCommand",
     "ProjectSnapshot",
+    "ProjectStore",
     "Task",
     "TaskStatus",
     "TransitionDecision",
