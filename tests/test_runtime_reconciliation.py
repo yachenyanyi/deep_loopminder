@@ -10,11 +10,14 @@ from src.runtime.reconciliation import (
     ReconcileAction,
     ResumeCapability,
     RuntimeLivenessFact,
+    TransportFact,
+    TransportOutcome,
     cancellation_safety,
     execution_resume_capability,
     generation_authority,
     reconcile_operation,
     runtime_liveness,
+    transport_authority,
 )
 
 
@@ -126,6 +129,27 @@ def test_persisted_identity_without_lookup_is_not_liveness_proof() -> None:
 
     assert runtime_liveness(unsupported) is LivenessStatus.UNVERIFIABLE
     assert runtime_liveness(ambiguous) is LivenessStatus.UNVERIFIABLE
+
+
+def test_contact_loss_does_not_prove_operation_or_process_outcome() -> None:
+    authority = transport_authority(TransportFact(TransportOutcome.CONTACT_LOST))
+
+    assert authority.operation_outcome_known is False
+    assert authority.execution_liveness_known is False
+
+
+def test_empty_wait_does_not_prove_operation_or_process_outcome() -> None:
+    authority = transport_authority(TransportFact(TransportOutcome.EMPTY_WAIT))
+
+    assert authority.operation_outcome_known is False
+    assert authority.execution_liveness_known is False
+
+
+def test_transport_response_still_does_not_replace_provider_status_lookup() -> None:
+    authority = transport_authority(TransportFact(TransportOutcome.RESPONSE_RECEIVED))
+
+    assert authority.operation_outcome_known is False
+    assert authority.execution_liveness_known is False
 
 
 def test_cancel_delivery_and_stream_stop_do_not_prove_commit_safety() -> None:
