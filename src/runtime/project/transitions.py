@@ -8,7 +8,7 @@ lifecycle remains owned by LangGraph/Deep Agents/provider interfaces.
 from enum import StrEnum
 
 from src.runtime.project.commands import TransitionTaskCommand
-from src.runtime.project.models import ProjectSnapshot, Task, TaskStatus
+from src.runtime.project.models import ProjectSnapshot, TaskStatus
 
 
 class DependencyReadiness(StrEnum):
