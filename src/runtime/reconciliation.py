@@ -39,6 +39,14 @@ class LivenessStatus(StrEnum):
     UNVERIFIABLE = "unverifiable"
 
 
+class TransportOutcome(StrEnum):
+    """What a transport observation can prove about remote execution."""
+
+    RESPONSE_RECEIVED = "response_received"
+    CONTACT_LOST = "contact_lost"
+    EMPTY_WAIT = "empty_wait"
+
+
 class CancellationSafety(StrEnum):
     """Authority decision derived from provider cancellation facts."""
 
@@ -110,6 +118,27 @@ class RuntimeLivenessFact:
 
     lookup_supported: bool
     resource_found: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TransportFact:
+    """Transport-only observation that carries no execution outcome authority.
+
+    A timeout, disconnect, or empty wait says only that the caller lacks a
+    response. It cannot prove whether an external operation happened or whether
+    the remote process is still alive. Those facts require provider-native
+    receipt/status/liveness lookup.
+    """
+
+    outcome: TransportOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class TransportAuthority:
+    """Conservative authority derived from a transport observation."""
+
+    operation_outcome_known: bool
+    execution_liveness_known: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +219,21 @@ def runtime_liveness(fact: RuntimeLivenessFact) -> LivenessStatus:
     if fact.resource_found:
         return LivenessStatus.LIVE
     return LivenessStatus.NOT_FOUND
+
+
+def transport_authority(fact: TransportFact) -> TransportAuthority:
+    """Keep transport contact separate from operation and liveness truth.
+
+    A received response only establishes that transport completed; its payload
+    must still be interpreted by the provider adapter. Loss of contact or an
+    empty wait therefore never authorizes retry, relaunch, cleanup, or a claim
+    that the remote execution exited.
+    """
+    del fact
+    return TransportAuthority(
+        operation_outcome_known=False,
+        execution_liveness_known=False,
+    )
 
 
 def cancellation_safety(fact: CancellationFact) -> CancellationSafety:
