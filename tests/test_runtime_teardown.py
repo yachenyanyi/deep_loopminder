@@ -2,22 +2,29 @@ from src.runtime.teardown import (
     OperationClearance,
     TeardownDecision,
     TeardownFact,
+    TeardownTransition,
     teardown_decision,
 )
 
 
-def test_destroy_requires_every_destructive_precondition() -> None:
-    decision = teardown_decision(
-        TeardownFact(
-            current_owner=True,
-            current_generation=True,
-            operation_clearance=OperationClearance.CLEAR,
-            required_outputs_durable=True,
-            provider_safe_destroy=True,
+def test_all_destructive_transitions_require_every_precondition() -> None:
+    for transition in (
+        TeardownTransition.STOP,
+        TeardownTransition.DESTROY,
+        TeardownTransition.EXPIRY,
+    ):
+        decision = teardown_decision(
+            TeardownFact(
+                current_owner=True,
+                current_generation=True,
+                operation_clearance=OperationClearance.CLEAR,
+                required_outputs_durable=True,
+                provider_safe_destroy=True,
+                transition=transition,
+            )
         )
-    )
 
-    assert decision is TeardownDecision.DESTROY_ALLOWED
+        assert decision is TeardownDecision.TRANSITION_ALLOWED
 
 
 def test_unknown_owner_preserves_resource_for_diagnostics() -> None:
@@ -76,18 +83,24 @@ def test_unknown_operation_outcome_blocks_destroy() -> None:
     assert decision is TeardownDecision.PRESERVE_DIAGNOSTIC
 
 
-def test_non_durable_required_outputs_surface_artifact_loss_risk() -> None:
-    decision = teardown_decision(
-        TeardownFact(
-            current_owner=True,
-            current_generation=True,
-            operation_clearance=OperationClearance.CLEAR,
-            required_outputs_durable=False,
-            provider_safe_destroy=True,
+def test_non_durable_outputs_block_stop_destroy_and_expiry() -> None:
+    for transition in (
+        TeardownTransition.STOP,
+        TeardownTransition.DESTROY,
+        TeardownTransition.EXPIRY,
+    ):
+        decision = teardown_decision(
+            TeardownFact(
+                current_owner=True,
+                current_generation=True,
+                operation_clearance=OperationClearance.CLEAR,
+                required_outputs_durable=False,
+                provider_safe_destroy=True,
+                transition=transition,
+            )
         )
-    )
 
-    assert decision is TeardownDecision.PRESERVE_ARTIFACT_LOSS_RISK
+        assert decision is TeardownDecision.PRESERVE_ARTIFACT_LOSS_RISK
 
 
 def test_unknown_output_durability_blocks_destroy() -> None:
