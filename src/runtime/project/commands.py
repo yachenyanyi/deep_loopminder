@@ -41,3 +41,23 @@ class TransitionTaskCommand:
             raise ValueError("project_id must be non-empty")
         if not self.task_id.strip():
             raise ValueError("task_id must be non-empty")
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateAcceptanceCriteriaCommand:
+    """Request an additive-only change to Task acceptance criteria."""
+
+    project_id: str
+    task_id: str
+    acceptance_criteria: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Require stable identities and a non-empty proposed contract."""
+        if not self.project_id.strip():
+            raise ValueError("project_id must be non-empty")
+        if not self.task_id.strip():
+            raise ValueError("task_id must be non-empty")
+        if not self.acceptance_criteria:
+            raise ValueError("acceptance_criteria must be non-empty")
+        if any(not criterion.strip() for criterion in self.acceptance_criteria):
+            raise ValueError("acceptance_criteria entries must be non-empty")
