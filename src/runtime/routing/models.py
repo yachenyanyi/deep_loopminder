@@ -34,6 +34,7 @@ class WorkerCandidate:
     reported_capabilities: frozenset[str]
     runtime_available: bool
     integration_ref: str | None = None
+    compatibility: Mapping[str, str] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         """Validate stable provider identity and descriptor values."""
@@ -45,3 +46,5 @@ class WorkerCandidate:
             raise ValueError("roles must be non-empty strings")
         if any(not capability.strip() for capability in self.reported_capabilities):
             raise ValueError("reported_capabilities must be non-empty strings")
+        if any(not key.strip() or not value.strip() for key, value in self.compatibility.items()):
+            raise ValueError("compatibility keys and values must be non-empty strings")
