@@ -47,7 +47,6 @@ _FORBIDDEN_EXECUTION_CAPABILITIES = frozenset(
 
 def default_pm_profile() -> PMProfile:
     """Return the stable PM declaration without provider or worker execution power."""
-
     profile = PMProfile(
         role="project_manager",
         capabilities=_PM_CONTROL_CAPABILITIES,
