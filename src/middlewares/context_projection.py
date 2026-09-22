@@ -26,6 +26,7 @@ class ContextBlock:
     mutable: bool = False
 
     def __post_init__(self) -> None:
+        """Reject mutable descriptors that cannot be freshness-checked."""
         if self.mutable and (not self.ref or not self.version):
             raise ValueError("mutable context blocks require ref and version")
 
@@ -41,6 +42,7 @@ class ContextProjection:
     current_versions: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
+        """Reject ambiguous or unusable current-version facts."""
         refs = [ref for ref, _ in self.current_versions]
         if len(refs) != len(set(refs)):
             raise ValueError("current_versions must contain unique refs")
