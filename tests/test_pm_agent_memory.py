@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from types import SimpleNamespace
 
 from langgraph.store.memory import InMemoryStore
@@ -116,6 +117,13 @@ def test_memory_search_excludes_superseded_by_default(monkeypatch) -> None:
         assert old.value["superseded_by"] == "decision:store:v2"
 
     asyncio.run(scenario())
+
+
+def test_pm_memory_does_not_depend_on_legacy_revision_policy() -> None:
+    source = inspect.getsource(memory_module)
+
+    assert "revision_policy" not in source
+    assert "MemoryRevisionState" not in source
 
 
 def test_middleware_exposes_only_two_pm_memory_tools() -> None:
