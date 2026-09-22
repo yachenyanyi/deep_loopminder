@@ -46,10 +46,12 @@ _FORBIDDEN_EXECUTION_CAPABILITIES = frozenset(
 
 # These are declarative #21 assembly requirements, not a PM-owned middleware list.
 # The approval owner (#20) requires the Tool-owning middleware and the official
-# HumanInTheLoopMiddleware factory to be assembled as a pair.
+# HumanInTheLoopMiddleware factory to be assembled as a pair. PM memory (#40)
+# contributes only its reviewed project-orientation/history-recall middleware.
 _PM_MIDDLEWARE_REQUIREMENTS = (
     "HumanDecisionRequestMiddleware",
     "human_decision_hitl_middleware",
+    "PMAgentMemoryMiddleware",
 )
 
 
@@ -59,7 +61,7 @@ def default_pm_profile() -> PMProfile:
         role="project_manager",
         capabilities=_PM_CONTROL_CAPABILITIES,
         context_policy="pm_project_projection",
-        memory_policy="validated_project_memory",
+        memory_policy="pm_project_orientation_and_recall",
         budget_policy="pm_control_budget",
         approval_policy="human_boundary",
         middleware_profile=_PM_MIDDLEWARE_REQUIREMENTS,

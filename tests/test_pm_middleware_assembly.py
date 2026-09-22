@@ -2,16 +2,27 @@ import pytest
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 
 from src.middlewares.approval import HumanDecisionRequestMiddleware
+from src.middlewares.memory.pm_agent_memory import PMAgentMemoryMiddleware
 from src.runtime.middleware_assembly import assemble_pm_user_middleware
 from src.runtime.pm import PMProfile, default_pm_profile
 
 
-def test_pm_assembly_resolves_reviewed_human_decision_pair() -> None:
+def test_pm_assembly_resolves_reviewed_owner_middleware() -> None:
     middleware = assemble_pm_user_middleware(default_pm_profile())
 
-    assert len(middleware) == 2
+    assert len(middleware) == 3
     assert isinstance(middleware[0], HumanDecisionRequestMiddleware)
     assert isinstance(middleware[1], HumanInTheLoopMiddleware)
+    assert isinstance(middleware[2], PMAgentMemoryMiddleware)
+
+
+def test_pm_profile_declares_pm_memory_policy_without_execution_capability() -> None:
+    profile = default_pm_profile()
+
+    assert profile.memory_policy == "pm_project_orientation_and_recall"
+    assert "PMAgentMemoryMiddleware" in profile.middleware_profile
+    assert "shell.execute" not in profile.capabilities
+    assert "repo.write.source" not in profile.capabilities
 
 
 def test_pm_assembly_fails_closed_for_unreviewed_requirement() -> None:
