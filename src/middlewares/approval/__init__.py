@@ -38,6 +38,10 @@ from src.middlewares.approval.decision import ApprovalDecision, ApprovalReason, 
 
 # Middleware
 from src.middlewares.approval.middleware import ApprovalMiddleware
+from src.middlewares.approval.human_decision import (
+    HumanDecisionRequestMiddleware,
+    human_decision_hitl_middleware,
+)
 
 # 内置 Provider
 from src.middlewares.approval.builtin import (
@@ -74,6 +78,8 @@ __all__ = [
 
     # Middleware
     "ApprovalMiddleware",
+    "HumanDecisionRequestMiddleware",
+    "human_decision_hitl_middleware",
 
     # 内置 Provider
     "YamlPolicyProvider",
