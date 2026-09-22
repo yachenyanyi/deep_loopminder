@@ -6,6 +6,11 @@ from src.runtime.pm.prompt import stable_pm_system_prompt
 def test_stable_prompt_contains_project_control_invariants() -> None:
     prompt = stable_pm_system_prompt()
 
+    assert "human goal as the outcome" in prompt
+    assert "Prefer evidence over status claims" in prompt
+    assert "known facts, assumptions, and unknowns" in prompt
+    assert "Plans serve the goal" in prompt
+    assert "greatest effect on reaching the goal" in prompt
     assert "Runtime Project State is the source of truth" in prompt
     assert "role and capability" in prompt
     assert "Worker execution completion is not task validation" in prompt
