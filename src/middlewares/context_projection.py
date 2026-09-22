@@ -23,6 +23,11 @@ class ContextBlock:
     accepted: bool = False
     version: str | None = None
     ref: str | None = None
+    mutable: bool = False
+
+    def __post_init__(self) -> None:
+        if self.mutable and (not self.ref or not self.version):
+            raise ValueError("mutable context blocks require ref and version")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,19 +38,34 @@ class ContextProjection:
     blocks: tuple[ContextBlock, ...]
     max_blocks: int = 8
     max_chars: int = 8_000
+    current_versions: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        refs = [ref for ref, _ in self.current_versions]
+        if len(refs) != len(set(refs)):
+            raise ValueError("current_versions must contain unique refs")
+        if any(not ref or not version for ref, version in self.current_versions):
+            raise ValueError("current_versions require non-empty ref and version")
 
 
 def select_context_blocks(projection: ContextProjection) -> tuple[ContextBlock, ...]:
-    """Select accepted, in-scope blocks under deterministic bounded budgets."""
+    """Select accepted, in-scope, fresh blocks under deterministic budgets."""
     if projection.max_blocks < 0 or projection.max_chars < 0:
         raise ValueError("context projection budgets must be non-negative")
 
-    eligible = (
-        block
-        for block in projection.blocks
-        if block.accepted and block.scope == projection.scope
+    current_versions = dict(projection.current_versions)
+
+    def eligible(block: ContextBlock) -> bool:
+        if not block.accepted or block.scope != projection.scope:
+            return False
+        if not block.mutable:
+            return True
+        return current_versions.get(block.ref) == block.version
+
+    ordered = sorted(
+        (block for block in projection.blocks if eligible(block)),
+        key=lambda block: (-block.priority, block.block_id),
     )
-    ordered = sorted(eligible, key=lambda block: (-block.priority, block.block_id))
 
     selected: list[ContextBlock] = []
     used_chars = 0
