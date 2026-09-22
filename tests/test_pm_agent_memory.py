@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import sys
 from types import SimpleNamespace
 
 from langgraph.store.memory import InMemoryStore
@@ -128,7 +129,6 @@ def test_pm_memory_does_not_depend_on_legacy_revision_policy() -> None:
 
 def test_pm_store_provider_reuses_existing_fallback_and_reports_ephemeral(monkeypatch) -> None:
     async def scenario() -> None:
-        import src.deep_agents.db as db_module
         from src.middlewares.memory.pm_agent_memory.provider import get_pm_memory_store
 
         shared_store = InMemoryStore()
@@ -136,7 +136,15 @@ def test_pm_store_provider_reuses_existing_fallback_and_reports_ephemeral(monkey
         async def existing_store_provider():
             return shared_store
 
-        monkeypatch.setattr(db_module, "get_postgres_store", existing_store_provider)
+        # The production provider deliberately imports src.deep_agents.db lazily so
+        # PM memory remains importable when optional PostgreSQL packages are absent.
+        # Stub that owner module here rather than importing it and defeating the
+        # boundary this regression test is meant to preserve.
+        monkeypatch.setitem(
+            sys.modules,
+            "src.deep_agents.db",
+            SimpleNamespace(get_postgres_store=existing_store_provider),
+        )
 
         result = await get_pm_memory_store()
 
