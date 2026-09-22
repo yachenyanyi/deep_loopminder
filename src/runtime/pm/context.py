@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from src.middlewares.context_projection import ContextBlock, ContextProjection
+
 from ..project import ProjectSnapshot, Task, TaskStatus
 
 
@@ -37,3 +39,54 @@ def project_pm_context(snapshot: ProjectSnapshot) -> PMContextProjection:
         active_tasks=active_tasks,
         blockers=blockers,
     )
+
+
+def pm_context_projection(snapshot: ProjectSnapshot) -> ContextProjection:
+    """Adapt current PM facts to #33's reviewed model-call projection surface."""
+    pm_context = project_pm_context(snapshot)
+    scope = snapshot.project_id
+    blocks = (
+        ContextBlock(
+            block_id="goal",
+            kind="project_goal",
+            scope=scope,
+            content=pm_context.goal,
+            source="#36:ProjectSnapshot",
+            priority=100,
+            accepted=True,
+        ),
+        ContextBlock(
+            block_id="constraints",
+            kind="project_constraints",
+            scope=scope,
+            content="\n".join(pm_context.constraints),
+            source="#36:ProjectSnapshot",
+            priority=90,
+            accepted=True,
+        ),
+        ContextBlock(
+            block_id="active_tasks",
+            kind="project_tasks",
+            scope=scope,
+            content="\n".join(
+                f"{task.task_id}: {task.title} [{task.status}]"
+                for task in pm_context.active_tasks
+            ),
+            source="#36:ProjectSnapshot",
+            priority=80,
+            accepted=True,
+        ),
+        ContextBlock(
+            block_id="blockers",
+            kind="project_blockers",
+            scope=scope,
+            content="\n".join(
+                f"{task.task_id}: {task.title} [{task.status}]"
+                for task in pm_context.blockers
+            ),
+            source="#36:ProjectSnapshot",
+            priority=95,
+            accepted=True,
+        ),
+    )
+    return ContextProjection(scope=scope, blocks=blocks)

@@ -1,6 +1,7 @@
 """Tests for the bounded PM project-context projection."""
 
-from src.runtime.pm import PMContextProjection, project_pm_context
+from src.middlewares.context_projection import select_context_blocks
+from src.runtime.pm import PMContextProjection, pm_context_projection, project_pm_context
 from src.runtime.project import ProjectSnapshot, Task, TaskStatus
 
 
@@ -69,3 +70,27 @@ def test_projection_surfaces_project_blocker_statuses_without_runtime_copy() -> 
     assert not hasattr(projection, "thread_id")
     assert not hasattr(projection, "checkpoint_id")
     assert not hasattr(projection, "provider")
+
+
+def test_pm_context_reuses_context_projection_owner_surface() -> None:
+    failed = _task("failed", TaskStatus.FAILED)
+    snapshot = ProjectSnapshot(
+        project_id="project-1",
+        goal="Ship",
+        constraints=("AI branch only",),
+        tasks=(failed,),
+    )
+
+    projection = pm_context_projection(snapshot)
+    selected = select_context_blocks(projection)
+
+    assert projection.scope == "project-1"
+    assert [block.block_id for block in selected] == [
+        "goal",
+        "blockers",
+        "constraints",
+        "active_tasks",
+    ]
+    assert all(block.accepted for block in selected)
+    assert all(block.source == "#36:ProjectSnapshot" for block in selected)
+    assert not any(block.mutable for block in selected)

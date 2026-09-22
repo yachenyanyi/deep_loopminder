@@ -3,7 +3,7 @@
 from src.runtime.project.service import ProjectCommand, apply_project_command
 from src.runtime.routing import RoleRequirement, role_requirement_from_task
 
-from .context import PMContextProjection, project_pm_context
+from .context import PMContextProjection, pm_context_projection, project_pm_context
 from .profile import PMProfile, default_pm_profile
 
 # PM mutations intentionally reuse #36's exact typed command/reducer surface.
@@ -20,6 +20,7 @@ __all__ = [
     "ProjectCommand",
     "RoleRequirement",
     "default_pm_profile",
+    "pm_context_projection",
     "pm_project_command",
     "pm_role_requirement",
     "project_pm_context",
