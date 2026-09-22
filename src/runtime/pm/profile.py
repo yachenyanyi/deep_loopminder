@@ -44,6 +44,14 @@ _FORBIDDEN_EXECUTION_CAPABILITIES = frozenset(
     }
 )
 
+# These are declarative #21 assembly requirements, not a PM-owned middleware list.
+# The approval owner (#20) requires the Tool-owning middleware and the official
+# HumanInTheLoopMiddleware factory to be assembled as a pair.
+_PM_MIDDLEWARE_REQUIREMENTS = (
+    "HumanDecisionRequestMiddleware",
+    "human_decision_hitl_middleware",
+)
+
 
 def default_pm_profile() -> PMProfile:
     """Return the stable PM declaration without provider or worker execution power."""
@@ -54,6 +62,7 @@ def default_pm_profile() -> PMProfile:
         memory_policy="validated_project_memory",
         budget_policy="pm_control_budget",
         approval_policy="human_boundary",
+        middleware_profile=_PM_MIDDLEWARE_REQUIREMENTS,
     )
     forbidden = profile.capabilities & _FORBIDDEN_EXECUTION_CAPABILITIES
     if forbidden:
