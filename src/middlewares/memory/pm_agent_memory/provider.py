@@ -1,10 +1,8 @@
-"""PM Memory store provider.
+"""Durable store access for PM memory.
 
-This module intentionally reuses the project's existing durable Store lifecycle.
-PM memory code depends on LangGraph's BaseStore, not on PostgreSQL directly.
+The PM memory layer reuses the project's existing PostgreSQL -> InMemoryStore
+fallback. It does not own connection strings or create another store runtime.
 """
-
-from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -15,29 +13,21 @@ from src.deep_agents.db import get_postgres_store
 
 
 @dataclass(frozen=True, slots=True)
-class PMMemoryStoreStatus:
-    """Describe the persistence strength currently available to PM memory."""
+class PMMemoryStore:
+    """The store PM memory should use for this process."""
 
+    store: BaseStore
     backend: str
     durability: str
 
 
-class PMMemoryStoreProvider:
-    """Expose the project's existing Store to PM memory."""
-
-    async def get_store(self) -> BaseStore:
-        """Return the existing project Store, including its configured fallback."""
-        return await get_postgres_store()
-
-    async def status(self) -> PMMemoryStoreStatus:
-        """Return whether PM memory is currently durable or using fallback memory."""
-        store = await self.get_store()
-        if isinstance(store, InMemoryStore):
-            return PMMemoryStoreStatus(backend="memory", durability="degraded")
-        return PMMemoryStoreStatus(
-            backend=type(store).__name__,
-            durability="durable",
-        )
-
-
-pm_memory_store_provider = PMMemoryStoreProvider()
+async def get_pm_memory_store() -> PMMemoryStore:
+    """Return the existing project store and make fallback durability visible."""
+    store = await get_postgres_store()
+    if isinstance(store, InMemoryStore):
+        return PMMemoryStore(store=store, backend="memory", durability="ephemeral")
+    return PMMemoryStore(
+        store=store,
+        backend=type(store).__name__,
+        durability="durable",
+    )

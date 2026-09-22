@@ -1,23 +1,10 @@
 """PM Agent memory middleware."""
 
-from .middleware import (
-    PMMemoryMiddleware,
-    memory_search,
-    project_context,
-    remember_project_memory,
-)
-from .provider import (
-    PMMemoryStoreProvider,
-    PMMemoryStoreStatus,
-    pm_memory_store_provider,
-)
+from .middleware import PMAgentMemoryMiddleware
+from .provider import PMMemoryStore, get_pm_memory_store
 
 __all__ = [
-    "PMMemoryMiddleware",
-    "PMMemoryStoreProvider",
-    "PMMemoryStoreStatus",
-    "memory_search",
-    "pm_memory_store_provider",
-    "project_context",
-    "remember_project_memory",
+    "PMAgentMemoryMiddleware",
+    "PMMemoryStore",
+    "get_pm_memory_store",
 ]

@@ -1,224 +1,239 @@
 """PM-specific project orientation and historical recall.
 
-The middleware deliberately stays small:
+This middleware stays deliberately small:
 - current project truth comes from #36 ProjectStore;
-- historical PM memory lives in the shared LangGraph BaseStore;
-- the PM only receives two tools: project_context and memory_search.
+- historical memory lives in the existing LangGraph BaseStore;
+- PM sees only project_context() and memory_search().
 """
 
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Sequence
-from typing import Any
-
 from langchain.agents.middleware import AgentMiddleware
-from langchain.tools import ToolRuntime
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import StructuredTool
+from langgraph.config import get_config
+from langgraph.store.base import Item
 
 from src.middlewares.memory.revision_policy import MemoryRevisionState
 from src.runtime.pm.context import project_pm_context
-from src.runtime.project.persistence import ProjectStore
+from src.runtime.project import get_project_store
 
-from .provider import pm_memory_store_provider
+from .provider import get_pm_memory_store
 
 _PM_MEMORY_NAMESPACE = ("deep_loopminder", "pm_memory")
-_SEARCH_SCAN_LIMIT = 200
+_KEYWORD_SCAN_LIMIT = 100
+_MAX_RESULT_CHARS = 1_200
 
 
-def _project_id(runtime: ToolRuntime) -> str:
-    project_id = runtime.config.get("configurable", {}).get("project_id")
-    if not project_id:
-        raise ValueError("project_id is required in config.configurable")
-    return str(project_id)
+class PMAgentMemoryMiddleware(AgentMiddleware):
+    """Give the PM a current project map and bounded historical recall."""
 
-
-def _memory_key(project_id: str, memory_ref: str) -> str:
-    return f"{project_id}:{memory_ref}"
-
-
-def _render_project_context(snapshot: Any) -> str:
-    context = project_pm_context(snapshot)
-    lines = [
-        f"Project: {context.project_id}",
-        f"Goal: {context.goal}",
-    ]
-    if context.constraints:
-        lines.append("Constraints:")
-        lines.extend(f"- {item}" for item in context.constraints)
-
-    if context.active_tasks:
-        lines.append("Active tasks:")
-        lines.extend(
-            f"- {task.task_id}: {task.title} [{task.status}]"
-            for task in context.active_tasks
-        )
-    else:
-        lines.append("Active tasks: none")
-
-    if context.blockers:
-        lines.append("Blockers:")
-        lines.extend(
-            f"- {task.task_id}: {task.title} [{task.status}]"
-            for task in context.blockers
-        )
-    else:
-        lines.append("Blockers: none")
-
-    return "\n".join(lines)
-
-
-@tool
-async def project_context(runtime: ToolRuntime) -> str:
-    """Read the authoritative current project map for PM orientation."""
-    project_id = _project_id(runtime)
-    if runtime.store is None:
-        raise RuntimeError("project_context requires the LangGraph runtime Store")
-
-    snapshot = await ProjectStore(runtime.store).load(project_id)
-    if snapshot is None:
-        return f"Project state not found: {project_id}"
-    return _render_project_context(snapshot)
-
-
-def _search_score(query: str, value: dict[str, Any]) -> int:
-    query = query.casefold().strip()
-    text = " ".join(
-        [
-            str(value.get("memory_ref", "")),
-            str(value.get("kind", "")),
-            str(value.get("content", "")),
-            " ".join(str(ref) for ref in value.get("source_refs", ())),
+    @property
+    def tools(self) -> list[StructuredTool]:
+        """Expose only the two PM-facing primitives from Issue #40."""
+        return [
+            StructuredTool.from_function(
+                coroutine=self.project_context,
+                name="project_context",
+                description=(
+                    "Read the authoritative current project orientation: goal, "
+                    "constraints, active tasks and blockers."
+                ),
+            ),
+            StructuredTool.from_function(
+                coroutine=self.memory_search,
+                name="memory_search",
+                description=(
+                    "Search historical project memory when current project state "
+                    "is not enough to understand past decisions or context."
+                ),
+            ),
         ]
-    ).casefold()
 
-    score = 4 if query in text else 0
-    for term in query.split():
-        score += text.count(term)
-    return score
+    async def project_context(self, project_id: str | None = None) -> str:
+        """Return a compact current project map from authoritative Project State."""
+        resolved_project_id = _project_id(project_id)
+        snapshot = await get_project_store().load(resolved_project_id)
+        if snapshot is None:
+            return f"Project {resolved_project_id!r} was not found."
 
+        context = project_pm_context(snapshot)
+        lines = [
+            f"Project: {context.project_id}",
+            f"Goal: {context.goal}",
+        ]
 
-async def _search_project_memory(
-    project_id: str,
-    query: str,
-    *,
-    include_history: bool,
-    limit: int,
-) -> list[tuple[int, Any]]:
-    store = await pm_memory_store_provider.get_store()
-    filters: dict[str, Any] = {"project_id": project_id}
-    if not include_history:
-        filters["state"] = MemoryRevisionState.ACTIVE.value
+        if context.constraints:
+            lines.append("Constraints:")
+            lines.extend(f"- {constraint}" for constraint in context.constraints)
 
-    items = await store.asearch(
-        _PM_MEMORY_NAMESPACE,
-        filter=filters,
-        limit=_SEARCH_SCAN_LIMIT,
-    )
-    ranked = [(_search_score(query, item.value), item) for item in items]
-    ranked = [pair for pair in ranked if pair[0] > 0]
-    ranked.sort(key=lambda pair: (-pair[0], str(pair[1].key)))
-    return ranked[:limit]
+        if context.active_tasks:
+            lines.append("Active tasks:")
+            for task in context.active_tasks:
+                owner = f" owner={task.owner_role}" if task.owner_role else ""
+                dependencies = (
+                    f" deps={','.join(sorted(task.dependencies))}"
+                    if task.dependencies
+                    else ""
+                )
+                lines.append(
+                    f"- {task.task_id}: {task.title} [{task.status.value}]"
+                    f"{owner}{dependencies}"
+                )
+        else:
+            lines.append("Active tasks: none")
 
-
-@tool
-async def memory_search(
-    query: str,
-    runtime: ToolRuntime,
-    include_history: bool = False,
-    limit: int = 5,
-) -> str:
-    """Search durable project history without treating it as current truth."""
-    if not query.strip():
-        raise ValueError("query must be non-empty")
-    if limit < 1 or limit > 20:
-        raise ValueError("limit must be between 1 and 20")
-
-    project_id = _project_id(runtime)
-    matches = await _search_project_memory(
-        project_id,
-        query,
-        include_history=include_history,
-        limit=limit,
-    )
-    if not matches:
-        return "No relevant project memory found."
-
-    sections: list[str] = []
-    for _, item in matches:
-        value = item.value
-        memory_state = str(value.get("state", "unknown"))
-        recall_status = (
-            "superseded"
-            if memory_state == MemoryRevisionState.SUPERSEDED.value
-            else "historical"
-        )
-        sources = ", ".join(str(ref) for ref in value.get("source_refs", ())) or "none"
-        sections.append(
-            "\n".join(
-                [
-                    (
-                        f"[{value.get('kind', 'memory')}:{value.get('memory_ref', item.key)} "
-                        f"status={recall_status} memory_state={memory_state} "
-                        f"version={value.get('version', 'unknown')}]"
-                    ),
-                    str(value.get("content", "")),
-                    f"sources: {sources}",
-                ]
+        if context.blockers:
+            lines.append("Blockers:")
+            lines.extend(
+                f"- {task.task_id}: {task.title} [{task.status.value}]"
+                for task in context.blockers
             )
+        else:
+            lines.append("Blockers: none")
+
+        return "\n".join(lines)
+
+    async def memory_search(
+        self,
+        query: str,
+        project_id: str | None = None,
+        limit: int = 8,
+    ) -> str:
+        """Search active historical memory for one project.
+
+        Memory results are references for reasoning, not authoritative current
+        project state.
+        """
+        if not query.strip():
+            raise ValueError("query must be non-empty")
+        if limit < 1:
+            raise ValueError("limit must be positive")
+
+        resolved_project_id = _project_id(project_id)
+        provider = await get_pm_memory_store()
+        namespace = _memory_namespace(resolved_project_id)
+
+        if getattr(provider.store, "index_config", None):
+            items = await provider.store.asearch(
+                namespace,
+                filter={"state": MemoryRevisionState.ACTIVE.value},
+                query=query,
+                limit=limit,
+            )
+        else:
+            candidates = await provider.store.asearch(
+                namespace,
+                filter={"state": MemoryRevisionState.ACTIVE.value},
+                limit=_KEYWORD_SCAN_LIMIT,
+            )
+            items = _keyword_matches(candidates, query, limit)
+
+        if not items:
+            return "No matching project memory."
+
+        lines = [
+            "Historical project memory. Validate mutable facts against project_context()."
+        ]
+        if provider.durability != "durable":
+            lines.append(
+                "Storage warning: PM memory is currently ephemeral and may be lost "
+                "when the process exits."
+            )
+
+        for item in items:
+            value = item.value
+            content = str(value.get("content", "")).strip()
+            if len(content) > _MAX_RESULT_CHARS:
+                content = content[:_MAX_RESULT_CHARS].rstrip() + "…"
+            source = value.get("source_ref")
+            source_text = f" source={source}" if source else ""
+            lines.append(
+                f"- [{value.get('kind', 'memory')}] {item.key}"
+                f" state={value.get('state')}{source_text}\n  {content}"
+            )
+
+        return "\n".join(lines)
+
+    async def save_memory(
+        self,
+        project_id: str,
+        memory_ref: str,
+        content: str,
+        *,
+        kind: str = "note",
+        source_ref: str | None = None,
+        supersedes: str | None = None,
+    ) -> None:
+        """Persist one admitted PM memory revision.
+
+        This is an internal runtime/consolidation entrypoint, not a PM-facing tool.
+        """
+        if not project_id.strip() or not memory_ref.strip() or not content.strip():
+            raise ValueError("project_id, memory_ref and content must be non-empty")
+
+        provider = await get_pm_memory_store()
+        store = provider.store
+        namespace = _memory_namespace(project_id)
+
+        if supersedes:
+            previous = await store.aget(namespace, supersedes)
+            if previous is None:
+                raise ValueError(f"memory to supersede was not found: {supersedes}")
+            previous_value = dict(previous.value)
+            previous_value["state"] = MemoryRevisionState.SUPERSEDED.value
+            previous_value["superseded_by"] = memory_ref
+            await store.aput(
+                namespace,
+                supersedes,
+                previous_value,
+                index=["content"],
+            )
+
+        await store.aput(
+            namespace,
+            memory_ref,
+            {
+                "kind": kind,
+                "content": content,
+                "source_ref": source_ref,
+                "state": MemoryRevisionState.ACTIVE.value,
+                "superseded_by": None,
+            },
+            index=["content"],
         )
-    return "\n\n".join(sections)
 
 
-async def remember_project_memory(
-    project_id: str,
-    memory_ref: str,
-    content: str,
-    *,
-    kind: str = "note",
-    source_refs: Sequence[str] = (),
-    version: str = "1",
-    supersedes: str | None = None,
-) -> None:
-    """Persist one durable project-memory revision.
+def _project_id(project_id: str | None) -> str:
+    if project_id and project_id.strip():
+        return project_id.strip()
 
-    This is an internal runtime/consolidation entry point, not a PM-facing tool.
-    """
-    if not project_id or not memory_ref or not content.strip():
-        raise ValueError("project_id, memory_ref, and content are required")
-
-    store = await pm_memory_store_provider.get_store()
-
-    if supersedes is not None:
-        old_key = _memory_key(project_id, supersedes)
-        previous = await store.aget(_PM_MEMORY_NAMESPACE, old_key)
-        if previous is None:
-            raise ValueError(f"superseded memory not found: {supersedes}")
-        old_value = dict(previous.value)
-        old_value["state"] = MemoryRevisionState.SUPERSEDED.value
-        old_value["superseded_by"] = memory_ref
-        await store.aput(_PM_MEMORY_NAMESPACE, old_key, old_value)
-
-    value = {
-        "project_id": project_id,
-        "memory_ref": memory_ref,
-        "kind": kind,
-        "content": content,
-        "source_refs": list(source_refs),
-        "version": version,
-        "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        "state": MemoryRevisionState.ACTIVE.value,
-        "superseded_by": None,
-    }
-    await store.aput(
-        _PM_MEMORY_NAMESPACE,
-        _memory_key(project_id, memory_ref),
-        value,
-        index=["content"],
-    )
+    configurable = get_config().get("configurable", {})
+    configured_project_id = configurable.get("project_id")
+    if not configured_project_id:
+        raise ValueError("project_id is required")
+    return str(configured_project_id)
 
 
-class PMMemoryMiddleware(AgentMiddleware):
-    """Expose bounded PM orientation and historical recall tools."""
+def _memory_namespace(project_id: str) -> tuple[str, ...]:
+    return (*_PM_MEMORY_NAMESPACE, project_id)
 
-    tools: Sequence[BaseTool] = (project_context, memory_search)
+
+def _keyword_matches(items: list[Item], query: str, limit: int) -> list[Item]:
+    query_text = query.casefold().strip()
+    terms = [term for term in query_text.split() if term]
+    ranked: list[tuple[int, Item]] = []
+
+    for item in items:
+        value = item.value
+        haystack = " ".join(
+            str(value.get(field, ""))
+            for field in ("kind", "content", "source_ref")
+        ).casefold()
+
+        score = 10 if query_text in haystack else 0
+        score += sum(1 for term in terms if term in haystack)
+        if score:
+            ranked.append((score, item))
+
+    ranked.sort(key=lambda pair: (pair[0], pair[1].updated_at), reverse=True)
+    return [item for _, item in ranked[:limit]]
