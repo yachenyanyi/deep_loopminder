@@ -126,6 +126,27 @@ def test_pm_memory_does_not_depend_on_legacy_revision_policy() -> None:
     assert "MemoryRevisionState" not in source
 
 
+def test_pm_store_provider_reuses_existing_fallback_and_reports_ephemeral(monkeypatch) -> None:
+    async def scenario() -> None:
+        import src.deep_agents.db as db_module
+        from src.middlewares.memory.pm_agent_memory.provider import get_pm_memory_store
+
+        shared_store = InMemoryStore()
+
+        async def existing_store_provider():
+            return shared_store
+
+        monkeypatch.setattr(db_module, "get_postgres_store", existing_store_provider)
+
+        result = await get_pm_memory_store()
+
+        assert result.store is shared_store
+        assert result.backend == "memory"
+        assert result.durability == "ephemeral"
+
+    asyncio.run(scenario())
+
+
 def test_middleware_exposes_only_two_pm_memory_tools() -> None:
     names = [tool.name for tool in PMAgentMemoryMiddleware.tools]
 
