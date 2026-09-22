@@ -33,6 +33,9 @@ Skill 只负责特定场景下的判断增强。
 - 原计划失效 → replanning
 - 声称完成 → acceptance-review
 - 阶段结束 → retrospective
+- 需要项目级通用治理判断 → project-governance
+
+如果多个 Skill 同时相关，只加载对当前决策真正有帮助的最小集合。
 
 ## 判断标准
 
