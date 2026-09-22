@@ -1,7 +1,7 @@
-"""Durable store access for PM memory.
+"""Durable Store access for PM memory.
 
-The PM memory layer reuses the project's existing PostgreSQL -> InMemoryStore
-fallback. It does not own connection strings or create another store runtime.
+PM memory reuses the project's existing PostgreSQL -> InMemoryStore fallback.
+The actual connection string stays owned by the existing environment/config.
 """
 
 from dataclasses import dataclass
@@ -9,12 +9,10 @@ from dataclasses import dataclass
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
-from src.deep_agents.db import get_postgres_store
-
 
 @dataclass(frozen=True, slots=True)
 class PMMemoryStore:
-    """The store PM memory should use for this process."""
+    """Store plus the durability level currently available to PM memory."""
 
     store: BaseStore
     backend: str
@@ -22,7 +20,12 @@ class PMMemoryStore:
 
 
 async def get_pm_memory_store() -> PMMemoryStore:
-    """Return the existing project store and make fallback durability visible."""
+    """Reuse the project's existing Store provider without creating another one."""
+    # Keep the import lazy: the PostgreSQL package is a runtime dependency of the
+    # existing db module, while this middleware can still be imported/tested with
+    # an in-memory Store.
+    from src.deep_agents.db import get_postgres_store
+
     store = await get_postgres_store()
     if isinstance(store, InMemoryStore):
         return PMMemoryStore(store=store, backend="memory", durability="ephemeral")
