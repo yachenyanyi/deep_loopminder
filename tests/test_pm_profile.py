@@ -12,21 +12,23 @@ def test_default_pm_profile_is_project_control_only() -> None:
     assert "test.execute" not in profile.capabilities
 
 
+def test_pm_profile_declares_reviewed_owner_requirements() -> None:
+    profile = default_pm_profile()
+
+    assert profile.approval_policy == "human_boundary"
+    assert profile.memory_policy == "pm_project_orientation_and_recall"
+    assert profile.middleware_profile == (
+        "HumanDecisionRequestMiddleware",
+        "human_decision_hitl_middleware",
+        "PMAgentMemoryMiddleware",
+    )
+
+
 def test_pm_profile_does_not_bind_provider_or_session_control() -> None:
     profile = default_pm_profile()
 
     assert "provider.select" not in profile.capabilities
     assert "provider.session.control" not in profile.capabilities
-
-
-def test_pm_profile_declares_reviewed_human_decision_pair() -> None:
-    profile = default_pm_profile()
-
-    assert profile.approval_policy == "human_boundary"
-    assert profile.middleware_profile == (
-        "HumanDecisionRequestMiddleware",
-        "human_decision_hitl_middleware",
-    )
 
 
 def test_pm_profile_is_immutable_declaration() -> None:
