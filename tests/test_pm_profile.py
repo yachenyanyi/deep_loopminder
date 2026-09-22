@@ -17,7 +17,16 @@ def test_pm_profile_does_not_bind_provider_or_session_control() -> None:
 
     assert "provider.select" not in profile.capabilities
     assert "provider.session.control" not in profile.capabilities
-    assert profile.middleware_profile == ()
+
+
+def test_pm_profile_declares_reviewed_human_decision_pair() -> None:
+    profile = default_pm_profile()
+
+    assert profile.approval_policy == "human_boundary"
+    assert profile.middleware_profile == (
+        "HumanDecisionRequestMiddleware",
+        "human_decision_hitl_middleware",
+    )
 
 
 def test_pm_profile_is_immutable_declaration() -> None:
