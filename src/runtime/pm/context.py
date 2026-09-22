@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from src.middlewares.context_projection import ContextBlock, ContextProjection
+from ...middlewares.context_projection import ContextBlock, ContextProjection
 from ..project import ProjectSnapshot, Task, TaskStatus
 
 
