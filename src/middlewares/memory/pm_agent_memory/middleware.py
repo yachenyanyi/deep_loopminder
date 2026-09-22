@@ -15,7 +15,6 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 from langgraph.store.base import Item
 
-from src.middlewares.memory.revision_policy import MemoryRevisionState
 from src.runtime.pm.context import project_pm_context
 from src.runtime.project.persistence import ProjectStore
 
@@ -24,6 +23,8 @@ from .provider import get_pm_memory_store
 _PM_MEMORY_NAMESPACE = ("deep_loopminder", "pm_memory")
 _SEARCH_SCAN_LIMIT = 100
 _MAX_RESULT_CHARS = 1_200
+_ACTIVE_STATE = "active"
+_SUPERSEDED_STATE = "superseded"
 
 
 def _project_id(runtime: ToolRuntime) -> str:
@@ -133,7 +134,7 @@ async def memory_search(
     state_filter = (
         None
         if include_history
-        else {"state": MemoryRevisionState.ACTIVE.value}
+        else {"state": _ACTIVE_STATE}
     )
 
     if getattr(provider.store, "index_config", None):
@@ -172,7 +173,7 @@ async def memory_search(
         memory_state = str(value.get("state", "unknown"))
         status = (
             "superseded"
-            if memory_state == MemoryRevisionState.SUPERSEDED.value
+            if memory_state == _SUPERSEDED_STATE
             else "historical"
         )
         sources = ", ".join(str(ref) for ref in value.get("source_refs", ())) or "none"
@@ -216,7 +217,7 @@ async def remember_project_memory(
         if previous is None:
             raise ValueError(f"memory to supersede was not found: {supersedes}")
         previous_value = dict(previous.value)
-        previous_value["state"] = MemoryRevisionState.SUPERSEDED.value
+        previous_value["state"] = _SUPERSEDED_STATE
         previous_value["superseded_by"] = memory_ref
         await store.aput(
             namespace,
@@ -235,7 +236,7 @@ async def remember_project_memory(
             "source_refs": list(source_refs),
             "version": version,
             "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-            "state": MemoryRevisionState.ACTIVE.value,
+            "state": _ACTIVE_STATE,
             "superseded_by": None,
         },
         index=["content"],
