@@ -1,14 +1,11 @@
 """ApprovalMiddleware - 审批中间件
 
-整合 Provider 评估和 interrupt 人工审批：
-1. Provider.evaluate() → ApprovalDecision
-2. 如果 needs_interrupt=True → 触发 interrupt
-3. 否则根据 allow 执行或拒绝
+整合 Provider 评估和 interrupt 人工审批。
 """
 
-import json
+import asyncio
 import logging
-from typing import Callable, Awaitable, Any
+from typing import Any, Awaitable, Callable
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ToolCallRequest
@@ -29,46 +26,28 @@ from src.middlewares.approval.builtin import YamlPolicyProvider
 
 
 class ApprovalMiddleware(AgentMiddleware):
-    """审批中间件
+    """Legacy approval wrapper kept fail-closed around execution-time policy.
 
-    整合 Provider 评估和 interrupt 人工审批。
-
-    流程：
-    1. 构建 ApprovalRequest
-    2. Provider.evaluate() → ApprovalDecision
-    3. 根据 decision 处理：
-       - allow=False, needs_interrupt=False → 直接拒绝
-       - allow=True, needs_interrupt=False → 直接执行
-       - needs_interrupt=True → 触发 interrupt
-
-    Example:
-        ```python
-        provider = YamlPolicyProvider(config_path="config/approval_policy.yaml")
-        middleware = ApprovalMiddleware(
-            provider=provider,
-            fail_closed=True,
-            audit_logger=AuditLogger("logs/approval_audit.jsonl"),
-            current_agent="chat_agent",
-        )
-        ```
+    New approval assembly should prefer the official HumanInTheLoopMiddleware.
+    This compatibility middleware must never turn an unavailable interrupt
+    primitive into authorization to execute a sensitive tool.
     """
 
     def __init__(
         self,
         provider: ApprovalProvider | None = None,
         *,
-        config: Any | None = None,  # 兼容旧代码
+        config: Any | None = None,
         fail_closed: bool = True,
         audit_logger: AuditLogger | None = None,
         current_agent: str = "unknown",
     ):
         super().__init__()
-
-        # 兼容旧的构造方式: HumanApprovalMiddleware(config=config, ...)
         if config is not None and provider is None:
             provider = YamlPolicyProvider(config=config)
-            audit_logger = audit_logger or AuditLogger(getattr(config, "audit_log_path", "logs/approval_audit.jsonl"))
-
+            audit_logger = audit_logger or AuditLogger(
+                getattr(config, "audit_log_path", "logs/approval_audit.jsonl")
+            )
         if provider is None:
             raise ValueError("必须提供 provider 或 config")
 
@@ -78,7 +57,6 @@ class ApprovalMiddleware(AgentMiddleware):
         self.current_agent = current_agent
 
     def _get_thread_id(self) -> str:
-        """获取当前线程 ID"""
         try:
             from langgraph.config import get_config
             config = get_config()
@@ -87,7 +65,6 @@ class ApprovalMiddleware(AgentMiddleware):
             return "unknown"
 
     def _build_request(self, request: ToolCallRequest) -> ApprovalRequest:
-        """构建审批请求"""
         return ApprovalRequest(
             tool_name=str(request.tool_call.get("name", "unknown")),
             tool_input=request.tool_call.get("args", {}),
@@ -100,38 +77,29 @@ class ApprovalMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]],
     ) -> ToolMessage:
-        """包装工具调用（异步版本）"""
         tool_call_id = str(request.tool_call.get("id", ""))
-
-        # 1. 构建请求
         approval_request = self._build_request(request)
 
-        # 2. Provider 评估
         try:
             decision = await self.provider.aevaluate(approval_request)
         except GraphBubbleUp:
-            # 保留 LangGraph 控制流信号（interrupt/pause/resume）
             raise
-        except Exception as e:
-            logging.error(f"Provider 评估失败: {e}")
+        except Exception as exc:
+            logging.error("Provider 评估失败: %s", exc)
             self.audit_logger.log_provider_error({
                 "agent": self.current_agent,
                 "tool": approval_request.tool_name,
-                "error": str(e),
+                "error": str(exc),
                 "fallback_used": not self.fail_closed,
             })
-
             if self.fail_closed:
-                # 评估失败时默认拒绝
                 decision = ApprovalDecision.blocked(
                     reason_code="provider_error",
-                    reason_message=str(e)
+                    reason_message=str(exc),
                 )
             else:
-                # 允许通过
                 return await handler(request)
 
-        # 3. 记录审计日志
         self.audit_logger.log_request({
             "agent": self.current_agent,
             "tool": approval_request.tool_name,
@@ -141,20 +109,18 @@ class ApprovalMiddleware(AgentMiddleware):
             "provider": self.provider.name,
         })
 
-        # 4. 黑名单/拒绝：直接返回错误
         if not decision.allow and not decision.needs_interrupt:
             self.audit_logger.log_blocked({
                 "agent": self.current_agent,
                 "tool": approval_request.tool_name,
                 "args": approval_request.tool_input,
-                "reasons": [r.message for r in decision.reasons],
+                "reasons": [reason.message for reason in decision.reasons],
             })
             return ToolMessage(
-                content=f"❌ 操作被阻止: {', '.join(r.message for r in decision.reasons)}",
+                content=f"❌ 操作被阻止: {', '.join(reason.message for reason in decision.reasons)}",
                 tool_call_id=tool_call_id,
             )
 
-        # 5. 低危/允许：直接执行
         if decision.allow and not decision.needs_interrupt:
             self.audit_logger.log_auto_approved({
                 "agent": self.current_agent,
@@ -171,18 +137,20 @@ class ApprovalMiddleware(AgentMiddleware):
             })
             return result
 
-        # 6. 需要人工审批：触发 interrupt
         if not HAS_INTERRUPT:
-            logging.warning(f"审批中间件缺少 interrupt 支持，自动通过: {approval_request.tool_name}")
-            self.audit_logger.log_auto_approved({
+            reason = "interrupt support unavailable; approval-required tool denied"
+            logging.error("%s: %s", reason, approval_request.tool_name)
+            self.audit_logger.log_blocked({
                 "agent": self.current_agent,
                 "tool": approval_request.tool_name,
                 "args": approval_request.tool_input,
-                "risk_level": decision.risk_level.value,
-                "reason": "interrupt_not_available",
+                "reasons": [reason],
             })
-            result = await handler(request)
-            return result
+            return ToolMessage(
+                content=f"❌ 操作被阻止: {reason}",
+                tool_call_id=tool_call_id,
+                status="error",
+            )
 
         self.audit_logger.log_interrupt({
             "request_id": tool_call_id,
@@ -190,17 +158,16 @@ class ApprovalMiddleware(AgentMiddleware):
             "risk_level": decision.risk_level.value,
             "message": decision.interrupt_message,
         })
-
         approval = interrupt({
             "type": "tool_approval",
             "tool_name": approval_request.tool_name,
             "args": approval_request.tool_input,
             "risk_level": decision.risk_level.value,
             "allowed_decisions": decision.allowed_decisions,
-            "message": decision.interrupt_message or f"[{decision.risk_level.value.upper()}风险] 请审批",
+            "message": decision.interrupt_message
+            or f"[{decision.risk_level.value.upper()}风险] 请审批",
         })
 
-        # 7. 处理审批决策
         if isinstance(approval, str):
             user_decision = approval
             approver = "user"
@@ -234,7 +201,6 @@ class ApprovalMiddleware(AgentMiddleware):
         if user_decision == "edit" and edited_args:
             request.tool_call["args"] = edited_args
 
-        # 8. 执行工具
         result = await handler(request)
         self.audit_logger.log_execution({
             "request_id": tool_call_id,
@@ -248,6 +214,4 @@ class ApprovalMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage],
     ) -> ToolMessage:
-        """包装工具调用（同步版本）"""
-        import asyncio
         return asyncio.run(self.awrap_tool_call(request, handler))
