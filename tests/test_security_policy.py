@@ -10,6 +10,7 @@ from src.middlewares.execution.security_policy import (
     authorize,
     authorize_effective_tool_call,
     effective_grant,
+    scoped_filesystem_permissions,
 )
 
 
@@ -151,23 +152,18 @@ def test_non_enforceable_surface_requires_explicit_gap():
 
 
 def test_official_filesystem_permissions_close_permissive_default():
-    permissions = [
-        FilesystemPermission(
-            operations=["read", "write"],
-            paths=["/workspace/**"],
-            mode="allow",
-        ),
-        FilesystemPermission(
-            operations=["read", "write"],
-            paths=["/**"],
-            mode="deny",
-        ),
-    ]
+    permissions = scoped_filesystem_permissions("/workspace")
 
     assert permissions[0].mode == "allow"
     assert permissions[0].paths == ["/workspace/**"]
     assert permissions[-1].mode == "deny"
     assert permissions[-1].paths == ["/**"]
+
+
+def test_scoped_filesystem_permissions_reject_untrusted_path_patterns():
+    for prefix in ("workspace", "/workspace/*", "/workspace/[ab]"):
+        with pytest.raises(ValueError, match="absolute non-glob"):
+            scoped_filesystem_permissions(prefix)
 
 
 def test_official_filesystem_permission_is_not_custom_tool_authority():
