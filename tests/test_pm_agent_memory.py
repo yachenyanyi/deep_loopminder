@@ -4,7 +4,7 @@ import sys
 from types import SimpleNamespace
 
 from deepagents.backends import CompositeBackend, StoreBackend
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.filesystem import FilesystemMiddleware, supports_execution
 from langgraph.store.memory import InMemoryStore
 
 import src.middlewares.memory.pm_agent_memory.middleware as memory_module
@@ -209,7 +209,12 @@ def test_official_backend_route_is_project_scoped_and_has_no_shell() -> None:
         assert same_project.file_data["content"] == "Project one memory"
         assert other_project.error is not None
 
+        # FilesystemMiddleware may include an execute tool in its public tool set,
+        # but the official capability check remains false when the CompositeBackend
+        # default is a non-sandbox StoreBackend. Do not infer shell authority from
+        # tool presence; execution must remain fail-closed at the backend boundary.
         filesystem = FilesystemMiddleware(backend=project_one)
-        assert "execute" not in {tool.name for tool in filesystem.tools}
+        assert "execute" in {tool.name for tool in filesystem.tools}
+        assert supports_execution(project_one) is False
 
     asyncio.run(scenario())
