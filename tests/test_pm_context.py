@@ -94,3 +94,23 @@ def test_pm_context_reuses_context_projection_owner_surface() -> None:
     assert all(block.accepted for block in selected)
     assert all(block.source == "#36:ProjectSnapshot" for block in selected)
     assert not any(block.mutable for block in selected)
+
+
+def test_pm_model_context_does_not_project_worker_execution_or_artifact_refs() -> None:
+    task = _task("active", TaskStatus.IN_PROGRESS)
+    snapshot = ProjectSnapshot(
+        project_id="project-1",
+        goal="Ship",
+        constraints=(),
+        tasks=(task,),
+    )
+
+    selected = select_context_blocks(pm_context_projection(snapshot))
+    model_visible = "\n".join(block.content or "" for block in selected)
+
+    assert task.task_id in model_visible
+    assert task.title in model_visible
+    assert "run://official-runtime" not in model_visible
+    assert "artifact://result" not in model_visible
+    assert "execution_refs" not in model_visible
+    assert "artifact_refs" not in model_visible
