@@ -9,6 +9,8 @@ surface can truthfully enforce a requested policy.
 from dataclasses import dataclass
 from enum import Enum
 
+from deepagents import FilesystemPermission
+
 
 class EnforcementCapability(str, Enum):
     ENFORCEABLE = "enforceable"
@@ -142,3 +144,23 @@ def effective_grant(
     """Intersect deployment/project/parent/run/task/child restrictions."""
 
     return deployment.narrow(*more_specific_restrictions)
+
+
+def scoped_filesystem_permissions(path_prefix: str) -> tuple[FilesystemPermission, ...]:
+    """Build an official fail-closed filesystem policy for one trusted scope."""
+
+    prefix = path_prefix.rstrip("/")
+    if not prefix.startswith("/") or prefix == "" or any(char in prefix for char in "*?[]"):
+        raise ValueError("path_prefix must be an absolute non-glob virtual path")
+    return (
+        FilesystemPermission(
+            operations=["read", "write"],
+            paths=[f"{prefix}/**"],
+            mode="allow",
+        ),
+        FilesystemPermission(
+            operations=["read", "write"],
+            paths=["/**"],
+            mode="deny",
+        ),
+    )
