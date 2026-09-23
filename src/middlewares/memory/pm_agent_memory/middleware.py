@@ -45,13 +45,14 @@ def project_memory_filesystem_middleware(
     *,
     project_id: str,
     store: BaseStore,
-) -> FilesystemMiddleware:
+) -> tuple[FilesystemMiddleware, list]:
     """Assemble the official project-scoped filesystem surface for memory work.
 
-    Routing and authorization stay separate: CompositeBackend provides the
-    virtual file route and project-specific Store namespace, while #20's
-    official FilesystemPermission policy is passed to FilesystemMiddleware.
-    The non-sandbox StoreBackend default also keeps shell execution unavailable.
+    Deep Agents exposes filesystem permissions on the public ``create_deep_agent``
+    assembly boundary, not as a public ``FilesystemMiddleware`` constructor
+    argument. Return both pieces so the eventual memory-agent assembly can pass
+    ``backend=filesystem.backend`` and ``permissions=permissions`` directly to
+    ``create_deep_agent`` without using the private ``_permissions`` parameter.
     """
 
     if not project_id.strip():
@@ -77,9 +78,9 @@ def project_memory_filesystem_middleware(
             )
         },
     )
-    return FilesystemMiddleware(
-        backend=backend,
-        permissions=scoped_filesystem_permissions("/memories"),
+    return (
+        FilesystemMiddleware(backend=backend),
+        scoped_filesystem_permissions("/memories"),
     )
 
 
