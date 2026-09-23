@@ -10,11 +10,14 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence
 
+from deepagents.backends import CompositeBackend, StoreBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
-from langgraph.store.base import Item
+from langgraph.store.base import BaseStore, Item
 
+from src.middlewares.execution.security_policy import scoped_filesystem_permissions
 from src.runtime.pm.context import project_pm_context
 from src.runtime.project.persistence import ProjectStore
 
@@ -36,6 +39,48 @@ def _project_id(runtime: ToolRuntime) -> str:
 
 def _memory_namespace(project_id: str) -> tuple[str, ...]:
     return (*_PM_MEMORY_NAMESPACE, project_id)
+
+
+def project_memory_filesystem_middleware(
+    *,
+    project_id: str,
+    store: BaseStore,
+) -> FilesystemMiddleware:
+    """Assemble the official project-scoped filesystem surface for memory work.
+
+    Routing and authorization stay separate: CompositeBackend provides the
+    virtual file route and project-specific Store namespace, while #20's
+    official FilesystemPermission policy is passed to FilesystemMiddleware.
+    The non-sandbox StoreBackend default also keeps shell execution unavailable.
+    """
+
+    if not project_id.strip():
+        raise ValueError("project_id must be non-empty")
+
+    backend = CompositeBackend(
+        default=StoreBackend(
+            namespace=lambda _runtime: (
+                "deep_loopminder",
+                "pm_memory_scratch",
+                project_id,
+            ),
+            store=store,
+        ),
+        routes={
+            "/memories/": StoreBackend(
+                namespace=lambda _runtime: (
+                    "deep_loopminder",
+                    "pm_memory_files",
+                    project_id,
+                ),
+                store=store,
+            )
+        },
+    )
+    return FilesystemMiddleware(
+        backend=backend,
+        permissions=scoped_filesystem_permissions("/memories"),
+    )
 
 
 def _render_project_context(snapshot) -> str:
@@ -131,11 +176,7 @@ async def memory_search(
     project_id = _project_id(runtime)
     provider = await get_pm_memory_store()
     namespace = _memory_namespace(project_id)
-    state_filter = (
-        None
-        if include_history
-        else {"state": _ACTIVE_STATE}
-    )
+    state_filter = None if include_history else {"state": _ACTIVE_STATE}
 
     if getattr(provider.store, "index_config", None):
         items = await provider.store.asearch(
@@ -171,11 +212,7 @@ async def memory_search(
             content = content[:_MAX_RESULT_CHARS].rstrip() + "…"
 
         memory_state = str(value.get("state", "unknown"))
-        status = (
-            "superseded"
-            if memory_state == _SUPERSEDED_STATE
-            else "historical"
-        )
+        status = "superseded" if memory_state == _SUPERSEDED_STATE else "historical"
         sources = ", ".join(str(ref) for ref in value.get("source_refs", ())) or "none"
         lines.append(
             "\n".join(
