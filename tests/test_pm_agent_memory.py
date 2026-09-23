@@ -3,7 +3,7 @@ import inspect
 import sys
 from types import SimpleNamespace
 
-from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends import CompositeBackend, StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from langgraph.store.memory import InMemoryStore
 
@@ -168,8 +168,19 @@ def test_official_backend_route_is_project_scoped_and_has_no_shell() -> None:
         store = InMemoryStore()
 
         def project_backend(project_id: str) -> CompositeBackend:
+            # Keep this POC runnable outside a graph: both backends use the
+            # official StoreBackend contract. Production scratch can remain
+            # StateBackend when assembled inside create_deep_agent; the invariant
+            # under test here is the /memories/ route + project namespace.
             return CompositeBackend(
-                default=StateBackend(),
+                default=StoreBackend(
+                    namespace=lambda _runtime: (
+                        "deep_loopminder",
+                        "pm_memory_scratch",
+                        project_id,
+                    ),
+                    store=store,
+                ),
                 routes={
                     "/memories/": StoreBackend(
                         namespace=lambda _runtime: (
