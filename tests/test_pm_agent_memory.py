@@ -3,6 +3,8 @@ import inspect
 import sys
 from types import SimpleNamespace
 
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langgraph.store.memory import InMemoryStore
 
 import src.middlewares.memory.pm_agent_memory.middleware as memory_module
@@ -159,3 +161,44 @@ def test_middleware_exposes_only_two_pm_memory_tools() -> None:
     names = [tool.name for tool in PMAgentMemoryMiddleware.tools]
 
     assert names == ["project_context", "memory_search"]
+
+
+def test_official_backend_route_is_project_scoped_and_has_no_shell() -> None:
+    async def scenario() -> None:
+        store = InMemoryStore()
+
+        def project_backend(project_id: str) -> CompositeBackend:
+            return CompositeBackend(
+                default=StateBackend(),
+                routes={
+                    "/memories/": StoreBackend(
+                        namespace=lambda _runtime: (
+                            "deep_loopminder",
+                            "pm_memory_files",
+                            project_id,
+                        ),
+                        store=store,
+                    )
+                },
+            )
+
+        project_one = project_backend("project-1")
+        project_two = project_backend("project-2")
+
+        write_result = await project_one.awrite(
+            "/memories/daily.md",
+            "Project one memory",
+        )
+        same_project = await project_one.aread("/memories/daily.md")
+        other_project = await project_two.aread("/memories/daily.md")
+
+        assert write_result.error is None
+        assert same_project.error is None
+        assert same_project.file_data is not None
+        assert same_project.file_data["content"] == "Project one memory"
+        assert other_project.error is not None
+
+        filesystem = FilesystemMiddleware(backend=project_one)
+        assert "execute" not in {tool.name for tool in filesystem.tools}
+
+    asyncio.run(scenario())
