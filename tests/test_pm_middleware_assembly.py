@@ -10,10 +10,10 @@ from src.runtime.pm import PMProfile, default_pm_profile
 def test_pm_assembly_resolves_reviewed_owner_middleware() -> None:
     middleware = assemble_pm_user_middleware(default_pm_profile())
 
-    assert len(middleware) == 3
-    assert isinstance(middleware[0], HumanDecisionRequestMiddleware)
-    assert isinstance(middleware[1], HumanInTheLoopMiddleware)
-    assert isinstance(middleware[2], PMAgentMemoryMiddleware)
+    assert len(middleware) == 4
+    assert isinstance(middleware[1], HumanDecisionRequestMiddleware)
+    assert isinstance(middleware[2], HumanInTheLoopMiddleware)
+    assert isinstance(middleware[3], PMAgentMemoryMiddleware)
 
 
 def test_pm_profile_declares_pm_memory_policy_without_execution_capability() -> None:
@@ -38,4 +38,20 @@ def test_pm_assembly_fails_closed_for_unreviewed_requirement() -> None:
     )
 
     with pytest.raises(ValueError, match="exactly match the reviewed"):
+        assemble_pm_user_middleware(unreviewed)
+
+
+def test_pm_assembly_fails_closed_for_unreviewed_context_policy() -> None:
+    profile = default_pm_profile()
+    unreviewed = PMProfile(
+        role=profile.role,
+        capabilities=profile.capabilities,
+        context_policy="custom_prompt_engine",
+        memory_policy=profile.memory_policy,
+        budget_policy=profile.budget_policy,
+        approval_policy=profile.approval_policy,
+        middleware_profile=profile.middleware_profile,
+    )
+
+    with pytest.raises(ValueError, match="#33 projection path"):
         assemble_pm_user_middleware(unreviewed)
