@@ -13,6 +13,7 @@ from src.middlewares.memory.pm_agent_memory import (
     PMMemoryStore,
     memory_search,
     project_context,
+    project_memory_filesystem_middleware,
     remember_project_memory,
 )
 from src.runtime.project import ProjectSnapshot, ProjectStore, Task, TaskStatus
@@ -138,10 +139,6 @@ def test_pm_store_provider_reuses_existing_fallback_and_reports_ephemeral(monkey
         async def existing_store_provider():
             return shared_store
 
-        # The production provider deliberately imports src.deep_agents.db lazily so
-        # PM memory remains importable when optional PostgreSQL packages are absent.
-        # Stub that owner module here rather than importing it and defeating the
-        # boundary this regression test is meant to preserve.
         monkeypatch.setitem(
             sys.modules,
             "src.deep_agents.db",
@@ -168,10 +165,6 @@ def test_official_backend_route_is_project_scoped_and_has_no_shell() -> None:
         store = InMemoryStore()
 
         def project_backend(project_id: str) -> CompositeBackend:
-            # Keep this POC runnable outside a graph: both backends use the
-            # official StoreBackend contract. Production scratch can remain
-            # StateBackend when assembled inside create_deep_agent; the invariant
-            # under test here is the /memories/ route + project namespace.
             return CompositeBackend(
                 default=StoreBackend(
                     namespace=lambda _runtime: (
@@ -209,12 +202,52 @@ def test_official_backend_route_is_project_scoped_and_has_no_shell() -> None:
         assert same_project.file_data["content"] == "Project one memory"
         assert other_project.error is not None
 
-        # FilesystemMiddleware may include an execute tool in its public tool set,
-        # but the official capability check remains false when the CompositeBackend
-        # default is a non-sandbox StoreBackend. Do not infer shell authority from
-        # tool presence; execution must remain fail-closed at the backend boundary.
         filesystem = FilesystemMiddleware(backend=project_one)
         assert "execute" in {tool.name for tool in filesystem.tools}
         assert supports_execution(project_one) is False
+
+    asyncio.run(scenario())
+
+
+def test_project_memory_filesystem_uses_official_fail_closed_permissions() -> None:
+    store = InMemoryStore()
+
+    filesystem = project_memory_filesystem_middleware(
+        project_id="project-1",
+        store=store,
+    )
+
+    assert isinstance(filesystem, FilesystemMiddleware)
+    assert supports_execution(filesystem.backend) is False
+    assert [permission.mode for permission in filesystem.permissions] == ["allow", "deny"]
+    assert [permission.paths for permission in filesystem.permissions] == [
+        ["/memories/**"],
+        ["/**"],
+    ]
+
+
+def test_project_memory_filesystem_namespace_isolated_by_project() -> None:
+    async def scenario() -> None:
+        store = InMemoryStore()
+        project_one = project_memory_filesystem_middleware(
+            project_id="project-1",
+            store=store,
+        )
+        project_two = project_memory_filesystem_middleware(
+            project_id="project-2",
+            store=store,
+        )
+
+        write_result = await project_one.backend.awrite(
+            "/memories/decision.md",
+            "project one only",
+        )
+        same_project = await project_one.backend.aread("/memories/decision.md")
+        other_project = await project_two.backend.aread("/memories/decision.md")
+
+        assert write_result.error is None
+        assert same_project.file_data is not None
+        assert same_project.file_data["content"] == "project one only"
+        assert other_project.error is not None
 
     asyncio.run(scenario())
