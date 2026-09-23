@@ -1,4 +1,5 @@
 import pytest
+from deepagents import FilesystemPermission
 
 from src.middlewares.execution.security_policy import (
     EffectiveToolCall,
@@ -147,3 +148,42 @@ def test_enforceable_surface_requires_mechanism_and_capability_scope():
 def test_non_enforceable_surface_requires_explicit_gap():
     with pytest.raises(ValueError, match="gap"):
         fact("mcp-network", EnforcementCapability.UNSUPPORTED)
+
+
+def test_official_filesystem_permissions_close_permissive_default():
+    permissions = [
+        FilesystemPermission(
+            operations=["read", "write"],
+            paths=["/workspace/**"],
+            mode="allow",
+        ),
+        FilesystemPermission(
+            operations=["read", "write"],
+            paths=["/**"],
+            mode="deny",
+        ),
+    ]
+
+    assert permissions[0].mode == "allow"
+    assert permissions[0].paths == ["/workspace/**"]
+    assert permissions[-1].mode == "deny"
+    assert permissions[-1].paths == ["/**"]
+
+
+def test_official_filesystem_permission_is_not_custom_tool_authority():
+    filesystem_enforcement = fact(
+        "builtin-filesystem",
+        EnforcementCapability.ENFORCEABLE,
+        "fs:read",
+        "fs:write",
+        mechanism="Deep Agents FilesystemPermission",
+    )
+
+    result = authorize(
+        required_capability="tool:custom-admin",
+        effective_grant=grant("tool:custom-admin"),
+        enforcement=filesystem_enforcement,
+    )
+
+    assert result.decision is SecurityDecision.CAPABILITY_GAP
+    assert result.reason == "surface_does_not_enforce_capability"
