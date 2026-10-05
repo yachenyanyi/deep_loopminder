@@ -224,5 +224,6 @@ frontend/
 logs/
 skills_repo/
 tests/
+.local-acp/
 test.jsonl
 大赛大大.zip
