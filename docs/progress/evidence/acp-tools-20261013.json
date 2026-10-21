@@ -1,0 +1,255 @@
+{
+  "date": "2026-10-13",
+  "parent_driver": "deterministic tool driver using official create_agent",
+  "worker": "real Claude ACP adapter",
+  "requested_model": "existing openrouter/free default, routed model not pinned",
+  "scenario": "two queued turns, alias addressing, per-run checkpoints, delivery receipts, single-run replay, idle steer, completed interruption",
+  "records": [
+    {
+      "test": "spawn_default_role",
+      "ok": true,
+      "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+      "task_name": "continuity",
+      "agent_type": "researcher",
+      "run_id": "01a1340f-98d1-73b1-8176-13bb312b3b25",
+      "status": "running",
+      "status_fresh": true,
+      "created_at": "2026-10-13T06:59:59Z",
+      "last_checked_at": "2026-10-13T06:59:59Z",
+      "next_action": "wait_agent"
+    },
+    {
+      "test": "queued_alias_followup",
+      "ok": true,
+      "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+      "task_name": "continuity",
+      "agent_type": "researcher",
+      "run_id": "01a1340f-98e0-7b80-b646-787fef78f505",
+      "status": "pending",
+      "status_fresh": true,
+      "created_at": "2026-10-13T06:59:59Z",
+      "last_checked_at": "2026-10-13T06:59:59Z",
+      "queued": true,
+      "next_action": "wait_agent"
+    },
+    {
+      "test": "queue_snapshot",
+      "ok": true,
+      "agents": [
+        {
+          "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+          "task_name": "continuity",
+          "agent_type": "researcher",
+          "run_id": "01a1340f-98e0-7b80-b646-787fef78f505",
+          "status": "pending",
+          "status_fresh": true,
+          "created_at": "2026-10-13T06:59:59Z",
+          "last_checked_at": "2026-10-13T06:59:59Z",
+          "latest_run_status": "pending",
+          "running_run_ids": [],
+          "queued_run_ids": [
+            "01a1340f-98e0-7b80-b646-787fef78f505",
+            "01a1340f-98d1-73b1-8176-13bb312b3b25"
+          ],
+          "unread_results": 0
+        }
+      ],
+      "errors": [],
+      "available_agent_types": [
+        "researcher"
+      ]
+    },
+    {
+      "test": "wait_selected_results",
+      "ok": true,
+      "completed": [
+        {
+          "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+          "task_name": "continuity",
+          "agent_type": "researcher",
+          "run_id": "01a1340f-98d1-73b1-8176-13bb312b3b25",
+          "status": "success",
+          "status_fresh": true,
+          "created_at": "2026-10-13T06:59:59Z",
+          "last_checked_at": "2026-10-13T07:00:08Z",
+          "result": "ACP_FIRST",
+          "stop_reason": "end_turn",
+          "checkpoint": {
+            "checkpoint_id": "1f1c6d3b-9dca-6411-8002-264cccc88108",
+            "thread_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+            "checkpoint_ns": ""
+          }
+        }
+      ],
+      "timed_out": false,
+      "agents": [
+        {
+          "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+          "task_name": "continuity",
+          "agent_type": "researcher",
+          "run_id": "01a1340f-98e0-7b80-b646-787fef78f505",
+          "status": "pending",
+          "status_fresh": true,
+          "created_at": "2026-10-13T06:59:59Z",
+          "last_checked_at": "2026-10-13T07:00:08Z",
+          "latest_run_status": "pending",
+          "running_run_ids": [],
+          "queued_run_ids": [
+            "01a1340f-98e0-7b80-b646-787fef78f505"
+          ],
+          "unread_results": 0
+        }
+      ],
+      "errors": [],
+      "has_active": true,
+      "has_more_results": false
+    },
+    {
+      "test": "wait_selected_results",
+      "ok": true,
+      "completed": [
+        {
+          "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+          "task_name": "continuity",
+          "agent_type": "researcher",
+          "run_id": "01a1340f-98e0-7b80-b646-787fef78f505",
+          "status": "success",
+          "status_fresh": true,
+          "created_at": "2026-10-13T06:59:59Z",
+          "last_checked_at": "2026-10-13T07:00:30Z",
+          "result": "ACP_MATURE_20261013",
+          "stop_reason": "end_turn",
+          "checkpoint": {
+            "checkpoint_id": "1f1c6d3c-6be4-614f-8006-ab069e27c1b3",
+            "thread_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+            "checkpoint_ns": ""
+          }
+        }
+      ],
+      "timed_out": false,
+      "agents": [
+        {
+          "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+          "task_name": "continuity",
+          "agent_type": "researcher",
+          "run_id": "01a1340f-98e0-7b80-b646-787fef78f505",
+          "status": "success",
+          "status_fresh": true,
+          "created_at": "2026-10-13T06:59:59Z",
+          "last_checked_at": "2026-10-13T07:00:30Z",
+          "latest_run_status": "success",
+          "running_run_ids": [],
+          "queued_run_ids": [],
+          "unread_results": 0
+        }
+      ],
+      "errors": [],
+      "has_active": false,
+      "has_more_results": false
+    },
+    {
+      "test": "no_duplicate_delivery",
+      "ok": true,
+      "completed": [],
+      "timed_out": false,
+      "agents": [
+        {
+          "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+          "task_name": "continuity",
+          "agent_type": "researcher",
+          "run_id": "01a1340f-98e0-7b80-b646-787fef78f505",
+          "status": "success",
+          "status_fresh": true,
+          "created_at": "2026-10-13T06:59:59Z",
+          "last_checked_at": "2026-10-13T07:00:30Z",
+          "latest_run_status": "success",
+          "running_run_ids": [],
+          "queued_run_ids": [],
+          "unread_results": 0
+        }
+      ],
+      "errors": [],
+      "has_active": false,
+      "has_more_results": false
+    },
+    {
+      "test": "specific_run_replay",
+      "ok": true,
+      "completed": [
+        {
+          "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+          "task_name": "continuity",
+          "agent_type": "researcher",
+          "run_id": "01a1340f-98d1-73b1-8176-13bb312b3b25",
+          "status": "success",
+          "status_fresh": true,
+          "created_at": "2026-10-13T06:59:59Z",
+          "last_checked_at": "2026-10-13T07:00:30Z",
+          "result": "ACP_FIRST",
+          "stop_reason": "end_turn",
+          "checkpoint": {
+            "checkpoint_id": "1f1c6d3b-9dca-6411-8002-264cccc88108",
+            "thread_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+            "checkpoint_ns": ""
+          }
+        }
+      ],
+      "timed_out": false,
+      "agents": [
+        {
+          "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+          "task_name": "continuity",
+          "agent_type": "researcher",
+          "run_id": "01a1340f-98e0-7b80-b646-787fef78f505",
+          "status": "success",
+          "status_fresh": true,
+          "created_at": "2026-10-13T06:59:59Z",
+          "last_checked_at": "2026-10-13T07:00:30Z",
+          "latest_run_status": "success",
+          "running_run_ids": [],
+          "queued_run_ids": [],
+          "unread_results": 0
+        }
+      ],
+      "errors": [],
+      "has_active": false,
+      "has_more_results": false
+    },
+    {
+      "test": "idle_message",
+      "ok": false,
+      "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+      "outcome": "promptRequired",
+      "reason": "noRunningTurn",
+      "next_action": "followup_task"
+    },
+    {
+      "test": "completed_interrupt_noop",
+      "ok": true,
+      "agent_id": "01a1340f-98cd-7b83-bf47-65a001b476ec",
+      "task_name": "continuity",
+      "agent_type": "researcher",
+      "run_id": "01a1340f-98e0-7b80-b646-787fef78f505",
+      "status": "success",
+      "status_fresh": true,
+      "created_at": "2026-10-13T06:59:59Z",
+      "last_checked_at": "2026-10-13T07:00:30Z",
+      "latest_run_status": "success",
+      "running_run_ids": [],
+      "queued_run_ids": [],
+      "unread_results": 0,
+      "cancellation_requested": false,
+      "cancelled_run_ids": [],
+      "interruption_complete": true,
+      "remaining_run_ids": [],
+      "errors": [],
+      "next_action": "followup_task"
+    },
+    {
+      "test": "complete",
+      "two_distinct_run_results": true,
+      "no_duplicate_delivery": true,
+      "no_project_file_changes_requested": true
+    }
+  ]
+}

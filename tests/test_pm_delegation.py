@@ -1,5 +1,5 @@
-from src.runtime.pm import pm_role_requirement
-from src.runtime.project.models import Task, TaskStatus
+from src.deep_agents.agents.pm_agent import pm_role_requirement
+from src.middlewares.project_state.models import Task, TaskStatus
 from src.runtime.routing import role_requirement_from_task
 
 

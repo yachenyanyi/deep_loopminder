@@ -1,0 +1,11 @@
+{
+  "provider": "codex",
+  "adapter": "@agentclientprotocol/codex-acp@2.2.2",
+  "configured_model": "gpt-6-luna",
+  "session_model": "gpt-6-luna",
+  "session_id": "01a15835-6120-71c1-8846-21614744a14e",
+  "routing_provider": "codex",
+  "stop_reason": "end_turn",
+  "reply": "Codex ACP 连接成功。",
+  "verification_scope": "direct ACPWorker + native session model + one real prompt; not PM autonomous delegation"
+}

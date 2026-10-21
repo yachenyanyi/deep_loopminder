@@ -10,14 +10,14 @@ import pytest
 
 pytest.importorskip("acp")
 
-from src.middlewares.approval.decision import ApprovalDecision, RiskLevel
-from src.middlewares.execution.security_policy import SecurityGrant
-from src.runtime.external_agents import (
+from src.middlewares.acp import (
     ACPWorker,
     UnsupportedControl,
     WorkerRef,
     worker_candidate,
 )
+from src.middlewares.approval.decision import ApprovalDecision, RiskLevel
+from src.middlewares.execution.security_policy import SecurityGrant
 from src.runtime.routing import RoleRequirement, route_worker
 
 FIXTURE = Path(__file__).parent / "fixtures" / "acp_agent.py"
@@ -239,6 +239,27 @@ def test_timeout_cancels_turn_and_connection_cleanup_is_sdk_owned(tmp_path):
     asyncio.run(scenario())
 
 
+def test_unlimited_prompt_can_still_be_cancelled(tmp_path):
+    async def scenario():
+        started = asyncio.Event()
+
+        async def capture(notification):
+            if notification.update.content.text == "started":
+                started.set()
+
+        instance = worker(tmp_path, on_update=capture)
+        instance.timeout = None
+        async with instance:
+            ref = await new(instance)
+            prompt = asyncio.create_task(instance.control(ref, "ask", {"text": "block"}))
+            await asyncio.wait_for(started.wait(), timeout=3)
+            await instance.control(ref, "cancel")
+            assert (await prompt).stop_reason == "cancelled"
+        assert instance.process.returncode is not None
+
+    asyncio.run(scenario())
+
+
 def test_native_modes_config_fork_and_close(tmp_path):
     async def scenario():
         async with worker(tmp_path) as instance:
@@ -321,7 +342,7 @@ def test_cli_json_stream_and_native_resume_using_saved_domain_ref(tmp_path):
     base = [
         sys.executable,
         "-m",
-        "src.runtime.external_agents",
+        "src.middlewares.acp",
         "--provider",
         "full",
         "--command-json",

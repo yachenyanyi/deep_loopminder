@@ -1,0 +1,44 @@
+{
+  "status": "stopped_on_framework_error",
+  "preparation_started_utc": "2026-10-20T09:49:16.716284+00:00",
+  "website": "C:\\Users\\User\\wt\\peoject\\pm-project-hub",
+  "run_directory": "D:\\wt\\project\\repository\\apps\\自动化运维\\deep_loopminder\\workspace\\project-hub-runs\\20261020-174916-490a4a",
+  "initial_directory_empty": true,
+  "host_interventions": [],
+  "project_id": "project-hub-20261020-174916-490a4a",
+  "input": "我们团队同时维护很多客户项目，想做一个网站统一管理。能登记客户和联系人，创建项目，把客户发来的聊天整理成需求，安排负责人，查看进度。项目里能记录问题、讨论和交付物，也能区分待确认、开发中、待测试和已完成的事项。希望首页能看到延期、待回复和最近更新，支持搜索、筛选、归档，以及导出项目进展。先给小团队自己用，页面清楚、操作方便就行。",
+  "server_url": "http://127.0.0.1:62409",
+  "worker_configuration_scope": {
+    "cwd": "C:/Users/User/wt/peoject/pm-project-hub",
+    "timeout": null,
+    "approval": "allowlisted standard local development tool kinds for this run only",
+    "roles": {
+      "codex": [
+        "reviewer",
+        "tester",
+        "researcher"
+      ],
+      "claude": [
+        "developer"
+      ]
+    }
+  },
+  "server_pid": 106800,
+  "thread_id": "01a158b7-3186-71d1-96e5-3abcb48e2d3a",
+  "submitted_prompt": "我们团队同时维护很多客户项目，想做一个网站统一管理。能登记客户和联系人，创建项目，把客户发来的聊天整理成需求，安排负责人，查看进度。项目里能记录问题、讨论和交付物，也能区分待确认、开发中、待测试和已完成的事项。希望首页能看到延期、待回复和最近更新，支持搜索、筛选、归档，以及导出项目进展。先给小团队自己用，页面清楚、操作方便就行。\n\n请作为项目经理组织并完成这个网站，交付能实际使用的网站，不只给计划或半成品。项目从空目录 C:/Users/User/wt/peoject/pm-project-hub 开始。请记录必要的使用和启动方式。开发由 developer 负责，测试和验收由相应角色负责。宿主只记录过程，不替你拆任务或补实现。",
+  "pm_started_utc": "2026-10-20T09:49:23.207443+00:00",
+  "run_id": "01a158b7-318d-7565-a4b6-05cf22867037",
+  "pm_status": "interrupted",
+  "elapsed_seconds": 632.7349999998696,
+  "last_observed_utc": "2026-10-20T09:59:55.341171+00:00",
+  "worker_count": 1,
+  "worker_run_count": 1,
+  "framework_stop": {
+    "detected_utc": "2026-10-20T09:59:55.341171+00:00",
+    "failed_worker_runs": [],
+    "reason": "确定性派工错误或官方执行 Run 异常，自动停止并保留现场"
+  },
+  "finished_utc": "2026-10-20T09:59:55.951752+00:00",
+  "pm_final": "",
+  "delivered_file_count": 1
+}

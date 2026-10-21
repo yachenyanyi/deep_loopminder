@@ -1,0 +1,99 @@
+# 项目状态中间件
+
+入口：`from src.middlewares.project_state import ProjectStateMiddleware`。
+按照官方 `AgentMiddleware.tools` 注册工具，`awrap_model_call` 注入最新项目快照；`awrap_tool_call` 将规则拒绝返回为可修正的工具错误。
+任何使用官方 `create_agent` 的 Agent 都可装配；其他图可以复用纯领域命令和 ProjectStore。
+
+## 文件职责
+
+- `middleware.py`：官方生命周期入口，实时上下文、串行写约束与 ACP 工具的业务关联。
+- `artifacts.py`：官方 Store 中的不可变制品，内容散列引用、项目/任务隔离与完整性校验。
+- `workflow.py`：任务与真实 Run/交付物关联、当前版本的可信验收及人工批准记录。
+- `tools.py`：隐藏 ToolRuntime 绑定项目范围；读取、命令工具及可信验收/审批回调。
+- `context.py`：最多 8000 字符的当前项目视图；完整任务使用 project_read。
+- `models.py`：不可变 ProjectSnapshot、Task 与 TaskStatus。
+- `commands.py`、`service.py`：类型化创建/转换命令及纯函数 reducer。
+- `transitions.py`：依赖存在性、环检查、状态转换和验收/审批门禁。
+- `persistence.py`：官方 BaseStore 保存、加载、列表；原命名空间和 schema_version=1 保持兼容。
+- `runtime.py`：通过官方 get_store 获取图运行时的 Store。
+- `__init__.py`：公共领域接口，按需加载 Agent 中间件。
+
+## 注入能力
+
+- `project_context()`：当前项目的目标、约束、活动任务、阻塞、验收状态摘要。
+- `project_read()`：完整项目快照；传入 `task_id` 只读取该任务和状态诊断。
+- `project_command(action, ...)`：create_project、update_project（目标/约束）、create_task、update_task_brief、update_task_dependencies、transition_task。
+  新任务固定从 backlog 开始，必须带 TaskBrief 引用与验收标准；禁止跳过验收/人工审批直接标完成。
+
+project_id 和 Store 从官方 runtime/config 注入，不是模型参数。
+实时项目上下文由本中间件唯一注入，PM 记忆只负责历史召回、整理和压缩交接；记忆调查流程可以调用这里的 project_context。
+
+## 装配
+
+```python
+from langchain.agents import create_agent
+from src.middlewares.project_state import ProjectStateMiddleware
+
+graph = create_agent(model, middleware=[ProjectStateMiddleware()], store=store)
+result = await graph.ainvoke(
+    {"messages": [("user", "读取当前项目")]},
+    {"configurable": {"project_id": "my-project"}},
+)
+```
+
+PM 默认入口使用 `ProjectStateMiddleware(workflow=ProjectWorkflow(store))`，与图共享同一 Store。
+独立装配 `ProjectStateMiddleware()` 仍兼容原有用法；此时不提供制品与 ACP 业务关联工具，passed/approved 需要宿主显式的可信 facts_provider。
+
+## PM 交付与验收闭环
+
+启用 workflow 时，按以下顺序操作：
+
+1. 创建项目；调用 `project_create_artifact(task_id, content, kind="task_brief")` 保存完整任务说明。
+2. 使用返回的 `project-artifact://...` 作为 create_task 的 task_brief_ref；路径、自造引用、外项目/外任务制品均拒绝。
+3. 调用 `spawn_agent(task_name=业务task_id, ...)`；依赖满足的 backlog/ready 任务可直接派工，只有官方 Run 确认创建后才按既有转换规则推进 ready/assigned/in_progress，创建失败不提前标进行中。省略角色时使用 owner_role；实现阶段传入角色须一致。进入 review/testing 后，可用新的 task_name、原业务 task_id 和 reviewer/tester 角色派独立 Worker，仍归同一任务，不用创建依赖原任务 done 的审查任务。
+4. 项目中间件复制运行配置，将当前任务、能力要求及真实说明正文注入 ACP；从官方工具实际返回的 Command 附加 Run 引用。
+5. `wait_agent` 领取完成结果后，将官方最终 checkpoint 正文保存为制品，自动写回任务并返回 artifact_ref；重复领取不会重复附加。
+6. 独立宿主核验每条条件后调用 `ProjectWorkflow.record_validation(...)`，状态工具才允许 passed。人工批准由可信宿主另行调用 `record_approval(...)`，之后才能 approved/done。
+
+`project_read_artifact(reference, offset, limit)` 按字符分页读取制品。任务说明有误时，先创建新说明，再调用 `project_command(action="update_task_brief", task_id=..., task_brief_ref=...)`；历史交付保留，approved/done 任务不能修改说明。
+
+验收接口参数为 `project_id, task_id, validator_id, criteria, evidence_refs`，后面三项为关键字参数；criteria 必须与任务验收标准逐条一致，evidence_refs 必须包含每个子代理在当前输入下最新成功 Run 的交付制品。校验复用既有 validation_policy；验收身份不能等于执行者。
+人工接口关键字参数为 `actor_id, decision_ref, approved=True`，允许显式撤销批准。两接口仅供可信宿主调用，没有注册为模型工具；认证、核验逻辑与人工界面需部署方接入，不从模型文字推断批准。
+
+验收记录绑定目标、约束、任务说明、任务要求、运行与交付物版本。新输入/新 Run/新交付物使旧验收失效；返工或失败撤销当前验收/批准指针；新的负面验收覆盖旧通过；验收结论改变时先撤销旧人工批准，再次通过也必须重新批准。DONE 同样复查当前验收与批准。续问注入最新说明，角色改变或能力要求增加时须重新派工。
+
+此层保存业务证据，Run 生命周期、排队、checkpoint 仍由官方 Server 管理。官方 Run 创建与 Store 关联不是跨系统原子事务；基础设施故障应检查官方 Run 后恢复关联，不能声称任意故障下恰好执行一次。旧的未关联会话不会自动归入业务任务。
+
+## 写入与并发边界
+
+默认只读。只有宿主已保证每个项目一个串行写入线程时，才设置
+`config.configurable.project_state_single_writer=True`。这是宿主承诺，不会自动加锁。
+在 Agent Server 上应使用一个项目写入线程，并通过官方 enqueue 依次提交运行；其他 Agent 使用读取工具。
+同一模型回复中的多个独立 `project_create_artifact` 可以并行：它们按内容哈希写入独立制品键，不读改写项目快照，相同正文/归属返回相同引用。此入口不会自动将引用附加到任务，任务绑定仍由后续命令完成。
+
+`project_command` 和启用 workflow 后的 spawn/followup/wait 会修改项目快照。不同业务任务、不同别名的纯 `spawn_agent` 批次允许同轮调用，由中间件在本进程内串行完成创建与来源写回，Worker 后台并发执行；该批次不承诺全有或全无，单项失败时保留已确认的官方 Run，不可整批盲目重试。此锁不提供跨进程事务，宿主仍须保证项目单写者。其他多快照写、同业务任务重复派工或与制品创建混批仍整批拒绝，返回 `parallel_project_writes`。先创建说明、取得真实引用，再创建任务；不能同批创建项目和该项目的制品。读取工具不受这个多写规则阻断。项目范围和共享 Store 检查继续生效。
+
+首次派工自动注入完整 TaskBrief 和 Worker 工具边界，PM 的 message 只写本轮重点。同一原生会话续问仅发送补充；目标、约束、任务要求或简报的输入版本变化时才重注入当前简报，能力增加仍要求重新派工。Worker 不继承 PM 的项目/记忆/制品工具，通过会话返回成果，`wait_agent` 领取时自动保存并关联；不新增通用 Store 写入权限。此约定不是网络隔离，能执行 shell 的 Worker 对宿主接口的网络访问仍需部署侧单独限制。
+
+宿主同时展开简报直接引用的同项目制品正文（最多12份、正文合计40000字符，不递归）；无法解析或被截断的材料明确要求向PM索取，不猜路径或查宿主接口。旧会话来源记录没有 `worker_context_version` 时，在下一次续接补齐一次新交接格式，之后同输入不重复全文。原不可变简报中的错引用不自动纠正，交由PM处理；宿主内部记录不因简报提及就成为Worker授权范围。
+
+并行相同制品的正文/引用保持一致；BaseStore不提供通用put-if-absent，创建时间等非哈希元数据不承诺跨进程精确一次写入，不把本地并行验证当作分布式事务保证。
+
+BaseStore 不提供通用原子 CAS，单纯 aget/aput 不具备跨线程并发更新保护。本包没有自造进程锁、队列或执行注册表；不能在多个线程都启用写入。
+工具更新目标/约束时保留任务；禁止创建覆盖现有项目。仅支持明确的说明和未执行依赖修正，不提供删除任务或任意改写验收标准的工具。
+官方 Store 的数据库实现决定持久化能力；InMemoryStore 只用于本进程，测试不代表跨进程持久化。
+当前中间件工具/钩子采用异步接口，调用使用 ainvoke/astream。
+
+参考：[官方中间件](https://docs.langchain.com/oss/python/langchain/middleware/custom)、[官方工具与 ToolRuntime](https://docs.langchain.com/oss/python/langchain/tools)。
+
+## 状态诊断与错误恢复
+
+新任务编号与 ACP 别名使用相同字符约束：字母开头，字母/数字/下划线/连字符，最长64字符，区分大小写；不修改历史存储编号。task_name 是 Worker 别名，task_id 是业务归属；例如 `spawn_agent(task_name="T0_review", task_id="T0", agent_type="reviewer", message="独立核验交付")`。同任务可关联不同角色的多个独立会话。
+
+任务读取和修改返回 controls，包括 current_status、allowed_transitions、gated_transitions、blocking_dependencies、allowed_worker_roles 和 dependency_editable。写操作仅返回修改后的任务或项目概要，不再每一步重复全部任务；需要完整快照时使用 project_read。通过官方后台通知看到成功后，仍须 wait_agent 领取交付制品；通知不会自动写入项目验收。
+
+状态拒绝返回明确 code/reason/next_action：dependencies_blocked 要核对前置依赖；validation_required 需要宿主可信验收；approval_required 需要认证人工批准；invalid_task_transition 要依照 controls 修正。错误依赖仅在尚未执行的 backlog/ready 任务上用 update_task_dependencies 修正，修改后重回 backlog 并重新检查未知依赖和环；真正的前置依赖仍必须等到 done，不得为了推进而删除。review 与 testing 可以互转，均不能绕过可信验收。
+
+相同普通状态重复提交是幂等的；重复 passed/approved/done 仍检查可信依据。外部调用已返回后发生业务来源关联错误，会抛出明确异常并要求停止核对官方 Run，不能作为普通参数错误盲目重试。官方 Run 和业务 Store 不具备跨系统事务，人工核对与恢复仍可能需要。
+
+恢复时的失败证据：同一官方Run取消收尾后，API先观测interrupted、官方dev持久化恢复后呈现底层error时，只允许无交付正文、无checkpoint/stop_reason且错误码分别为run_interrupted/run_error的失败观察切换。两份不可变制品都保留，旧引用记录在previous_result_refs及任务证据中；不会把失败提升为成功，也不接受成功交付正文变更或普通同状态结果漂移。

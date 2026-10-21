@@ -1,0 +1,49 @@
+{
+  "created_at": "2026-10-14T07:26:42.375212+00:00",
+  "project_id": "pm-memory-live-1ce7a2175379",
+  "write_pid": 115612,
+  "requested_model": "openrouter/free",
+  "store_backend": "AsyncPostgresStore",
+  "durability": "durable",
+  "execution": "direct_graph_ainvoke",
+  "steps": [],
+  "status": "failed",
+  "previous_attempt": null,
+  "revision_only": false,
+  "tool_calls": [],
+  "response_models": [
+    "nvidia/nemotron-3-ultra-550b-a55b:free"
+  ],
+  "responses": [
+    {
+      "text": "[[\n{\"name\": \"read_file\", \"parameters\": {\"file_path\": \"/memories/daily/2026-10-14.md\"}}\n,\n{\"name\": \"read_file\", \"parameters\": {\"file_path\": \"/memories/bookmarks/e88424ecbf984e2a82bf8bf414874e78.json\"}}\n]",
+      "tool_calls": [],
+      "finish_reason": "stop",
+      "usage": {
+        "input_tokens": 3659,
+        "output_tokens": 325,
+        "total_tokens": 3984,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 219
+        }
+      }
+    }
+  ],
+  "failure_document": null,
+  "failed_source_id": "e88424ecbf984e2a82bf8bf414874e78",
+  "failed_destination": "/memories/daily/2026-10-14.md",
+  "error_type": "AttributeError",
+  "error": "'NoneType' object has no attribute 'outcome'",
+  "cross_process_checks": {
+    "source_persisted": true,
+    "document_persisted": false,
+    "search_persisted": false
+  },
+  "read_pid": 36236
+}

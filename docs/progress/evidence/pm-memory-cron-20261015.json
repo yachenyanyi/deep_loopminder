@@ -1,0 +1,48 @@
+{
+  "previous_attempt": {
+    "project_id": "pm-cron-fix-25683780309a",
+    "thread_id": "83d7fd43-cf8e-5d1f-bedc-b2e2d90ad296",
+    "model": "openrouter/free",
+    "store": "AsyncPostgresStore",
+    "fixture": "人工构造测试输入，模型负责真实整理",
+    "status": "failed",
+    "consolidation_run_id": "01a13e86-457b-7fb3-aa43-449816f704ac",
+    "error_type": "RuntimeError",
+    "error": "官方整理 Run 失败：error"
+  },
+  "project_id": "pm-cron-fix-d77ce8dd7b1e",
+  "thread_id": "7e276af6-d69c-5c7f-8bfd-b523a0000746",
+  "model": "openrouter/free",
+  "store": "AsyncPostgresStore",
+  "fixture": "人工构造测试输入，模型负责真实整理",
+  "status": "passed",
+  "consolidation_run_id": "01a13e88-bd0c-73f2-9b21-56f7601fcfce",
+  "consolidation": {
+    "outcome": "ignore",
+    "origin": "model",
+    "receipt_source_id": "5a2aec9cdd2c489d931db9c946971b12"
+  },
+  "cron_id": "01a13e88-f88e-7e50-9934-b738cbb565a4",
+  "cron_deleted": true,
+  "scheduled_run_id": "01a13e89-3f4b-7c91-8b88-5acbc56de28f",
+  "checks": {
+    "official_scheduled_success": true,
+    "verified_noop": true,
+    "receipt_unchanged": true,
+    "no_extra_source": true
+  },
+  "model_trace_summary": {
+    "requested_model": "openrouter/free",
+    "response_models": [
+      "liquid/lfm-2.5-2.6b:free",
+      "nvidia/nemotron-3.5-lightning:free"
+    ],
+    "model_responses": 3,
+    "tool_names": [
+      "ls",
+      "read_file",
+      "read_file",
+      "MemoryOutcome"
+    ]
+  }
+}

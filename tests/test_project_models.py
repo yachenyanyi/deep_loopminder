@@ -1,4 +1,4 @@
-from src.runtime.project.models import ProjectSnapshot, Task, TaskStatus
+from src.middlewares.project_state.models import ProjectSnapshot, Task, TaskStatus
 
 
 def test_task_requires_acceptance_criteria() -> None:

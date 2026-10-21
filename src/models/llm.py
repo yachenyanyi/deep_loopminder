@@ -4,17 +4,21 @@
 只有实际使用时才初始化模型，避免启动时因缺少 API Key 而失败。
 """
 
+from __future__ import annotations
+
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
-from langchain_anthropic import ChatAnthropic
-from langchain_community.chat_models import ChatZhipuAI
-from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
-from langchain_ollama import ChatOllama
-from langchain_google_genai import ChatGoogleGenerativeAI
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from langchain_anthropic import ChatAnthropic
+    from langchain_community.chat_models import ChatZhipuAI
+    from langchain_deepseek import ChatDeepSeek
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_ollama import ChatOllama
 
 
 # 模型缓存
@@ -25,19 +29,43 @@ _models: dict[str, any] = {}
 # 工厂函数 - 懒加载
 # ============================================================================
 
+def get_command_goat_model() -> Optional[ChatOpenAI]:
+    """通过官方 OpenAI 兼容接口使用 Command Code GOAT 套餐。"""
+    if "command_goat" in _models:
+        return _models["command_goat"]
+
+    api_key = os.getenv("COMMADN_GOAT_API_KEY") or os.getenv("COMMAND_CODE_API_KEY", "")
+    if not api_key:
+        return None
+
+    _models["command_goat"] = ChatOpenAI(
+        model=os.getenv("COMMAND_CODE_MODEL") or "meta/muse-spark-1.3-contributor",
+        api_key=api_key,
+        base_url=os.getenv("COMMAND_CODE_BASE_URL") or "https://api.commandcode.ai/provider/v1",
+        use_responses_api=False,
+        reasoning_effort=os.getenv("COMMAND_CODE_REASONING_EFFORT") or "medium",
+        max_tokens=int(os.getenv("COMMAND_CODE_MAX_TOKENS") or "8192"),
+    )
+    return _models["command_goat"]
+
+
 def get_open_router_model() -> Optional[ChatOpenAI]:
-    """获取 OpenRouter 模型"""
+    """真实运行与测试共享的免费模型配置，默认输出上限32k。"""
     if "open_router" in _models:
         return _models["open_router"]
 
-    api_key = os.getenv("OPEN_ROUTER_API_KEY", "")
+    api_key = os.getenv("OPEN_ROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY", "")
     if not api_key:
         return None
 
     _models["open_router"] = ChatOpenAI(
-        model="qwen/qwen3-vl-235b-a22b-thinking",
+        model="minimax/minimax-m3.1-flash:free",
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1",
+        use_responses_api=False,
+        max_tokens=32768,
+        timeout=120,
+        max_retries=1,
     )
     return _models["open_router"]
 
@@ -52,6 +80,8 @@ def get_zhi_pu_model() -> Optional[ChatZhipuAI]:
         return None
 
     os.environ["ZHIPUAI_API_KEY"] = api_key
+    from langchain_community.chat_models import ChatZhipuAI
+
     _models["zhi_pu"] = ChatZhipuAI(
         model="autoglm-phone",
         temperature=1.5,
@@ -82,6 +112,8 @@ def get_ollama_model() -> ChatOllama:
     """获取 Ollama 模型（本地，无需 API Key）"""
     if "ollama" in _models:
         return _models["ollama"]
+
+    from langchain_ollama import ChatOllama
 
     _models["ollama"] = ChatOllama(
         model="qwen3:4b",
@@ -117,6 +149,8 @@ def get_gemini_model() -> Optional[ChatGoogleGenerativeAI]:
         return None
 
     os.environ["GOOGLE_API_KEY"] = api_key
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
     _models["gemini"] = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash-exp",
         temperature=2,
@@ -133,6 +167,8 @@ def get_deepseek_model() -> Optional[ChatDeepSeek]:
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
     if not api_key:
         return None
+
+    from langchain_deepseek import ChatDeepSeek
 
     _models["deepseek"] = ChatDeepSeek(
         model="deepseek-v4-flash",
@@ -176,6 +212,8 @@ def get_anthropic_model() -> Optional[ChatAnthropic]:
     base_url = os.getenv("ANTHROPIC_BASE_URL", "https://dashscope.aliyuncs.com/apps/anthropic")
     model = os.getenv("ANTHROPIC_MODEL", "deepseek-v4-flash")
 
+    from langchain_anthropic import ChatAnthropic
+
     _models["anthropic"] = ChatAnthropic(
         model=model,
         api_key=api_key,
@@ -186,37 +224,17 @@ def get_anthropic_model() -> Optional[ChatAnthropic]:
 
 
 # ============================================================================
-# 默认模型 - 按优先级自动选择
+# 默认模型 - 真实运行与测试共用免费路由
 # ============================================================================
 
 def get_default_model():
-    """
-    获取默认模型，按优先级自动选择可用模型：
-    1. Anthropic (通过 DashScope 代理，主力)
-    2. OpenRouter (多模型支持)
-    3. Ollama (本地，无需 API Key)
-    """
-    if "default" in _models:
-        return _models["default"]
-
-    # 按优先级尝试
-    model = get_anthropic_model()
-    if model:
-        print("✅ 使用 Anthropic 模型 (DashScope 代理)")
+    """默认统一使用minimax/minimax-m3.1-flash:free；缺少密钥明确失败，避免自动切到其他服务。"""
+    if "default" not in _models:
+        model = get_open_router_model()
+        if model is None:
+            raise ValueError("请配置OPEN_ROUTER_API_KEY或OPENROUTER_API_KEY")
         _models["default"] = model
-        return model
-
-    model = get_open_router_model()
-    if model:
-        print("✅ 使用 OpenRouter 模型")
-        _models["default"] = model
-        return model
-
-    # 回退到 Ollama（本地模型，始终可用）
-    print("⏳ 未配置 API Key，使用 Ollama 本地模型")
-    model = get_ollama_model()
-    _models["default"] = model
-    return model
+    return _models["default"]
 
 
 # ============================================================================
@@ -225,6 +243,10 @@ def get_default_model():
 
 class _ModelProxy:
     """模型代理类，支持懒加载和向后兼容"""
+
+    @property
+    def command_goat(self):
+        return get_command_goat_model()
 
     @property
     def open_router(self):
@@ -285,6 +307,7 @@ default_model = _DefaultModelProxy()
 def list_available_models() -> dict:
     """列出所有可用模型"""
     return {
+        "command_goat": get_command_goat_model() is not None,
         "anthropic": get_anthropic_model() is not None,
         "deepseek": get_deepseek_model() is not None,
         "open_router": get_open_router_model() is not None,

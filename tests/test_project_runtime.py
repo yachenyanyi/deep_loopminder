@@ -2,14 +2,14 @@ from unittest.mock import patch
 
 from langgraph.store.memory import InMemoryStore
 
-from src.runtime.project.persistence import ProjectStore
-from src.runtime.project.runtime import get_project_store
+from src.middlewares.project_state.persistence import ProjectStore
+from src.middlewares.project_state.runtime import get_project_store
 
 
 def test_project_store_uses_active_langgraph_runtime_store() -> None:
     store = InMemoryStore()
 
-    with patch("src.runtime.project.runtime.get_store", return_value=store) as accessor:
+    with patch("src.middlewares.project_state.runtime.get_store", return_value=store) as accessor:
         repository = get_project_store()
 
     accessor.assert_called_once_with()
@@ -19,7 +19,7 @@ def test_project_store_uses_active_langgraph_runtime_store() -> None:
 
 def test_project_store_does_not_fallback_when_runtime_store_is_unavailable() -> None:
     with patch(
-        "src.runtime.project.runtime.get_store",
+        "src.middlewares.project_state.runtime.get_store",
         side_effect=RuntimeError("no active runtime store"),
     ):
         try:

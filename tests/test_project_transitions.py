@@ -1,6 +1,6 @@
-from src.runtime.project.commands import CreateTaskCommand, TransitionTaskCommand
-from src.runtime.project.models import ProjectSnapshot, Task, TaskStatus
-from src.runtime.project.transitions import (
+from src.middlewares.project_state.commands import CreateTaskCommand, TransitionTaskCommand
+from src.middlewares.project_state.models import ProjectSnapshot, Task, TaskStatus
+from src.middlewares.project_state.transitions import (
     DependencyReadiness,
     TransitionDecision,
     dependency_readiness,

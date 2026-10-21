@@ -1,0 +1,2859 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>轨迹 · DeepLoopMinder</title>
+    <link rel="icon" href="data:," />
+    <style>
+      /* 依据本机DSH实页的尺寸与色彩复刻轨迹视图；所有运行内容来自本项目事件。 */
+      :root {
+        color-scheme: dark;
+        --bg: #141414;
+        --sidebar: #1c1c1c;
+        --panel: #232324;
+        --hover: #2c2c2d;
+        --selected: #2d313b;
+        --line: #363637;
+        --subline: #2d2d2e;
+        --text: #ececec;
+        --muted: #a0a0a4;
+        --faint: #737377;
+        --blue: #648de0;
+        --purple: #b49ad5;
+        --orange: #e5a339;
+        --green: #72bba0;
+        --inspector: 38%;
+        --sidebar-width: 280px;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 13px;
+        height: 100vh;
+        overflow: hidden;
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+      button {
+        cursor: pointer;
+        border: 0;
+        background: transparent;
+        border-radius: 4px;
+        padding: 4px 7px;
+      }
+      button:hover {
+        background: var(--hover);
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      button:focus-visible,
+      input:focus-visible,
+      textarea:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 1px solid var(--blue);
+        outline-offset: -1px;
+      }
+      button.active {
+        color: var(--blue);
+      }
+      input[type="search"],
+      select {
+        border: 1px solid #48484a;
+        border-radius: 3px;
+        background: var(--hover);
+        padding: 3px 7px;
+        min-width: 0;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      svg {
+        vertical-align: middle;
+        flex: none;
+      }
+      #app {
+        height: 100%;
+        display: grid;
+        grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      }
+      #app.sidebar-closed {
+        grid-template-columns: 0 minmax(0, 1fr);
+      }
+      .sidebar {
+        background: var(--sidebar);
+        border-right: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        white-space: nowrap;
+      }
+      .brand {
+        height: 64px;
+        padding: 0 16px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .brand-name {
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .brand small {
+        font-size: 9px;
+        display: block;
+        color: var(--muted);
+      }
+      .brand button {
+        margin-left: auto;
+      }
+      .run-button {
+        margin: 10px 15px 16px;
+        background: #454548;
+        border: 1px solid #5b5b60;
+        height: 38px;
+        border-radius: 9px;
+      }
+      .side-title {
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 16px 14px;
+        font-size: 15px;
+      }
+      .side-title button {
+        font-size: 16px;
+        color: var(--muted);
+      }
+      .workspace-name {
+        padding: 9px 20px;
+        color: #91b5fc;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .session-list {
+        padding: 0 12px;
+        overflow: auto;
+        flex: 1;
+        min-height: 0;
+      }
+      .session {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        text-align: left;
+        height: 34px;
+        padding: 0 12px 0 26px;
+        border-radius: 5px;
+      }
+      .session.selected {
+        background: #303030;
+      }
+      .session span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex: 1;
+      }
+      .session small {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .side-footer {
+        padding: 10px 14px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .content {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .page-header {
+        height: 76px;
+        flex: none;
+        background: var(--bg);
+        padding: 9px 20px 0;
+        position: relative;
+      }
+      .title-line {
+        height: 30px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .title-line h1 {
+        font-size: 14px;
+        font-weight: 500;
+        margin: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: none;
+        max-width: 64%;
+      }
+      .mode {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .head-actions {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .head-actions button {
+        font-size: 16px;
+        color: var(--muted);
+        width: 29px;
+        height: 28px;
+      }
+      .page-tabs {
+        height: 36px;
+        display: flex;
+        gap: 8px;
+        align-items: flex-end;
+      }
+      .page-tabs button {
+        height: 34px;
+        padding: 0 13px;
+        font-size: 13px;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        color: var(--muted);
+      }
+      .page-tabs button.active {
+        color: var(--blue);
+        border-bottom-color: var(--blue);
+      }
+      .toolbar {
+        height: 32px;
+        flex: none;
+        background: var(--panel);
+        border-top: 1px solid var(--subline);
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 2px;
+        align-items: center;
+        padding: 0 6px;
+      }
+      .toolbar button {
+        font-size: 12px;
+        height: 23px;
+        color: var(--muted);
+        padding: 1px 7px;
+        display: flex;
+        gap: 4px;
+        align-items: center;
+      }
+      .toolbar button[aria-pressed="true"] {
+        background: #353539;
+        color: var(--text);
+      }
+      .search-wrap {
+        margin-left: auto;
+        position: relative;
+        width: 180px;
+        max-width: 45%;
+        height: 23px;
+      }
+      .search-wrap input {
+        width: 100%;
+        height: 23px;
+        padding-left: 22px;
+        font-size: 11px;
+      }
+      .search-wrap svg {
+        position: absolute;
+        top: 6px;
+        left: 6px;
+        color: var(--faint);
+      }
+      .timeline-shell {
+        height: 50px;
+        position: relative;
+        flex: none;
+        background: #28282a;
+        border-bottom: 1px solid var(--line);
+      }
+      #timeline {
+        display: block;
+        width: 100%;
+        height: 50px;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      .timeline-tooltip {
+        position: fixed;
+        z-index: 50;
+        pointer-events: none;
+        padding: 6px 8px;
+        font:
+          11px/1.6 Consolas,
+          monospace;
+        white-space: pre;
+        background: #333338;
+        border: 1px solid #53535a;
+        border-radius: 4px;
+        box-shadow: 0 3px 15px #0005;
+      }
+      .split {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+        overflow: hidden;
+        background: var(--panel);
+      }
+      .ledger {
+        min-height: 0;
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .viewport {
+        overflow: auto;
+        flex: 1;
+        min-height: 0;
+        overflow-anchor: none;
+        scrollbar-width: thin;
+        scrollbar-color: #616164 transparent;
+      }
+      .record {
+        height: 30px;
+        display: grid;
+        grid-template-columns: 122px minmax(0, 1fr);
+        align-items: center;
+        border-bottom: 1px solid var(--subline);
+        font-size: 12px;
+        line-height: 18px;
+        position: relative;
+        outline: none;
+        cursor: default;
+      }
+      .record:hover {
+        background: var(--hover);
+      }
+      .record.selected {
+        background: var(--selected);
+        box-shadow: inset 3px 0 var(--blue);
+      }
+      .record.turn-start {
+        border-top: 1px solid #464648;
+      }
+      .event-cell {
+        position: relative;
+        display: flex;
+        justify-content: flex-end;
+        gap: 7px;
+        align-items: center;
+        height: 100%;
+        padding: 0 6px 0 2px;
+        min-width: 0;
+      }
+      .turn-rail {
+        position: absolute;
+        top: 0;
+        left: 0;
+        font:
+          9px/14px Consolas,
+          monospace;
+        color: var(--muted);
+        background: #363c41;
+        padding: 0 4px;
+        max-width: 58px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .request-dot {
+        position: absolute;
+        left: 12px;
+        top: -7px;
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        border-radius: 50%;
+        z-index: 2;
+      }
+      .request-dot:before {
+        content: "";
+        position: absolute;
+        left: 5px;
+        top: 5px;
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: #7b7b7d;
+      }
+      .request-dot:hover:before {
+        background: var(--blue);
+      }
+      .request-dot[aria-pressed="true"]:before {
+        background: var(--blue);
+        box-shadow: 0 0 0 1px #91b0f7;
+      }
+      .tag {
+        padding: 0 4px;
+        border-radius: 2px;
+        font-size: 11px;
+        line-height: 17px;
+        color: var(--muted);
+      }
+      .tag.user {
+        background: #32496a;
+        color: #91b9f6;
+      }
+      .tag.context {
+        color: #80b5a1;
+        background: #2b3e36;
+      }
+      .tag.system {
+        background: #353539;
+      }
+      .tag.message {
+        background: #393241;
+        color: var(--purple);
+      }
+      .tag.tool,
+      .tag.subtool {
+        background: transparent;
+        color: var(--orange);
+      }
+      .tag.compacted {
+        background: #483740;
+        color: #d2a5bd;
+      }
+      .tag.worker {
+        background: #313d43;
+        color: #9ec4d2;
+      }
+      .record.error .tag {
+        color: #ef8a94;
+        background: #513039;
+      }
+      .preview {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding-right: 9px;
+        min-width: 0;
+      }
+      .record.tool .preview,
+      .record.subtool .preview {
+        font:
+          11px/18px Consolas,
+          "Microsoft YaHei",
+          monospace;
+      }
+      .result-preview {
+        color: #a1a1a6;
+      }
+      .record.error .preview {
+        color: #ef9ca6;
+      }
+      .record.outside {
+        opacity: 0.24;
+      }
+      .mini-metrics {
+        display: none;
+        gap: 12px;
+        color: var(--faint);
+        font:
+          10px Consolas,
+          monospace;
+        white-space: nowrap;
+      }
+      .show-metrics .record {
+        grid-template-columns: 122px minmax(0, 1fr) 320px;
+      }
+      .show-metrics .mini-metrics {
+        display: flex;
+        justify-content: flex-end;
+        padding-right: 10px;
+      }
+      .summary-row {
+        height: 20px;
+        font-size: 10px;
+        color: var(--muted);
+        background: #252529;
+        padding: 0 10px 0 34px;
+        border-bottom: 1px solid var(--subline);
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+      }
+      .summary-row:hover {
+        background: var(--hover);
+      }
+      .empty {
+        padding: 36px 10px;
+        text-align: center;
+        color: var(--muted);
+      }
+      .history {
+        width: 100%;
+        height: 30px;
+        font-size: 11px;
+        color: var(--muted);
+        border-bottom: 1px solid var(--subline);
+        border-radius: 0;
+      }
+      #detail-panel {
+        width: var(--inspector);
+        min-width: 300px;
+        max-width: 75%;
+        flex: none;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        background: var(--panel);
+        border-left: 1px solid #444446;
+        min-height: 0;
+      }
+      #splitter {
+        position: absolute;
+        left: -4px;
+        top: 0;
+        bottom: 0;
+        width: 7px;
+        cursor: col-resize;
+        z-index: 10;
+      }
+      #splitter:hover {
+        background: #648de055;
+      }
+      .detail-header {
+        height: 42px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      #detail-title {
+        font-size: 11px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      #close-detail {
+        font-size: 17px;
+        color: var(--muted);
+      }
+      .detail-tabs {
+        display: flex;
+        height: 34px;
+        gap: 15px;
+        padding: 0 10px;
+        flex: none;
+        border-bottom: 1px solid var(--line);
+      }
+      .detail-tabs button {
+        font-size: 12px;
+        padding: 0;
+        border-radius: 0;
+        color: var(--muted);
+        border-bottom: 2px solid transparent;
+      }
+      .detail-tabs button.active {
+        border-color: var(--blue);
+        color: var(--blue);
+      }
+      #detail {
+        padding: 12px 14px;
+        overflow: auto;
+        flex: 1;
+        min-height: 0;
+        scrollbar-width: thin;
+        scrollbar-color: #616164 transparent;
+      }
+      .facts {
+        display: grid;
+        grid-template-columns: 86px minmax(0, 1fr);
+        font-size: 12px;
+        line-height: 22px;
+        gap: 0 8px;
+        margin-bottom: 16px;
+        overflow-wrap: anywhere;
+      }
+      .facts dt {
+        color: var(--muted);
+      }
+      .facts dd {
+        margin: 0;
+      }
+      .facts button {
+        padding: 0;
+        color: inherit;
+      }
+      .detail-section {
+        margin: 0 0 18px;
+      }
+      .detail-section > h3 {
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--muted);
+        margin: 0 0 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .detail-section > h3 button {
+        font-size: 11px;
+        color: var(--muted);
+        padding: 0;
+      }
+      .detail-section pre {
+        background: #1b1b1d;
+        border-radius: 4px;
+        padding: 10px;
+        font:
+          11px/1.7 Consolas,
+          "Microsoft YaHei",
+          monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        margin: 0;
+      }
+      .prose {
+        font-size: 13px;
+        line-height: 1.6;
+        overflow-wrap: anywhere;
+      }
+      .prose p {
+        margin: 0 0 10px;
+      }
+      .prose h1,
+      .prose h2,
+      .prose h3 {
+        font-size: 15px;
+        margin: 18px 0 10px;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+      }
+      .prose ul {
+        padding-left: 20px;
+      }
+      .prose pre {
+        background: #1b1b1d;
+        padding: 12px;
+        white-space: pre-wrap;
+        font:
+          11px/1.7 Consolas,
+          monospace;
+        border-radius: 4px;
+      }
+      .prose code {
+        font:
+          11px Consolas,
+          monospace;
+        background: #303034;
+        padding: 1px 3px;
+        border-radius: 3px;
+      }
+      .prose table {
+        border-collapse: collapse;
+        font-size: 12px;
+        max-width: 100%;
+        display: block;
+        overflow: auto;
+        margin: 10px 0;
+      }
+      .prose td,
+      .prose th {
+        padding: 5px 7px;
+        border: 1px solid #434347;
+      }
+      .prose a {
+        color: #93b6f1;
+      }
+      .note {
+        font-size: 11px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .bottom {
+        height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        flex: none;
+        background: var(--bg);
+        font-size: 11px;
+        color: var(--muted);
+        padding: 0 14px;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .bottom button {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      #live {
+        max-width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .popover {
+        position: absolute;
+        right: 15px;
+        top: 42px;
+        z-index: 30;
+        background: #27272a;
+        border: 1px solid #49494e;
+        box-shadow: 0 5px 22px #0006;
+        border-radius: 7px;
+        width: 240px;
+        padding: 7px;
+      }
+      .popover button {
+        display: block;
+        width: 100%;
+        text-align: left;
+        font-size: 12px;
+        padding: 7px 9px;
+      }
+      .popover label {
+        display: block;
+        padding: 6px 9px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .popover select {
+        max-width: 135px;
+        font-size: 11px;
+        float: right;
+      }
+      .popover hr {
+        border: 0;
+        border-top: 1px solid #404045;
+        margin: 4px;
+      }
+      .danger {
+        color: #ec8e98 !important;
+      }
+      #banner {
+        font-size: 11px;
+        color: #df9da6;
+        background: #432c32;
+        padding: 5px 10px;
+        max-height: 42px;
+        overflow: hidden;
+        flex: none;
+      }
+      #conversation {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        background: var(--bg);
+        padding: 24px max(22px, 8%);
+      }
+      .chat-item {
+        max-width: 800px;
+        margin: 0 auto 24px;
+      }
+      .chat-item.user .prose {
+        background: #303034;
+        border-radius: 14px;
+        padding: 12px 18px;
+        white-space: pre-wrap;
+      }
+      .chat-author {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .light {
+        color-scheme: light;
+        --bg: #f8f8fa;
+        --sidebar: #eeeeef;
+        --panel: #fff;
+        --hover: #f2f2f6;
+        --selected: #e8edf9;
+        --line: #dddde1;
+        --subline: #eeeef0;
+        --text: #202025;
+        --muted: #73737c;
+        --faint: #9999a1;
+      }
+      .light .popover {
+        background: #fff;
+        border-color: #ddd;
+      }
+      .light .timeline-shell {
+        background: #f4f4f7;
+      }
+      .light .tag.message {
+        background: #eee7f7;
+        color: #8864aa;
+      }
+      .light .tag.user {
+        background: #e6efff;
+        color: #527cba;
+      }
+      .light .session.selected {
+        background: #dddde5;
+      }
+      .light .detail-section pre,
+      .light .prose pre {
+        background: #f4f4f7;
+      }
+      .light .run-button {
+        background: #e1e1e7;
+        color: #444;
+        border-color: #ccc;
+      }
+      .light .turn-rail {
+        background: #e4e8f0;
+      }
+      .light .summary-row {
+        background: #f5f5f8;
+      }
+      .light #banner {
+        background: #fbe8eb;
+        color: #a74255;
+      }
+      .sidebar-closed .brand {
+        visibility: hidden;
+      }
+      body.resizing {
+        cursor: col-resize;
+        user-select: none;
+      }
+      @media (max-width: 900px) {
+        :root {
+          --sidebar-width: 220px;
+        }
+        .mode {
+          display: none;
+        }
+        #detail-panel {
+          position: absolute;
+          right: 0;
+          top: 158px;
+          bottom: 34px;
+          width: 55%;
+          max-width: 85%;
+          z-index: 15;
+          box-shadow: -5px 0 22px #0003;
+        }
+      }
+      @media (max-width: 620px) {
+        :root {
+          --sidebar-width: 0px;
+        }
+        .brand {
+          display: none;
+        }
+        .page-header {
+          padding-left: 10px;
+        }
+        .title-line h1 {
+          max-width: 80%;
+        }
+        .record {
+          grid-template-columns: 85px minmax(0, 1fr);
+        }
+        .event-cell {
+          padding-right: 4px;
+        }
+        .turn-rail {
+          max-width: 35px;
+          font-size: 8px;
+        }
+        .bottom {
+          gap: 7px;
+          font-size: 10px;
+        }
+        .search-wrap {
+          width: 145px;
+        }
+        .toolbar button {
+          padding: 1px 4px;
+        }
+        #detail-panel {
+          width: 90%;
+          max-width: 95%;
+          min-width: 260px;
+        }
+        .show-metrics .record {
+          grid-template-columns: 85px minmax(0, 1fr);
+        }
+        .show-metrics .mini-metrics {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <nav class="sidebar" aria-label="运行会话">
+        <div class="brand">
+          <svg width="25" height="25" viewBox="0 0 28 28" fill="none">
+            <path
+              d="M23 7c-2-4-10-6-15-1S3 19 9 22c5 3 12 1 14-4"
+              stroke="currentColor"
+              stroke-width="3"
+            />
+            <path
+              d="M20 7c-6 0-3 7-10 7 4 0 5 7 10 6"
+              stroke="currentColor"
+              stroke-width="2"
+            />
+          </svg>
+          <div class="brand-name">
+            DeepLoopMinder<small>本地运行轨迹</small>
+          </div>
+          <button id="hide-sidebar" aria-label="收起侧边栏">◧</button>
+        </div>
+        <button class="run-button" id="all-sessions">⊕ 全部运行会话</button>
+        <div class="side-title">
+          工作区<button id="side-search-toggle" aria-label="搜索会话">⌕</button>
+        </div>
+        <input
+          id="side-search"
+          type="search"
+          placeholder="搜索当前会话"
+          aria-label="搜索会话"
+          hidden
+        />
+        <div class="workspace-name" id="workspace-name">▱ 项目运行</div>
+        <div class="session-list" id="sessions"></div>
+        <div class="side-footer">
+          <button id="theme" aria-label="切换主题">⚙ 外观</button>
+        </div>
+      </nav>
+      <section class="content">
+        <header class="page-header">
+          <div class="title-line">
+            <button id="show-sidebar" aria-label="展开侧边栏" hidden>◧</button>
+            <h1 id="page-title">项目运行轨迹</h1>
+            <span class="mode">♧ PMAgent</span>
+            <div class="head-actions">
+              <button id="menu-toggle" aria-label="更多操作">···</button
+              ><button id="toggle-detail" aria-label="打开右侧边栏">◧</button>
+            </div>
+          </div>
+          <div class="page-tabs" role="tablist" aria-label="会话视图">
+            <button role="tab" id="chat-tab" aria-selected="false">对话</button
+            ><button
+              role="tab"
+              id="trace-tab"
+              class="active"
+              aria-selected="true"
+            >
+              轨迹
+            </button>
+          </div>
+          <div id="menu" class="popover" hidden>
+            <label
+              >角色<select id="agent" aria-label="角色">
+                <option value="">全部角色</option>
+              </select></label
+            ><label
+              >类型<select id="kind" aria-label="记录类型">
+                <option value="">全部类型</option>
+                <option value="system">系统</option>
+                <option value="user">用户</option>
+                <option value="context">上下文</option>
+                <option value="compacted">压缩</option>
+                <option value="message">助手</option>
+                <option value="tool">工具</option>
+                <option value="subtool">子工具</option>
+                <option value="worker">委派</option>
+              </select></label
+            ><label><input id="only-errors" type="checkbox" /> 仅错误</label
+            ><label
+              ><input id="metric-columns" type="checkbox" /> 显示用量列</label
+            >
+            <hr />
+            <button id="follow">暂停跟随</button
+            ><button id="export">导出轨迹</button
+            ><button id="stop" class="danger">停止运行</button>
+            <div id="stop-message" class="note"></div>
+          </div>
+        </header>
+        <div
+          id="trace-toolbar"
+          class="toolbar"
+          role="toolbar"
+          aria-label="轨迹工具栏"
+        >
+          <button
+            id="duration-toggle"
+            aria-label="使用实际时长"
+            aria-pressed="false"
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+            >
+              <circle cx="8" cy="8" r="5.25" />
+              <path d="M8 4.75V8l2.25 1.5" /></svg
+            >时长</button
+          ><button
+            id="turns-toggle"
+            aria-label="收起所有轮次"
+            aria-pressed="false"
+          >
+            ⊟ 轮次</button
+          ><button
+            id="calls-toggle"
+            aria-label="收起所有调用"
+            aria-pressed="false"
+          >
+            ⊟ 调用</button
+          ><button id="clear-range" hidden aria-label="清除时间范围">
+            × 范围
+          </button>
+          <div class="search-wrap">
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+            >
+              <circle cx="6.5" cy="6.5" r="4.5" />
+              <path d="M10 10l4 4" /></svg
+            ><input
+              id="search"
+              type="search"
+              placeholder="搜索"
+              aria-label="搜索轨迹"
+            />
+          </div>
+        </div>
+        <div id="timeline-shell" class="timeline-shell" aria-label="轨迹时间线">
+          <canvas
+            id="timeline"
+            tabindex="0"
+            aria-label="时间线概览；水平拖动可聚焦事件"
+          ></canvas>
+        </div>
+        <div id="time-tooltip" class="timeline-tooltip" hidden></div>
+        <div id="banner" hidden></div>
+        <main id="trace-main" class="split">
+          <section class="ledger">
+            <div
+              id="stream"
+              class="viewport"
+              tabindex="0"
+              role="table"
+              aria-label="轨迹账本"
+            >
+              <div id="rows"></div>
+            </div>
+          </section>
+          <aside id="detail-panel" aria-label="事件详情" hidden>
+            <div
+              id="splitter"
+              role="separator"
+              tabindex="0"
+              aria-label="调整事件详情宽度"
+              aria-orientation="vertical"
+              aria-valuemin="25"
+              aria-valuemax="75"
+              aria-valuenow="38"
+            ></div>
+            <div class="detail-header">
+              <span id="detail-tag" class="tag"></span
+              ><span id="detail-title">事件详情</span
+              ><button id="close-detail" aria-label="关闭详情">×</button>
+            </div>
+            <div
+              id="detail-tabs"
+              class="detail-tabs"
+              role="tablist"
+              aria-label="事件详情"
+            >
+              <button
+                data-tab="overview"
+                role="tab"
+                aria-selected="true"
+                class="active"
+              >
+                概述</button
+              ><button data-tab="preview" role="tab" aria-selected="false">
+                预览</button
+              ><button data-tab="raw" role="tab" aria-selected="false">
+                原始内容
+              </button>
+            </div>
+            <div id="detail"><p class="note">选择一条记录查看详情。</p></div>
+          </aside>
+        </main>
+        <div id="conversation" hidden></div>
+        <footer class="bottom">
+          <span id="step-summary">等待运行事件</span
+          ><span id="usage-summary">— tok</span
+          ><button id="live" title="点击切换实时跟随">实时跟随</button>
+        </footer>
+      </section>
+    </div>
+    <script>
+      "use strict";
+      // 事件 → 独立记录投影 → 快照 → 分组布局 → 虚拟行；不读取或改写业务会话状态。
+      const metricNames = [
+        "input",
+        "cacheRead",
+        "cacheWrite",
+        "output",
+        "think",
+      ];
+      const labels = {
+        system: "SYSTEM",
+        user: "USER",
+        context: "CONTEXT",
+        compacted: "COMPACTED",
+        message: "MESSAGE",
+        tool: "TOOL",
+        subtool: "SUBTOOL",
+        worker: "WORKER",
+      };
+      const stringify = (v) =>
+        typeof v === "string" ? v : (JSON.stringify(v, null, 2) ?? "");
+      const textOf = (v) =>
+        typeof v === "string"
+          ? v
+          : Array.isArray(v)
+            ? v.map(textOf).filter(Boolean).join("\n")
+            : v && typeof v === "object"
+              ? (v.text ?? textOf(v.content) ?? "")
+              : "";
+      const finite = (v) =>
+        typeof v === "number" && Number.isFinite(v) ? v : null;
+      const emptyUsage = () =>
+        Object.fromEntries(metricNames.map((k) => [k, null]));
+      function usageOf(message) {
+        const u = message?.usage_metadata ?? message?.usage ?? null;
+        if (!u) return emptyUsage();
+        const i = u.input_token_details ?? {},
+          o = u.output_token_details ?? {};
+        return {
+          input: finite(u.input_tokens),
+          cacheRead: finite(i.cache_read),
+          cacheWrite: finite(i.cache_creation),
+          output: finite(u.output_tokens),
+          think: finite(o.reasoning),
+        };
+      }
+      function addUsage(a, b) {
+        for (const k of metricNames)
+          if (b[k] != null) a[k] = (a[k] ?? 0) + b[k];
+        return a;
+      }
+      class TrajectoryProjection {
+        constructor() {
+          this.events = new Map();
+          this.records = new Map();
+          this.turns = new Map();
+          this.requests = new Map();
+          this.lastRequest = new Map();
+          this.nativeMessages = new Map();
+          this.nativeUsage = new Map();
+          this.ordinal = 0;
+          this.version = 0;
+        }
+        record(id, e, kind, name) {
+          let r = this.records.get(id);
+          if (!r) {
+            r = {
+              id,
+              index: this.records.size + 1,
+              anchor: this.ordinal,
+              kind,
+              name,
+              agent: e.agent ?? "pm",
+              thread: e.thread_id ?? "",
+              run: e.run_id ?? "",
+              turn: this.turnKey(e),
+              request: null,
+              start: Date.parse(e.timestamp),
+              end: null,
+              duration: null,
+              status: "message",
+              error: false,
+              input: null,
+              output: null,
+              text: "",
+              schema: null,
+              usage: emptyUsage(),
+              events: [],
+            };
+            this.records.set(id, r);
+          }
+          r.events.push(e);
+          r.error ||= e.phase === "error";
+          return r;
+        }
+        turnKey(e) {
+          return JSON.stringify([
+            e.agent ?? "pm",
+            e.thread_id ?? "",
+            e.run_id ?? "legacy",
+          ]);
+        }
+        scope(e) {
+          return JSON.stringify([
+            e.agent ?? "pm",
+            e.thread_id ?? "",
+            e.run_id ?? "",
+          ]);
+        }
+        apply(events) {
+          for (const e of events) {
+            if (this.events.has(e.id)) continue;
+            this.events.set(e.id, e);
+            this.ordinal++;
+            const d = e.data ?? {},
+              scope = this.scope(e),
+              turn = this.turnKey(e);
+            let t = this.turns.get(turn);
+            if (!t) {
+              t = {
+                id: turn,
+                agent: e.agent ?? "pm",
+                thread: e.thread_id ?? "",
+                run: e.run_id ?? "",
+                start: Date.parse(e.timestamp),
+                end: null,
+                status: "unknown",
+              };
+              this.turns.set(turn, t);
+            }
+            // Worker结束通知可能不重复session_id；turn_id仍是跨通知的稳定关联键。
+            const span = JSON.stringify([
+              e.kind === "worker" ? e.agent : scope,
+              e.kind,
+              e.span_id ?? e.id,
+            ]);
+            if (e.kind === "turn") {
+              t.status = e.phase === "start" ? "running" : "end";
+              if (e.phase === "end") t.end = Date.parse(e.timestamp);
+              continue;
+            }
+            if (e.kind === "input") {
+              const r = this.record("input:" + e.id, e, "user", "用户输入");
+              r.input = d;
+              r.text = textOf(d.content) || stringify(d);
+              continue;
+            }
+            if (e.kind === "context") {
+              // 新日志通过span关联；旧日志上下文紧邻下一次请求，用scope兜底，不伪造缺失的消息。
+              const requestId = "request:" + scope + ":" + e.span_id;
+              const q = {
+                ...this.requests.get(requestId),
+                id: requestId,
+                turn,
+                round: d.round,
+                header: d,
+                event: e,
+                records: [],
+              };
+              this.requests.set(requestId, q);
+              this.lastRequest.set(scope, q);
+              if (q.modelSpan) this.records.get(q.modelSpan).input = d;
+              if (d.system) {
+                const r = this.record(
+                  requestId + ":system",
+                  e,
+                  "system",
+                  "系统提示词",
+                );
+                r.input = d.system;
+                r.text = textOf(d.system.content) || stringify(d.system);
+                r.request = requestId;
+              }
+              const r = this.record(
+                requestId + ":context",
+                e,
+                "context",
+                "请求上下文",
+              );
+              r.input = d.messages ?? d;
+              r.text = `${d.message_count ?? "?"} 条消息 · ${d.available_tools?.length ?? d.tools?.length ?? "?"} 个工具`;
+              r.request = requestId;
+              continue;
+            }
+            if (e.kind === "model") {
+              const r = this.record(span, e, "message", e.name || "模型请求");
+              // 响应按自身请求绑定，避免并发请求结束时误用最近一条请求的上下文。
+              let q =
+                this.requests.get(r.request) ??
+                this.requests.get("request:" + scope + ":" + e.span_id) ??
+                this.lastRequest.get(scope);
+              if (e.phase === "start" && (!q || q.modelSpan)) {
+                q = {
+                  id: "request:" + span,
+                  turn,
+                  header: null,
+                  event: e,
+                  records: [],
+                };
+                this.requests.set(q.id, q);
+                this.lastRequest.set(scope, q);
+              }
+              if (q) {
+                q.modelSpan = span;
+                r.request = q.id;
+              }
+              r.status = e.phase;
+              r.output = e.phase !== "start" ? d : r.output;
+              r.duration = e.duration_ms ?? r.duration;
+              if (e.phase === "start") {
+                r.start = Date.parse(e.timestamp);
+                r.input = q?.header ?? d;
+              } else {
+                r.end = Date.parse(e.timestamp);
+              }
+              const messages =
+                d.messages ?? (d.content !== undefined ? [d] : []);
+              if (messages.length) {
+                r.text = messages
+                  .map(
+                    (m) =>
+                      textOf(m.content) ||
+                      m.tool_calls?.map((c) => "→ " + c.name).join(", ") ||
+                      "",
+                  )
+                  .join("\n");
+                r.usage = messages.reduce(
+                  (a, m) => addUsage(a, usageOf(m)),
+                  emptyUsage(),
+                );
+                r.responseMessages = messages;
+              } else if (d.error) r.text = stringify(d.error);
+              continue;
+            }
+            if (e.kind === "tool") {
+              const r = this.record(span, e, "tool", e.name);
+              r.status = e.phase;
+              r.duration = e.duration_ms ?? r.duration;
+              r.request ??= this.lastRequest.get(scope)?.id ?? null;
+              if (e.phase === "start") {
+                r.input = d.args;
+                r.start = Date.parse(e.timestamp);
+              } else {
+                r.output = d.result ?? d;
+                r.end = Date.parse(e.timestamp);
+              }
+              r.text =
+                e.name +
+                " " +
+                stringify(r.input ?? r.output).replace(/\s+/g, " ");
+              continue;
+            }
+            if (e.kind === "native") {
+              const cat = d.sessionUpdate;
+              if (cat === "usage_update") {
+                this.nativeUsage.set(scope, {
+                  used: d.used,
+                  size: d.size,
+                  model: d._meta?.["_claude/model"],
+                });
+                continue;
+              }
+              if (cat === "agent_message_chunk") {
+                let id = this.nativeMessages.get(scope);
+                if (!id) {
+                  id = "native-message:" + e.id;
+                  this.nativeMessages.set(scope, id);
+                }
+                const r = this.record(id, e, "message", "Worker 消息");
+                r.text += textOf(d.content);
+                r.output = r.text;
+                r.status = "partial";
+                r.end = Date.parse(e.timestamp);
+                continue;
+              }
+              if (cat === "tool_call" || cat === "tool_call_update") {
+                this.nativeMessages.delete(scope);
+                const id =
+                    "native-tool:" + scope + ":" + (d.toolCallId ?? e.id),
+                  r = this.record(id, e, "subtool", d.title ?? "原生工具");
+                r.name = d.title ?? r.name;
+                r.input = d.rawInput ?? r.input;
+                r.output = d.rawOutput ?? d.content ?? r.output;
+                r.status = d.status ?? r.status;
+                r.parent =
+                  d.parentToolCallId ??
+                  d._meta?.parentToolCallId ??
+                  d._meta?.claudeCode?.parentToolCallId ??
+                  r.parent;
+                r.callId = d.toolCallId;
+                if (["completed", "failed"].includes(d.status)) {
+                  r.end = Date.parse(e.timestamp);
+                  r.duration = r.end - r.start;
+                }
+                r.error ||= d.status === "failed";
+                r.text =
+                  r.name +
+                  " " +
+                  stringify(r.input ?? r.output).replace(/\s+/g, " ");
+                continue;
+              }
+              if (cat === "plan") {
+                const r = this.record(
+                  "plan:" + e.id,
+                  e,
+                  "context",
+                  "Worker 计划",
+                );
+                r.input = d;
+                r.text = stringify(d.entries ?? d);
+                continue;
+              }
+              if (
+                ["compaction", "compaction_start", "compaction_end"].includes(
+                  cat,
+                )
+              ) {
+                const r = this.record(
+                  "compact:" + e.id,
+                  e,
+                  "compacted",
+                  "Worker 压缩",
+                );
+                r.input = d;
+                r.text = stringify(d);
+                continue;
+              }
+              // 可见的其他ACP通知保留在上下文类，隐藏思考已在采集端排除。
+              const r = this.record(
+                "native:" + e.id,
+                e,
+                "context",
+                cat ?? e.name,
+              );
+              r.input = d;
+              r.text = stringify(d);
+              continue;
+            }
+            if (e.kind === "compaction") {
+              const r = this.record(span, e, "compacted", e.name);
+              r.status = e.phase;
+              r.input = d;
+              r.text = textOf(d.content) || stringify(d);
+              continue;
+            }
+            const r = this.record(
+              span,
+              e,
+              e.kind === "worker" ? "worker" : "context",
+              e.name,
+            );
+            r.status = e.phase;
+            r.duration = e.duration_ms ?? r.duration;
+            r.input ??= d.payload ?? d;
+            r.output = e.phase !== "start" ? d : r.output;
+            r.text = stringify(d.result ?? d.error ?? d.payload ?? d);
+            if (e.phase !== "start") r.end = Date.parse(e.timestamp);
+          }
+          this.version++;
+        }
+        snapshot() {
+          const records = [...this.records.values()].sort(
+              (a, b) => a.anchor - b.anchor,
+            ),
+            usage = emptyUsage();
+          // 原生usage_update是上下文占用量，不是本次计费Token，绝不混入请求用量。
+          for (const r of records) {
+            if (r.kind === "message") addUsage(usage, r.usage);
+            if (r.kind === "tool" && r.request) {
+              const tools = this.requests.get(r.request)?.header?.tools ?? [];
+              r.schema =
+                tools.find((t) => (t.function?.name ?? t.name) === r.name) ??
+                null;
+            }
+          }
+          return {
+            records,
+            turns: this.turns,
+            requests: this.requests,
+            usage,
+            nativeUsage: this.nativeUsage,
+            eventCount: this.events.size,
+          };
+        }
+      }
+      // 同一份纯布局同时服务浏览器和测试，DSH记录行高为30px。
+      function deriveLayout(
+        snapshot,
+        filter,
+        foldedTurns = new Set(),
+        foldedRequests = new Set(),
+        historyLimit = Number.MAX_SAFE_INTEGER,
+      ) {
+        const seenSystem = new Map(),
+          nativeRequest = new Map(),
+          seenTurn = new Set(),
+          counts = new Map();
+        const recordRequest = new Map();
+        const turnNumbers = new Map();
+        const requestNumbers = new Map();
+        for (const q of snapshot.requests.values())
+          requestNumbers.set(q.id, requestNumbers.size + 1);
+        const candidates = [];
+        for (const r of snapshot.records) {
+          if (!turnNumbers.has(r.turn))
+            turnNumbers.set(r.turn, turnNumbers.size + 1);
+          if (r.kind === "message" && r.events[0]?.kind === "native")
+            nativeRequest.set(r.turn, r.id);
+          const request =
+            r.request ??
+            (r.kind === "subtool" ? nativeRequest.get(r.turn) : null);
+          recordRequest.set(
+            r.id,
+            request ?? (r.kind === "message" ? r.id : null),
+          );
+          if (r.kind === "context" && r.request) continue;
+          if (r.kind === "system") {
+            if (seenSystem.get(r.turn) === r.text) continue;
+            seenSystem.set(r.turn, r.text);
+          }
+          if (!filter(r)) continue;
+          candidates.push(r);
+          counts.set(r.turn, (counts.get(r.turn) ?? 0) + 1);
+        }
+        const visible = candidates.slice(-historyLimit),
+          result = [];
+        if (candidates.length > historyLimit)
+          result.push({
+            type: "history",
+            id: "history",
+            height: 30,
+            remaining: candidates.length - historyLimit,
+          });
+        for (const r of visible) {
+          const first = !seenTurn.has(r.turn);
+          seenTurn.add(r.turn);
+          if (foldedTurns.has(r.turn)) {
+            if (first)
+              result.push({
+                type: "turn-summary",
+                id: "turn:" + r.turn,
+                turn: r.turn,
+                record: r,
+                count: counts.get(r.turn),
+                height: 30,
+              });
+            continue;
+          }
+          const request = recordRequest.get(r.id);
+          if (
+            ["tool", "subtool"].includes(r.kind) &&
+            foldedRequests.has(request)
+          )
+            continue;
+          result.push({
+            type: "record",
+            id: r.id,
+            record: r,
+            first,
+            request,
+            height: 30,
+          });
+        }
+        return {
+          rows: result,
+          matched: candidates,
+          recordRequest,
+          turnNumbers,
+          requestNumbers,
+        };
+      }
+      function virtualWindow(rows, top, height) {
+        const start = Math.max(0, Math.floor(top / 30) - 8),
+          end = Math.min(rows.length, Math.ceil((top + height) / 30) + 8);
+        return {
+          start,
+          end,
+          before: start * 30,
+          after: (rows.length - end) * 30,
+          rows: rows.slice(start, end),
+        };
+      }
+      // 同一投影代码可用Node测试；浏览器分支才接触DOM。
+      if (typeof module !== "undefined" && module.exports)
+        module.exports = {
+          TrajectoryProjection,
+          deriveLayout,
+          virtualWindow,
+          usageOf,
+        };
+      // 视图层单独消费轨迹快照；DSH的紧凑账本、按需检查器、时间线保留本项目数据契约。
+      if (typeof document !== "undefined") {
+        const $ = (id) => document.getElementById(id);
+        const names = {
+          system: "系统",
+          user: "用户",
+          context: "上下文",
+          compacted: "压缩",
+          message: "助手",
+          tool: "工具",
+          subtool: "子工具",
+          worker: "委派",
+        };
+        const projection = new TrajectoryProjection(),
+          foldedTurns = new Set(),
+          foldedRequests = new Set();
+        let snapshot = projection.snapshot(),
+          rows = [],
+          cursor = 0,
+          state = {},
+          selected = null,
+          detailTab = "overview",
+          inspectorMode = "record",
+          actualDuration = false,
+          following = true,
+          range = null,
+          drag = null,
+          resizeDrag = false,
+          historyLimit = 200,
+          hoverTimer = null,
+          searchTimer = null,
+          activeTurn = null,
+          conversationShown = false;
+        let timelineHits = [],
+          recordRequest = new Map(),
+          turnNumbers = new Map(),
+          requestNumbers = new Map();
+        const number = (v) => (v == null ? "—" : v.toLocaleString("zh-CN"));
+        const duration = (v) =>
+          v == null
+            ? "—"
+            : v < 1000
+              ? Math.round(v) + " 毫秒"
+              : v < 60000
+                ? (v / 1000).toFixed(1) + " 秒"
+                : Math.floor(v / 60000) +
+                  "分" +
+                  Math.round((v % 60000) / 1000) +
+                  "秒";
+        const time = (v) =>
+          Number.isFinite(v)
+            ? new Date(v)
+                .toLocaleString("zh-CN", {
+                  timeZone: "Asia/Shanghai",
+                  hour12: false,
+                })
+                .replaceAll("/", "-")
+            : "未采集";
+        function element(tag, cls, text) {
+          const e = document.createElement(tag);
+          if (cls) e.className = cls;
+          if (text != null) e.textContent = text;
+          return e;
+        }
+        function isFinished() {
+          return (
+            state.run && !["running", "preparing"].includes(state.run.status)
+          );
+        }
+        function match(r) {
+          const query = $("search").value.toLowerCase().trim();
+          return (
+            (!activeTurn || r.turn === activeTurn) &&
+            (!$("agent").value || r.agent === $("agent").value) &&
+            (!$("kind").value || r.kind === $("kind").value) &&
+            (!$("only-errors").checked || r.error) &&
+            (!query ||
+              (
+                r.name +
+                " " +
+                r.text +
+                " " +
+                stringify(r.input) +
+                " " +
+                stringify(r.output)
+              )
+                .toLowerCase()
+                .includes(query))
+          );
+        }
+        function inRange(r) {
+          return (
+            !range || (r.start <= range[1] && (r.end ?? r.start) >= range[0])
+          );
+        }
+        function sourceRequest(r) {
+          return snapshot.requests.get(r.request);
+        }
+        function turnLabel(id) {
+          const t = snapshot.turns.get(id);
+          if (!t?.thread) return "接入记录";
+          // ACP仅提供原生会话时不能臆造用户轮次，官方Run才有明确轮次边界。
+          return t.run ? `第 ${turnNumbers.get(id)} 轮` : "原生会话";
+        }
+        function sessionCount() {
+          return new Set(
+            snapshot.records.filter((r) => r.thread).map((r) => r.thread),
+          ).size;
+        }
+        function rowText(r) {
+          if (r.kind === "tool" || r.kind === "subtool")
+            return (
+              r.name +
+              " " +
+              stringify(r.input ?? "")
+                .replace(/\s+/g, " ")
+                .slice(0, 512)
+            );
+          return (r.text || r.name || "（仅工具调用）")
+            .replace(/\s+/g, " ")
+            .slice(0, 512);
+        }
+        // 与DSH一致，快照头在请求检查器中查看，不为同一system/context在每一步再造一行。
+        function buildRows() {
+          const layout = deriveLayout(
+            snapshot,
+            match,
+            foldedTurns,
+            foldedRequests,
+            historyLimit,
+          );
+          recordRequest = layout.recordRequest;
+          turnNumbers = layout.turnNumbers;
+          requestNumbers = layout.requestNumbers;
+          return layout.rows;
+        }
+        function rebuild(scroll = following) {
+          snapshot = projection.snapshot();
+          rows = buildRows();
+          renderSessions();
+          renderRows();
+          if (scroll) {
+            $("stream").scrollTop = rows.length * 30;
+            renderRows();
+          }
+          renderTimeline();
+          renderSummary();
+          if (selected && !$("detail-panel").hidden) showDetail();
+          if (conversationShown) renderConversation();
+        }
+        function renderRows() {
+          const view = $("stream"),
+            root = $("rows"),
+            window = virtualWindow(rows, view.scrollTop, view.clientHeight),
+            start = window.start,
+            end = window.end;
+          root.replaceChildren();
+          const top = element("div");
+          top.style.height = start * 30 + "px";
+          root.append(top);
+          for (const item of rows.slice(start, end)) {
+            if (item.type === "history") {
+              const b = element(
+                "button",
+                "history",
+                `加载更早的历史 · ${item.remaining} 条`,
+              );
+              b.onclick = loadOlder;
+              root.append(b);
+              continue;
+            }
+            if (item.type === "turn-summary") {
+              const b = element(
+                "button",
+                "history",
+                `▸ ${turnLabel(item.turn)} · ${item.record.agent} · ${item.count} 条记录`,
+              );
+              b.onclick = () => {
+                foldedTurns.delete(item.turn);
+                rebuild(false);
+              };
+              root.append(b);
+              continue;
+            }
+            const r = item.record,
+              row = element(
+                "div",
+                "record " +
+                  r.kind +
+                  (r.error ? " error" : "") +
+                  (!inRange(r) ? " outside" : "") +
+                  (selected === r.id ? " selected" : "") +
+                  (item.first ? " turn-start" : ""),
+              );
+            row.dataset.id = r.id;
+            row.setAttribute("role", "row");
+            row.tabIndex = 0;
+            row.setAttribute("aria-label", names[r.kind] + "，" + rowText(r));
+            const event = element("div", "event-cell");
+            event.setAttribute("role", "cell");
+            if (item.first) {
+              const rail = element("button", "turn-rail", turnLabel(r.turn));
+              rail.title = `${r.agent} · ${r.thread || "会话标识未采集"}`;
+              rail.setAttribute("aria-label", "折叠此轮次");
+              rail.onclick = (e) => {
+                e.stopPropagation();
+                foldedTurns.add(r.turn);
+                following = false;
+                rebuild(false);
+              };
+              event.append(rail);
+            }
+            if (r.kind === "message") {
+              const dot = element("button", "request-dot");
+              dot.setAttribute(
+                "aria-label",
+                r.request
+                  ? `请求 #${requestNumbers.get(r.request)}`
+                  : "原生消息片段",
+              );
+              dot.title = r.request
+                ? `请求 #${requestNumbers.get(r.request)} · 折叠/展开工具调用`
+                : "原生消息片段 · 折叠/展开后续工具";
+              dot.setAttribute(
+                "aria-pressed",
+                foldedRequests.has(item.request),
+              );
+              dot.onclick = (e) => {
+                e.stopPropagation();
+                toggleRequest(item.request);
+              };
+              event.append(dot);
+            }
+            event.append(
+              element("span", "tag " + r.kind, names[r.kind] ?? r.kind),
+            );
+            row.append(event);
+            const preview = element("div", "preview");
+            preview.setAttribute("role", "cell");
+            preview.append(document.createTextNode(rowText(r)));
+            if (["tool", "subtool"].includes(r.kind) && r.output != null) {
+              preview.append(
+                element(
+                  "span",
+                  "result-preview",
+                  " → " +
+                    (textOf(r.output) || stringify(r.output))
+                      .replace(/\s+/g, " ")
+                      .slice(0, 512),
+                ),
+              );
+            }
+            row.append(preview);
+            const metrics = element("div", "mini-metrics");
+            for (const key of metricNames)
+              metrics.append(element("span", "", number(r.usage[key])));
+            metrics.title = "输入 / 缓存读 / 缓存写 / 输出 / 推理";
+            row.append(metrics);
+            row.onclick = () => choose(r.id, false);
+            row.onkeydown = (e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                choose(r.id, false);
+              }
+            };
+            root.append(row);
+          }
+          const bottom = element("div");
+          bottom.style.height = Math.max(0, (rows.length - end) * 30) + "px";
+          root.append(bottom);
+          if (!rows.length)
+            root.append(element("div", "empty", "暂无匹配记录"));
+        }
+        function loadOlder() {
+          const before = rows.length;
+          historyLimit += 200;
+          following = false;
+          rebuild(false);
+          $("stream").scrollTop += (rows.length - before) * 30;
+          renderRows();
+        }
+        function toggleRequest(id) {
+          if (!id) return;
+          foldedRequests.has(id)
+            ? foldedRequests.delete(id)
+            : foldedRequests.add(id);
+          following = false;
+          rebuild(false);
+        }
+        function choose(id, locate = true) {
+          const r = projection.records.get(id);
+          if (!r) return;
+          selected = id;
+          following = false;
+          inspectorMode = "record";
+          foldedTurns.delete(r.turn);
+          foldedRequests.delete(recordRequest.get(id));
+          $("detail-panel").hidden = false;
+          if (locate) {
+            historyLimit = Math.max(historyLimit, snapshot.records.length);
+            range = null;
+            $("clear-range").hidden = true;
+            rows = buildRows();
+            const i = rows.findIndex((x) => x.id === id);
+            if (i >= 0)
+              $("stream").scrollTop = Math.max(
+                0,
+                i * 30 - $("stream").clientHeight / 2,
+              );
+          }
+          renderRows();
+          showDetail();
+          renderSummary();
+        }
+        function setDetailTab(tab) {
+          detailTab = tab;
+          for (const b of $("detail-tabs").children) {
+            b.classList.toggle("active", b.dataset.tab === tab);
+            b.setAttribute("aria-selected", b.dataset.tab === tab);
+          }
+          showDetail();
+        }
+        function facts(values) {
+          const dl = element("dl", "facts");
+          for (const [label, value] of values) {
+            dl.append(element("dt", "", label));
+            const dd = element("dd");
+            if (value instanceof Node) dd.append(value);
+            else dd.textContent = value;
+            dl.append(dd);
+          }
+          return dl;
+        }
+        function section(title, value, { raw = false, copy = true } = {}) {
+          const root = element("section", "detail-section"),
+            h = element("h3", "", title);
+          if (copy) {
+            const b = element("button", "", "复制");
+            b.onclick = async () => {
+              try {
+                await navigator.clipboard.writeText(stringify(value));
+                b.textContent = "已复制";
+              } catch {
+                b.textContent = "请选中复制";
+              }
+            };
+            h.append(b);
+          }
+          root.append(h);
+          if (raw) root.append(element("pre", "", stringify(value)));
+          else {
+            const prose = element("div", "prose");
+            renderMarkdown(prose, textOf(value) || stringify(value));
+            root.append(prose);
+          }
+          return root;
+        }
+        // 预览通过DOM构造常用Markdown节点；日志文本从不插入innerHTML，不执行HTML或图片地址。
+        function renderMarkdown(root, text) {
+          const lines = text.split("\n");
+          let paragraph = [],
+            code = null,
+            codeLines = [],
+            list = null;
+          const inline = (parent, value) => {
+            const pattern =
+              /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g;
+            let offset = 0;
+            for (const m of value.matchAll(pattern)) {
+              parent.append(
+                document.createTextNode(value.slice(offset, m.index)),
+              );
+              const chunk = m[0];
+              if (chunk.startsWith("`"))
+                parent.append(element("code", "", chunk.slice(1, -1)));
+              else if (chunk.startsWith("**"))
+                parent.append(element("strong", "", chunk.slice(2, -2)));
+              else {
+                const parts = chunk.match(/^\[([^\]]+)\]\(([^)]+)\)$/),
+                  a = element("a", "", parts[1]);
+                a.href = parts[2];
+                a.target = "_blank";
+                a.rel = "noreferrer noopener";
+                parent.append(a);
+              }
+              offset = m.index + chunk.length;
+            }
+            parent.append(document.createTextNode(value.slice(offset)));
+          };
+          const flush = () => {
+            if (paragraph.length) {
+              const p = element("p");
+              inline(p, paragraph.join("\n"));
+              root.append(p);
+              paragraph = [];
+            }
+            list = null;
+          };
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (line.trim().startsWith("```")) {
+              if (code !== null) {
+                root.append(element("pre", "", codeLines.join("\n")));
+                code = null;
+                codeLines = [];
+              } else {
+                flush();
+                code = line.slice(3);
+              }
+              continue;
+            }
+            if (code !== null) {
+              codeLines.push(line);
+              continue;
+            }
+            const heading = line.match(/^(#{1,6})\s+(.+)$/);
+            if (heading) {
+              flush();
+              const h = element("h" + Math.min(3, heading[1].length));
+              inline(h, heading[2]);
+              root.append(h);
+              continue;
+            }
+            if (
+              /^\s*\|.*\|\s*$/.test(line) &&
+              i + 1 < lines.length &&
+              /^\s*\|?\s*:?-{2,}/.test(lines[i + 1])
+            ) {
+              flush();
+              const table = element("table");
+              let first = true;
+              for (; i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]); i++) {
+                if (/^[\s|:\-]+$/.test(lines[i])) continue;
+                const tr = element("tr");
+                for (const cell of lines[i].trim().slice(1, -1).split("|")) {
+                  const td = element(first ? "th" : "td");
+                  inline(td, cell.trim());
+                  tr.append(td);
+                }
+                table.append(tr);
+                first = false;
+              }
+              i--;
+              root.append(table);
+              continue;
+            }
+            const bullet = line.match(/^\s*(?:[-*]|\d+\.)\s+(.+)$/);
+            if (bullet) {
+              if (paragraph.length) flush();
+              if (!list) {
+                list = element("ul");
+                root.append(list);
+              }
+              const li = element("li");
+              inline(li, bullet[1]);
+              list.append(li);
+              continue;
+            }
+            if (!line.trim()) {
+              flush();
+              continue;
+            }
+            paragraph.push(line);
+          }
+          flush();
+          if (codeLines.length)
+            root.append(element("pre", "", codeLines.join("\n")));
+        }
+        function appendImages(root, value, depth = 0) {
+          if (depth > 8 || !value || typeof value !== "object") return;
+          if (
+            value.type === "image" &&
+            ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(
+              value.mimeType,
+            ) &&
+            typeof value.data === "string" &&
+            /^[A-Za-z0-9+/]+=*$/.test(value.data)
+          ) {
+            const image = element("img");
+            image.src = `data:${value.mimeType};base64,${value.data}`;
+            image.alt = "轨迹中的公开图片";
+            image.style.maxWidth = "100%";
+            root.append(image);
+          }
+          for (const item of Object.values(value)) {
+            if (item && typeof item === "object")
+              appendImages(root, item, depth + 1);
+          }
+        }
+        function showDetail() {
+          const r = projection.records.get(selected);
+          if (!r) return;
+          const q = sourceRequest(r),
+            root = $("detail");
+          root.replaceChildren();
+          $("detail-tag").className =
+            "tag " + (inspectorMode === "request" ? "context" : r.kind);
+          $("detail-tag").textContent =
+            inspectorMode === "request" ? "请求" : names[r.kind];
+          $("detail-title").textContent =
+            `${turnLabel(r.turn)} · ${r.agent}${q ? " · 请求 #" + requestNumbers.get(q.id) : ""}`;
+          const unavailable = "未采集";
+          if (inspectorMode === "request") {
+            const header = q?.header;
+            $("detail-title").textContent =
+              `请求 #${requestNumbers.get(q?.id) ?? r.index} · ${header?.config?.model ?? "模型未采集"}`;
+            if (detailTab === "raw") {
+              root.append(
+                section("请求原始数据", header ?? "旧日志没有保存请求正文", {
+                  raw: true,
+                }),
+              );
+              return;
+            }
+            root.append(
+              facts([
+                ["采集范围", header?.snapshot_scope ?? "旧日志上下文概要"],
+                ["模型", header?.config?.model ?? unavailable],
+                ["消息数", String(header?.message_count ?? "—")],
+                [
+                  "工具数",
+                  String(
+                    header?.tools?.length ??
+                      header?.available_tools?.length ??
+                      "—",
+                  ),
+                ],
+              ]),
+            );
+            root.append(
+              section(
+                "系统提示词",
+                header?.system?.content ?? header?.system ?? "系统提示词未采集",
+              ),
+            );
+            root.append(
+              section("消息输入", header?.messages ?? "旧日志未保存完整消息", {
+                raw: true,
+              }),
+            );
+            root.append(
+              section("工具 Schema", header?.tools ?? "调用时Schema未采集", {
+                raw: true,
+              }),
+            );
+            root.append(
+              section("模型配置", header?.config ?? "模型配置未采集", {
+                raw: true,
+              }),
+            );
+            return;
+          }
+          if (detailTab === "raw") {
+            root.append(
+              section("输入", r.input ?? "输入未采集", { raw: true }),
+              section("输出", r.output ?? "输出未采集", { raw: true }),
+              section("原始事件", r.events, { raw: true }),
+            );
+            if (r.schema)
+              root.append(
+                section("调用时工具 Schema", r.schema, { raw: true }),
+              );
+            return;
+          }
+          if (detailTab === "preview") {
+            root.append(
+              section(
+                "预览",
+                r.kind === "tool" || r.kind === "subtool"
+                  ? (r.output ?? "尚无输出")
+                  : r.text,
+                { copy: true },
+              ),
+            );
+            appendImages(root, r.output);
+            return;
+          }
+          const source = element(
+            q ? "button" : "span",
+            "",
+            q ? `请求 #${requestNumbers.get(q.id)} ›` : r.agent,
+          );
+          if (q)
+            source.onclick = () => {
+              inspectorMode = "request";
+              showDetail();
+            };
+          const status = r.error
+            ? "失败"
+            : r.status === "cancelled"
+              ? "已取消"
+              : ["end", "completed"].includes(r.status)
+                ? "已完成"
+                : r.status === "partial"
+                  ? "公开输出片段"
+                  : r.status === "start" ||
+                      r.status === "pending" ||
+                      r.status === "in_progress"
+                    ? isFinished()
+                      ? "未完成"
+                      : "运行中"
+                    : "已记录";
+          const token =
+            r.usage.output != null ? number(r.usage.output) + " tok" : "—";
+          root.append(
+            facts([
+              ["来源", source],
+              ["状态", status],
+              ["Token", token],
+            ]),
+          );
+          if (r.kind === "tool" || r.kind === "subtool") {
+            root.append(
+              section("输入", r.input ?? "未采集", { raw: true }),
+              section("输出", r.output ?? "尚无输出", { raw: true }),
+            );
+            if (r.schema)
+              root.append(section("工具 Schema", r.schema, { raw: true }));
+            if (r.parent) root.append(facts([["父调用", r.parent]]));
+          } else
+            root.append(
+              section("预览", r.text || r.input || r.output || r.name),
+            );
+          root.append(section("请求计时", "", { copy: false }));
+          const timing = root.lastChild;
+          timing.append(
+            facts([
+              ["开始时间", time(r.start)],
+              ["总时长", duration(r.duration)],
+              ["首 token 延迟", "首 token 时间不可用"],
+              ["生成", "首 token 时间不可用"],
+              ["吞吐量", "首 token 时间不可用"],
+            ]),
+          );
+          if (metricNames.some((k) => r.usage[k] != null)) {
+            const usage = section("Token 用量", "", { copy: false });
+            usage.append(
+              facts(
+                metricNames.map((key, i) => [
+                  ["输入", "缓存读取", "缓存写入", "输出", "推理"][i],
+                  number(r.usage[key]),
+                ]),
+              ),
+            );
+            root.append(usage);
+          }
+          const native = snapshot.nativeUsage.get(
+            JSON.stringify([r.agent, r.thread, r.run]),
+          );
+          if (native) {
+            const context = section("上下文占用", "", { copy: false });
+            context.append(
+              facts([
+                ["已用", number(native.used)],
+                ["窗口", number(native.size)],
+                ["模型", native.model ?? unavailable],
+              ]),
+            );
+            root.append(context);
+          }
+          root.append(
+            element(
+              "p",
+              "note",
+              `线程 ${r.thread || unavailable}\nRun ${r.run || unavailable}\n${r.callId ? "调用 " + r.callId : ""}`,
+            ),
+          );
+        }
+        function renderSessions() {
+          const root = $("sessions"),
+            query = $("side-search").value.toLowerCase();
+          root.replaceChildren();
+          const all = element(
+            "button",
+            "session" + (!activeTurn ? " selected" : ""),
+          );
+          all.append(
+            element("span", "", "项目运行总览"),
+            element("small", "", sessionCount() + " 会话"),
+          );
+          all.onclick = () => {
+            activeTurn = null;
+            rebuild(false);
+          };
+          root.append(all);
+          for (const [id, t] of snapshot.turns) {
+            if (!snapshot.records.some((r) => r.turn === id)) continue;
+            const title = !t.thread
+              ? `${t.agent} 接入记录`
+              : t.agent === "pm"
+                ? "PM 项目经理"
+                : t.agent === "claude"
+                  ? "Claude 开发"
+                  : t.agent === "codex"
+                    ? "Codex 测试 / 审查"
+                    : t.agent;
+            if (
+              query &&
+              !title.toLowerCase().includes(query) &&
+              !t.thread.includes(query)
+            )
+              continue;
+            const b = element(
+              "button",
+              "session" + (activeTurn === id ? " selected" : ""),
+            );
+            b.append(
+              element("span", "", title),
+              element("small", "", t.thread.slice(0, 6) || "运行"),
+            );
+            b.title = t.thread;
+            b.onclick = () => {
+              activeTurn = id;
+              following = false;
+              $("stream").scrollTop = 0;
+              rebuild(false);
+            };
+            root.append(b);
+          }
+        }
+        function renderSummary() {
+          const calls = snapshot.records.filter(
+            (r) => r.kind === "message" && r.events[0]?.kind === "model",
+          ).length;
+          $("step-summary").textContent =
+            `◷ ${sessionCount()} 会话 ${calls} 步 · ${duration(state.run?.elapsed_seconds != null ? state.run.elapsed_seconds * 1000 : null)}`;
+          const u = snapshot.usage,
+            total =
+              u.input != null && u.output != null ? u.input + u.output : null,
+            hit = u.input
+              ? Math.round(((u.cacheRead ?? 0) / u.input) * 100)
+              : null;
+          $("usage-summary").textContent =
+            `▱ ${total == null ? "—" : total >= 1e6 ? (total / 1e6).toFixed(1) + "M" : total >= 1000 ? (total / 1000).toFixed(0) + "K" : total} tok${hit != null ? " · 缓存命中 " + hit + "%" : ""}`;
+          $("live").textContent = isFinished()
+            ? "已结束 · 回放"
+            : following
+              ? "实时跟随"
+              : "已暂停跟随";
+          $("follow").textContent = following ? "暂停跟随" : "恢复跟随";
+          $("step-summary").title =
+            `${snapshot.eventCount} 个公开事件 · ${snapshot.records.length} 条记录`;
+        }
+        function renderConversation() {
+          const root = $("conversation");
+          root.replaceChildren();
+          for (const r of snapshot.records) {
+            if (!["user", "message"].includes(r.kind) || !match(r) || !r.text)
+              continue;
+            const item = element("article", "chat-item " + r.kind);
+            item.append(
+              element(
+                "div",
+                "chat-author",
+                r.kind === "user" ? "用户" : r.agent,
+              ),
+            );
+            const prose = element("div", "prose");
+            renderMarkdown(prose, r.text);
+            item.append(prose);
+            root.append(item);
+          }
+          if (following) root.scrollTop = root.scrollHeight;
+        }
+        function renderTimeline() {
+          const canvas = $("timeline"),
+            w = canvas.clientWidth,
+            h = 50,
+            dpr = devicePixelRatio || 1;
+          canvas.width = w * dpr;
+          canvas.height = h * dpr;
+          const c = canvas.getContext("2d");
+          c.scale(dpr, dpr);
+          c.clearRect(0, 0, w, h);
+          timelineHits = [];
+          const base = snapshot.records.filter(
+            (r) =>
+              [
+                "user",
+                "context",
+                "compacted",
+                "message",
+                "tool",
+                "subtool",
+              ].includes(r.kind) &&
+              !(r.kind === "context" && r.request) &&
+              (!activeTurn || r.turn === activeTurn),
+          );
+          if (!base.length) return;
+          const left = 44,
+            usable = Math.max(1, w - left - 3),
+            min = base.reduce((v, r) => Math.min(v, r.start), Infinity),
+            max = base.reduce((v, r) => Math.max(v, r.end ?? r.start), min + 1);
+          c.font = "11px Segoe UI";
+          c.fillStyle = "#96969d";
+          ["输入", "模型", "工具"].forEach((n, i) =>
+            c.fillText(n, 7, 14 + i * 14),
+          );
+          c.strokeStyle = "#3a3a3c";
+          for (let i = 0; i < 3; i++) {
+            c.beginPath();
+            c.moveTo(left, 16 + i * 14);
+            c.lineTo(w, 16 + i * 14);
+            c.stroke();
+          }
+          const byTurn = new Set();
+          base.forEach((r, index) => {
+            const lane = ["user", "context", "compacted"].includes(r.kind)
+              ? 0
+              : r.kind === "message"
+                ? 1
+                : 2;
+            const x = actualDuration
+              ? left + ((r.start - min) / (max - min)) * usable
+              : left + (index / base.length) * usable;
+            const width = actualDuration
+                ? Math.max(
+                    2,
+                    (((r.end ?? r.start) - r.start) / (max - min)) * usable,
+                  )
+                : Math.max(2, usable / base.length - 2),
+              y = 7 + lane * 14;
+            c.globalAlpha = match(r) && inRange(r) ? 1 : 0.22;
+            c.fillStyle = r.error
+              ? "#d56673"
+              : r.kind === "message"
+                ? "#9b7ac0"
+                : ["tool", "subtool"].includes(r.kind)
+                  ? "#d39535"
+                  : r.kind === "context"
+                    ? "#53a481"
+                    : "#648dcc";
+            c.fillRect(x, y, width, 8);
+            if (selected === r.id) {
+              c.strokeStyle = "#9bb9ff";
+              c.strokeRect(x - 1, y - 1, width + 2, 10);
+            }
+            if (!byTurn.has(r.turn)) {
+              byTurn.add(r.turn);
+              c.strokeStyle = "#5c616c";
+              c.globalAlpha = 0.6;
+              c.beginPath();
+              c.moveTo(x, 0);
+              c.lineTo(x, 50);
+              c.stroke();
+            }
+            timelineHits.push({ x, y, w: width, r });
+          });
+          c.globalAlpha = 1;
+          if (range) {
+            let selectedHits = timelineHits.filter(
+              (x) => x.r.start >= range[0] && x.r.start <= range[1],
+            );
+            if (selectedHits.length) {
+              const x = Math.min(...selectedHits.map((h) => h.x)),
+                end = Math.max(...selectedHits.map((h) => h.x + h.w));
+              c.fillStyle = "#719bf132";
+              c.fillRect(x, 0, end - x, 50);
+            }
+          }
+          if (drag) {
+            c.fillStyle = "#719bf144";
+            c.fillRect(
+              Math.min(drag.start, drag.current),
+              0,
+              Math.abs(drag.current - drag.start),
+              50,
+            );
+          }
+        }
+        async function poll() {
+          try {
+            const [a, b] = await Promise.all([
+              fetch("/api/events?after=" + cursor),
+              fetch("/api/status"),
+            ]);
+            if (!a.ok || !b.ok)
+              throw Error("HTTP " + a.status + "/" + b.status);
+            const batch = await a.json();
+            state = await b.json();
+            projection.apply(batch.events);
+            cursor = batch.next;
+            if (batch.events.length) rebuild();
+            else renderSummary();
+            const run = state.run;
+            if (run) {
+              $("page-title").textContent =
+                run.input?.slice(0, 30) || "项目运行轨迹";
+              $("page-title").title = run.project_id ?? "";
+              $("workspace-name").textContent =
+                "▱ " + (run.project_id?.replace(/-\d{8}.*$/, "") || "项目运行");
+            }
+            const roleNames = [
+                ...new Set(snapshot.records.map((r) => r.agent)),
+              ],
+              choice = $("agent").value;
+            if (
+              roleNames.join("|") !==
+              [...$("agent").options]
+                .slice(1)
+                .map((o) => o.value)
+                .join("|")
+            ) {
+              $("agent").replaceChildren(
+                new Option("全部角色", ""),
+                ...roleNames.map((n) => new Option(n, n)),
+              );
+              $("agent").value = choice;
+            }
+            if (state.first_error) {
+              $("live").classList.add("danger");
+              $("live").title =
+                "首错：" +
+                state.first_error.name +
+                " · " +
+                stringify(state.first_error.data);
+            }
+            $("stop").disabled = !!state.stop_requested || !!isFinished();
+            if (state.stop_requested)
+              $("stop-message").textContent = isFinished()
+                ? "宿主已结束运行"
+                : "停止请求已发送，等待宿主确认";
+            setTimeout(poll, batch.has_more ? 20 : 1000);
+          } catch (e) {
+            $("live").textContent = "连接中断 · 正在重连";
+            $("live").title = e.message;
+            setTimeout(poll, 2000);
+          }
+        }
+        $("stream").onscroll = renderRows;
+        $("stream").addEventListener(
+          "wheel",
+          () => {
+            following = false;
+            renderSummary();
+          },
+          { passive: true },
+        );
+        $("search").oninput = () => {
+          clearTimeout(searchTimer);
+          searchTimer = setTimeout(() => {
+            historyLimit = Number.MAX_SAFE_INTEGER;
+            following = false;
+            $("stream").scrollTop = 0;
+            rebuild(false);
+          }, 180);
+        };
+        for (const id of ["agent", "kind", "only-errors"])
+          $(id).onchange = () => {
+            following = false;
+            $("stream").scrollTop = 0;
+            rebuild(false);
+          };
+        $("metric-columns").onchange = () => {
+          $("app").classList.toggle(
+            "show-metrics",
+            $("metric-columns").checked,
+          );
+          renderRows();
+        };
+        $("menu-toggle").onclick = () => {
+          $("menu").hidden = !$("menu").hidden;
+        };
+        document.addEventListener("click", (e) => {
+          if (!e.target.closest("#menu,#menu-toggle")) $("menu").hidden = true;
+        });
+        $("duration-toggle").onclick = () => {
+          actualDuration = !actualDuration;
+          $("duration-toggle").setAttribute("aria-pressed", actualDuration);
+          renderTimeline();
+        };
+        $("turns-toggle").onclick = () => {
+          if (foldedTurns.size) {
+            foldedTurns.clear();
+          } else for (const id of snapshot.turns.keys()) foldedTurns.add(id);
+          $("turns-toggle").setAttribute("aria-pressed", foldedTurns.size > 0);
+          $("turns-toggle").setAttribute(
+            "aria-label",
+            foldedTurns.size ? "展开所有轮次" : "收起所有轮次",
+          );
+          $("turns-toggle").textContent = foldedTurns.size
+            ? "⊞ 轮次"
+            : "⊟ 轮次";
+          following = false;
+          $("stream").scrollTop = 0;
+          rebuild(false);
+        };
+        $("calls-toggle").onclick = () => {
+          if (foldedRequests.size) foldedRequests.clear();
+          else
+            for (const id of recordRequest.values())
+              if (id) foldedRequests.add(id);
+          $("calls-toggle").setAttribute(
+            "aria-pressed",
+            foldedRequests.size > 0,
+          );
+          $("calls-toggle").setAttribute(
+            "aria-label",
+            foldedRequests.size ? "展开所有调用" : "收起所有调用",
+          );
+          $("calls-toggle").textContent = foldedRequests.size
+            ? "⊞ 调用"
+            : "⊟ 调用";
+          following = false;
+          rebuild(false);
+        };
+        $("detail-tabs").onclick = (e) => {
+          if (e.target.dataset.tab) setDetailTab(e.target.dataset.tab);
+        };
+        $("close-detail").onclick = () => {
+          $("detail-panel").hidden = true;
+          renderRows();
+        };
+        $("toggle-detail").onclick = () => {
+          if (!$("detail-panel").hidden) $("detail-panel").hidden = true;
+          else {
+            if (!selected) {
+              const last = rows.findLast((r) => r.type === "record");
+              if (last) selected = last.record.id;
+            }
+            $("detail-panel").hidden = false;
+            showDetail();
+          }
+          renderRows();
+        };
+        $("hide-sidebar").onclick = () => {
+          $("app").classList.add("sidebar-closed");
+          $("show-sidebar").hidden = false;
+          renderTimeline();
+        };
+        $("show-sidebar").onclick = () => {
+          $("app").classList.remove("sidebar-closed");
+          $("show-sidebar").hidden = true;
+          renderTimeline();
+        };
+        $("all-sessions").onclick = () => {
+          activeTurn = null;
+          $("agent").value = "";
+          $("kind").value = "";
+          $("search").value = "";
+          $("only-errors").checked = false;
+          rebuild(false);
+        };
+        $("side-search-toggle").onclick = () => {
+          $("side-search").hidden = !$("side-search").hidden;
+          if (!$("side-search").hidden) $("side-search").focus();
+        };
+        $("side-search").oninput = renderSessions;
+        $("theme").onclick = () => {
+          document.documentElement.classList.toggle("light");
+          renderTimeline();
+        };
+        const toggleFollow = () => {
+          following = !following;
+          renderSummary();
+          if (following) rebuild();
+        };
+        $("follow").onclick = toggleFollow;
+        $("live").onclick = toggleFollow;
+        $("export").onclick = () => {
+          const a = element("a");
+          a.href = "/api/export";
+          a.download = "trajectory.jsonl";
+          a.click();
+        };
+        $("stop").onclick = async () => {
+          if (!confirm("停止当前PM及活跃Worker并保留轨迹？")) return;
+          try {
+            const r = await fetch("/api/stop", { method: "POST" });
+            if (!r.ok) throw Error(r.status);
+            $("stop-message").textContent = (await r.json()).message;
+            $("stop").disabled = true;
+          } catch (e) {
+            $("stop-message").textContent = "停止请求失败：" + e.message;
+          }
+        };
+        $("clear-range").onclick = () => {
+          range = null;
+          $("clear-range").hidden = true;
+          rebuild(false);
+        };
+        function switchView(chat) {
+          conversationShown = chat;
+          $("conversation").hidden = !chat;
+          for (const id of ["trace-main", "trace-toolbar", "timeline-shell"])
+            $(id).hidden = chat;
+          for (const [id, isChat] of [
+            ["chat-tab", true],
+            ["trace-tab", false],
+          ]) {
+            $(id).classList.toggle("active", chat === isChat);
+            $(id).setAttribute("aria-selected", chat === isChat);
+          }
+          if (chat) renderConversation();
+          else {
+            renderRows();
+            renderTimeline();
+          }
+        }
+        $("chat-tab").onclick = () => switchView(true);
+        $("trace-tab").onclick = () => switchView(false);
+        const splitter = $("splitter");
+        splitter.onpointerdown = (e) => {
+          resizeDrag = true;
+          splitter.setPointerCapture(e.pointerId);
+          document.body.classList.add("resizing");
+        };
+        splitter.onpointermove = (e) => {
+          if (!resizeDrag) return;
+          const box = $("trace-main").getBoundingClientRect(),
+            percent = Math.max(
+              25,
+              Math.min(75, ((box.right - e.clientX) / box.width) * 100),
+            );
+          document.documentElement.style.setProperty(
+            "--inspector",
+            percent + "%",
+          );
+          splitter.setAttribute("aria-valuenow", Math.round(percent));
+          renderRows();
+        };
+        splitter.onpointerup = splitter.onpointercancel = () => {
+          resizeDrag = false;
+          document.body.classList.remove("resizing");
+        };
+        splitter.ondblclick = () => {
+          document.documentElement.style.setProperty("--inspector", "38%");
+          splitter.setAttribute("aria-valuenow", "38");
+        };
+        splitter.onkeydown = (e) => {
+          if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+          e.preventDefault();
+          const value = Math.max(
+            25,
+            Math.min(
+              75,
+              Number(splitter.getAttribute("aria-valuenow")) +
+                (e.key === "ArrowLeft" ? 2 : -2),
+            ),
+          );
+          document.documentElement.style.setProperty(
+            "--inspector",
+            value + "%",
+          );
+          splitter.setAttribute("aria-valuenow", value);
+        };
+        const canvas = $("timeline");
+        function hitAt(e) {
+          return timelineHits.findLast(
+            (h) =>
+              e.offsetX >= h.x - 2 &&
+              e.offsetX <= h.x + h.w + 2 &&
+              e.offsetY >= h.y - 2 &&
+              e.offsetY <= h.y + 10,
+          );
+        }
+        canvas.onpointerdown = (e) => {
+          drag = { start: e.offsetX, current: e.offsetX };
+          canvas.setPointerCapture(e.pointerId);
+          $("time-tooltip").hidden = true;
+        };
+        canvas.onpointermove = (e) => {
+          clearTimeout(hoverTimer);
+          $("time-tooltip").hidden = true;
+          if (drag) {
+            drag.current = e.offsetX;
+            renderTimeline();
+            return;
+          }
+          const hit = hitAt(e);
+          if (hit)
+            hoverTimer = setTimeout(() => {
+              const tip = $("time-tooltip");
+              tip.textContent = `${names[hit.r.kind]} · ${hit.r.agent}\n${time(hit.r.start)}\n${duration(hit.r.duration)}`;
+              tip.style.left =
+                Math.min(e.clientX + 12, innerWidth - 235) + "px";
+              tip.style.top = e.clientY + 16 + "px";
+              tip.hidden = false;
+            }, 500);
+        };
+        canvas.onpointerleave = () => {
+          clearTimeout(hoverTimer);
+          $("time-tooltip").hidden = true;
+        };
+        canvas.onpointerup = (e) => {
+          if (!drag) return;
+          const d = drag;
+          drag = null;
+          if (Math.abs(e.offsetX - d.start) > 5) {
+            const left = Math.min(e.offsetX, d.start),
+              right = Math.max(e.offsetX, d.start),
+              hits = timelineHits.filter(
+                (h) => h.x + h.w >= left && h.x <= right,
+              );
+            if (hits.length) {
+              range = [
+                Math.min(...hits.map((h) => h.r.start)),
+                Math.max(...hits.map((h) => h.r.end ?? h.r.start)),
+              ];
+              $("clear-range").hidden = false;
+              following = false;
+              $("stream").scrollTop = 0;
+              rebuild(false);
+              const first = rows.findIndex(
+                (row) => row.record && inRange(row.record),
+              );
+              if (first >= 0) {
+                $("stream").scrollTop = Math.max(0, first * 30 - 60);
+                renderRows();
+              }
+            }
+          } else {
+            const hit = hitAt(e);
+            if (hit) choose(hit.r.id);
+          }
+          renderTimeline();
+        };
+        canvas.onpointercancel = () => {
+          drag = null;
+          renderTimeline();
+        };
+        canvas.onkeydown = (e) => {
+          if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+          e.preventDefault();
+          const index = timelineHits.findIndex((h) => h.r.id === selected),
+            hit =
+              timelineHits[
+                Math.max(
+                  0,
+                  Math.min(
+                    timelineHits.length - 1,
+                    index + (e.key === "ArrowRight" ? 1 : -1),
+                  ),
+                )
+              ];
+          if (hit) choose(hit.r.id);
+        };
+        window.addEventListener("resize", () => {
+          renderRows();
+          renderTimeline();
+        });
+        document.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") {
+            $("detail-panel").hidden = true;
+            $("menu").hidden = true;
+          }
+        });
+        poll();
+      }
+    </script>
+  </body>
+</html>

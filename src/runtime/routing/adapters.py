@@ -1,6 +1,6 @@
 """Provider-neutral adapters from project business facts to routing requests."""
 
-from src.runtime.project.models import Task
+from src.middlewares.project_state.models import Task
 from src.runtime.routing.models import RoleRequirement
 
 

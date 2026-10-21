@@ -1,0 +1,169 @@
+{
+  "previous_attempt": {
+    "previous_attempt": {
+      "created_at": "2026-10-14T08:45:42.330039+00:00",
+      "model": "openrouter/free",
+      "store": "AsyncPostgresStore",
+      "steps": {
+        "lookup": {
+          "checks": {
+            "search_found": true,
+            "read_revised_plan": true,
+            "bookmark_has_original_input": true,
+            "pagination_matches": true,
+            "project_isolation": true
+          },
+          "project_id": "pm-memory-live-2c8eb251358c",
+          "source_id": "8d2c69e4b074407db356020a38d35978"
+        },
+        "compression_started": {
+          "input_messages": 5,
+          "project_id": "pm-lifecycle-5871de95f86c"
+        },
+        "failure": {
+          "type": "RuntimeError",
+          "error": "Official run failed: 01a13996-bc97-7250-99ad-0e116172122b error"
+        }
+      },
+      "status": "failed",
+      "project_id": "pm-lifecycle-5871de95f86c",
+      "thread_id": "01a13996-bc8d-7e83-9be5-6a1d0a889aaf"
+    },
+    "created_at": "2026-10-14T08:51:09.289838+00:00",
+    "model": "openrouter/free",
+    "store": "AsyncPostgresStore",
+    "steps": {
+      "lookup": {
+        "checks": {
+          "search_found": true,
+          "read_revised_plan": true,
+          "bookmark_has_original_input": true,
+          "pagination_matches": true,
+          "project_isolation": true
+        },
+        "project_id": "pm-memory-live-2c8eb251358c",
+        "source_id": "8d2c69e4b074407db356020a38d35978",
+        "reused_verified_result": true
+      },
+      "compression_started": {
+        "input_messages": 5,
+        "project_id": "pm-lifecycle-5153bfd6f39d"
+      },
+      "failure": {
+        "type": "RuntimeError",
+        "error": "Official run failed: 01a1399b-b994-7d01-a65c-12db7db2919a error"
+      }
+    },
+    "status": "failed",
+    "project_id": "pm-lifecycle-5153bfd6f39d",
+    "thread_id": "01a1399b-b98c-70c2-a6a2-03efc8cb6927"
+  },
+  "created_at": "2026-10-14T08:56:15.511151+00:00",
+  "model": "openrouter/free",
+  "store": "AsyncPostgresStore",
+  "steps": {
+    "lookup": {
+      "checks": {
+        "search_found": true,
+        "read_revised_plan": true,
+        "bookmark_has_original_input": true,
+        "pagination_matches": true,
+        "project_isolation": true
+      },
+      "project_id": "pm-memory-live-2c8eb251358c",
+      "source_id": "8d2c69e4b074407db356020a38d35978",
+      "reused_verified_result": true
+    },
+    "compression_started": {
+      "input_messages": 5,
+      "project_id": "pm-lifecycle-75eed2f42323"
+    },
+    "compression_handoff": {
+      "run_id": "01a139a0-65c2-7cd0-9158-4d8675f14d55",
+      "checks": {
+        "handoff_readable": true,
+        "handoff_has_marker": true,
+        "handoff_has_next_step": true,
+        "official_summary_present": true,
+        "messages_reduced": true,
+        "handoff_in_next_context": true,
+        "answer_retains_next_step": true
+      },
+      "handoff": "/memories/handoffs/d7aeeaabb1fce73cc148b003/20261014T085616557247Z-59c71ee224584a4aba694bfbbfe7f704.md",
+      "output_messages": 4,
+      "answer": "**当前方案**：方案B（方案A已作废）  \n**下一步**：验证重启读回恢复，仅使用测试数据",
+      "summary": [
+        {
+          "content": "Here is a summary of the conversation to date:\n\n## SESSION INTENT\nThe user's primary goal is to validate/recover the current scheme (Scheme B) after scheme A was invalidated, following a testing principle that prioritizes discussing implementation details first and preserving real grounds without treating attempts as completion. The overall task is to verify the restoration/continuity of Scheme B after a restart/read-back operation.\n\n## SUMMARY\n- Scheme A has been invalidated; Scheme B is the active/current scheme.\n- The session goal is to verify recovery/restoration (likely of a system, process, or state) after a restart/read-back.\n- A testing principle was established and repeatedly discussed: \"discuss implementation details first, then preserve real grounds, don't treat attempts as completion.\"\n- The conversation history consists largely of testing this principle, but the core decisions remain: adopt B, aim for verification of recovery, and follow the implementation-real-grounds priority order.\n- No new external artifacts or files are documented; the \"artifacts\" are the conversational decisions and principles.\n\n## ARTIFACTS\n- No specific file paths or modified files are present in the conversation history.\n- Conceptual artifacts recorded: adoption of Scheme B as current scheme; testing principle documentation via conversation; goal of verifying recovery after restart/read-back.\n- (No concrete file modifications or paths to report.)\n\n## NEXT STEPS\n- Perform the restart/read-back verification to confirm Scheme B recovery.\n- Document verification outcomes against the real implementation grounds discussed.\n- Continue validation ensuring the testing principle is not mistaken for completion.\n- Assess results and determine if further iterations or adjustments are needed.",
+          "additional_kwargs": {
+            "lc_source": "summarization"
+          },
+          "response_metadata": {},
+          "type": "human",
+          "name": null,
+          "id": "3b163a4d-d897-4e0b-b214-5a89c9dd02a9"
+        }
+      ]
+    },
+    "automatic_event": {
+      "pm_run_id": "01a139a2-01bc-75c3-bf41-c4e9a42b48f1",
+      "memory_run_id": "01a139a2-1cf5-73d1-93dc-65e151a6fcd7",
+      "source_id": "88fa9923f201e4ea2d884b418956e2f2d20b8a55adcbbae91dc1f9fff6ddd656",
+      "checks": {
+        "official_run_success": true,
+        "event_recorded": true
+      }
+    },
+    "consolidation": {
+      "run_id": "01a139a2-adef-79a1-ab2d-5e3058c452a8",
+      "outcome": "promote",
+      "origin": "model",
+      "checks": {
+        "consolidation_flag": true,
+        "document_readable": true
+      },
+      "document_map": [
+        "/bookmarks/59c71ee224584a4aba694bfbbfe7f704.json",
+        "/bookmarks/88fa9923f201e4ea2d884b418956e2f2d20b8a55adcbbae91dc1f9fff6ddd656.json",
+        "/bookmarks/ed0b02fa097741a491ef3a73cd48d02d.json",
+        "/daily/2026-10-14.md",
+        "/handoffs/d7aeeaabb1fce73cc148b003/20261014T085616557247Z-59c71ee224584a4aba694bfbbfe7f704.md"
+      ]
+    },
+    "cron_api": {
+      "supported": true,
+      "cron_id": "01a139a3-379b-7ce2-8acb-1753f0aa9df0",
+      "scheduled_run_id": "01a139a3-db8c-7522-9613-54ad25c8f149",
+      "status": "error",
+      "execution_verified": false,
+      "deleted": true,
+      "trigger_verified": true,
+      "error_reason": "模型缺少有效结果，实际文档不满足新增内容和本次来源验证"
+    },
+    "completed": {
+      "status": "passed_except_unverified_cron_execution"
+    },
+    "failed_handoff_protection": {
+      "thread_id": "01a1399b-b98c-70c2-a6a2-03efc8cb6927",
+      "checks": {
+        "old_messages_preserved": false,
+        "summary_not_applied": true,
+        "frozen_source_preserved": true
+      },
+      "messages": 0,
+      "note": "首次运行失败被官方 Server 回滚，当前线程没有已提交消息；不据此声称对话状态保留。PostgreSQL 固定书签完整保留五条原始输入，未执行摘要。"
+    },
+    "post_shutdown_persistence": {
+      "checks": {
+        "server_stopped": true,
+        "handoff_persisted": true,
+        "automatic_event_persisted": true,
+        "search_persisted": true
+      },
+      "backend": "AsyncPostgresStore"
+    }
+  },
+  "status": "core_passed_cron_triggered_but_model_failed",
+  "project_id": "pm-lifecycle-75eed2f42323",
+  "thread_id": "01a139a0-65ba-7d03-bf0f-683f82a39bda"
+}

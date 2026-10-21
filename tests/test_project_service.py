@@ -1,8 +1,11 @@
 import pytest
 
-from src.runtime.project.commands import CreateTaskCommand, TransitionTaskCommand
-from src.runtime.project.models import ProjectSnapshot, Task, TaskStatus
-from src.runtime.project.service import apply_project_command
+from src.middlewares.project_state.commands import (
+    CreateTaskCommand,
+    TransitionTaskCommand,
+)
+from src.middlewares.project_state.models import ProjectSnapshot, Task, TaskStatus
+from src.middlewares.project_state.service import apply_project_command
 
 
 def make_task(
@@ -81,14 +84,16 @@ def test_rejected_transition_does_not_mutate_snapshot() -> None:
         target_status=TaskStatus.DONE,
     )
 
-    with pytest.raises(ValueError, match="transition rejected"):
+    with pytest.raises(ValueError) as caught:
         apply_project_command(snapshot, command)
+    assert caught.value.details["code"] == "invalid_task_transition"
+    assert "in_progress" in str(caught.value) and "done" in str(caught.value)
 
     assert snapshot.tasks[0].status is TaskStatus.IN_PROGRESS
 
 
 def test_public_project_commands_do_not_expose_acceptance_criteria_mutation() -> None:
-    import src.runtime.project.commands as commands
+    import src.middlewares.project_state.commands as commands
 
     assert not hasattr(commands, "UpdateAcceptanceCriteriaCommand")
 

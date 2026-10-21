@@ -1,6 +1,6 @@
 """Tests for the stable PM system prompt contract."""
 
-from src.runtime.pm.prompt import stable_pm_system_prompt
+from src.deep_agents.agents.pm_agent.agent import stable_pm_system_prompt
 
 
 def test_stable_prompt_contains_project_control_invariants() -> None:
@@ -24,7 +24,9 @@ def test_stable_prompt_excludes_volatile_runtime_and_provider_mapping() -> None:
 
     for volatile_fact in (
         "project_id",
-        "task_id",
+        # task_id是工具契约字段名；禁止注入具体运行值，而非禁止说明工具参数。
+        "task_id=",
+        '"task_id":',
         "thread_id",
         "checkpoint_id",
         "provider_id",

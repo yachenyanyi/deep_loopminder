@@ -1,0 +1,827 @@
+{
+  "created_at": "2026-10-14T07:45:16.648572+00:00",
+  "project_id": "pm-memory-live-2c8eb251358c",
+  "write_pid": 65560,
+  "requested_model": "openrouter/free",
+  "store_backend": "AsyncPostgresStore",
+  "durability": "durable",
+  "execution": "direct_graph_ainvoke",
+  "steps": [
+    {
+      "step": 1,
+      "input": "这是独立记忆测试。标记 PMMEM_20261014 必须原样记录。当前采用方案A，原因是先验证最小流程。此信息是测试事实，不是正式项目决定。",
+      "source_id": "4c4c8fe32db04720ad197fe168577560",
+      "destination": "/memories/daily/2026-10-14.md",
+      "outcome": "ignore",
+      "outcome_origin": "model",
+      "checks": {
+        "readable": true,
+        "marker_recorded": true,
+        "source_indexed": true,
+        "real_newlines": true,
+        "searchable": true
+      },
+      "metadata": {
+        "id": "45b1499ca37b4a75a3bb31d3b8201ef9",
+        "path": "/memories/daily/2026-10-14.md",
+        "state": "historical",
+        "title": "2026-10-14 每日记录（独立记忆测试）",
+        "summary": "记录测试标记 PMMEM_20261014 与当前采用方案A，作为记忆写入验证的样本。来源：/memories/bookmarks/4c4c8fe32db04720ad197fe168577560.json 时间：2026-10-14T07:45:16.654572+00:00 - 测试标记：PMMEM_20261014（必须原样记录） - 当前采用方案：方案A - 采用原因：先验证最小流程 用户在测试指令中明确要求把标记 PMMEM_20261014 原样记录，并说明当前采用方案A是为验证最小流程。此信息仅作为记忆写入功能的验证样本，不代表正式项目决策。 - 后续是否会将方案A修订为方案B或",
+        "version": 1,
+        "created_at": "2026-10-14T07:47:21.737458+00:00",
+        "project_id": "pm-memory-live-2c8eb251358c",
+        "updated_at": "2026-10-14T07:47:21.737458+00:00",
+        "source_refs": [
+          "/memories/bookmarks/4c4c8fe32db04720ad197fe168577560.json"
+        ],
+        "content_hash": "a67b8a8131e5489ed9a768765bf2a204c4c936343f410d1637a48e4fc9fc19af"
+      }
+    },
+    {
+      "step": 2,
+      "input": "更正 PMMEM_20261014 的测试决定：方案A已作废，现在改为方案B，原因是方案B支持后台排队。请保留旧决定及更正原因，不要把方案A当作当前有效方案。",
+      "source_id": "8d2c69e4b074407db356020a38d35978",
+      "destination": "/memories/daily/2026-10-14.md",
+      "outcome": "promote",
+      "outcome_origin": "model",
+      "checks": {
+        "readable": true,
+        "marker_recorded": true,
+        "source_indexed": true,
+        "real_newlines": true,
+        "searchable": true,
+        "corrected_plan_recorded": true,
+        "version_incremented": true
+      },
+      "metadata": {
+        "id": "45b1499ca37b4a75a3bb31d3b8201ef9",
+        "path": "/memories/daily/2026-10-14.md",
+        "state": "historical",
+        "title": "2026-10-14 日记",
+        "summary": "记录了 PMMEM_20261014 的初始决策与后续更正。 - 首次观察：制定了测试标记 PMMEM_20261014，记录为“当前采用方案 A，原因是先验证最小流程”。 - 更正观察：方案 A 已作废，现在改为方案 B，原因是方案 B 支持后台排队。 - 方案 B 支持后台排队，因此当前决策倾向于该方案。 - 当前决策仅适用于独立测试，非正式项目决定。 - 需要进一步验证方案 B 的后台排队功能是否满足生产环境要求。 - 来源 1：/memories/bookmarks/8d2c69e4b074407db356020a38d35978.json - 来源 2：/memories/bookm",
+        "version": 2,
+        "created_at": "2026-10-14T07:47:21.737458+00:00",
+        "project_id": "pm-memory-live-2c8eb251358c",
+        "updated_at": "2026-10-14T07:47:58.500505+00:00",
+        "source_refs": [
+          "/memories/bookmarks/4c4c8fe32db04720ad197fe168577560.json",
+          "/memories/bookmarks/8d2c69e4b074407db356020a38d35978.json"
+        ],
+        "content_hash": "7e1a879caeac8554ec095ffd09d8fcb149bdf19c7aaacbbb824000affee45733"
+      }
+    }
+  ],
+  "status": "passed",
+  "previous_attempt": {
+    "created_at": "2026-10-14T07:41:58.723379+00:00",
+    "project_id": "pm-memory-live-c3eb0d71e716",
+    "write_pid": 2488,
+    "requested_model": "openrouter/free",
+    "store_backend": "AsyncPostgresStore",
+    "durability": "durable",
+    "execution": "direct_graph_ainvoke",
+    "steps": [],
+    "status": "failed",
+    "previous_attempt": {
+      "created_at": "2026-10-14T07:38:16.451871+00:00",
+      "project_id": "pm-memory-live-b9bac493b507",
+      "write_pid": 120308,
+      "requested_model": "openrouter/free",
+      "store_backend": "AsyncPostgresStore",
+      "durability": "durable",
+      "execution": "direct_graph_ainvoke",
+      "steps": [
+        {
+          "step": 1,
+          "input": "这是独立记忆测试。标记 PMMEM_20261014 必须原样记录。当前采用方案A，原因是先验证最小流程。此信息是测试事实，不是正式项目决定。",
+          "source_id": "220326f76b864fb49f3b4dda24d9eb8d",
+          "destination": "/memories/daily/2026-10-14.md",
+          "outcome": "candidate",
+          "checks": {
+            "readable": true,
+            "marker_recorded": true,
+            "source_indexed": true,
+            "real_newlines": false,
+            "searchable": true
+          },
+          "metadata": {
+            "id": "a9e1a2d802cb4912b76d92f9bce19dab",
+            "path": "/memories/daily/2026-10-14.md",
+            "state": "historical",
+            "title": "独立记忆测试记录 2026-10-14摘要：独立记忆测试，必须原样保留标记 PMMEM_20261014。当前采用方案 A，原因为先验证最小流程。此信息为测试事实，非正式项目决定。## 已知事实- 标记 PMMEM_20261014 必须原样记录- 当前方案为 A，选择基于先验证最小流程- 相关信息为测试内容，非正式决定## 来源- observation：这是独立记忆测试。标记 PMMEM_20261014 必须原样记录。当前采用方案A，原因是先验证最小流程。此信息是测试事实，不是正式项目决定。- document_map：/bookmarks/220326f76b864fb49f3b4dda24d9eb8d.json",
+            "summary": "",
+            "version": 1,
+            "created_at": "2026-10-14T07:39:51.250278+00:00",
+            "project_id": "pm-memory-live-b9bac493b507",
+            "updated_at": "2026-10-14T07:39:51.250278+00:00",
+            "source_refs": [
+              "/memories/bookmarks/220326f76b864fb49f3b4dda24d9eb8d.json"
+            ],
+            "content_hash": "63b3a4c904d98975404542b0f39ec9fa38841b9eb5d05eb735cf0a95963b56ec"
+          }
+        }
+      ],
+      "status": "failed",
+      "previous_attempt": null,
+      "revision_only": false,
+      "tool_calls": [
+        "read_file",
+        "ls",
+        "write_file",
+        "read_file",
+        "write_file"
+      ],
+      "response_models": [
+        "nvidia/nemotron-3.5-lightning:free",
+        "cohere/north-mini-code:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free"
+      ],
+      "responses": [
+        {
+          "text": "",
+          "tool_calls": [
+            "read_file"
+          ],
+          "finish_reason": "tool_calls",
+          "usage": {
+            "input_tokens": 3995,
+            "output_tokens": 706,
+            "total_tokens": 4701,
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 0,
+              "cache_creation": 0
+            },
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 654
+            }
+          }
+        },
+        {
+          "text": "",
+          "tool_calls": [
+            "ls"
+          ],
+          "finish_reason": "tool_calls",
+          "usage": {
+            "input_tokens": 4109,
+            "output_tokens": 46,
+            "total_tokens": 4155,
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 2096,
+              "cache_creation": 0
+            },
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 18
+            }
+          }
+        },
+        {
+          "text": "",
+          "tool_calls": [
+            "write_file"
+          ],
+          "finish_reason": "tool_calls",
+          "usage": {
+            "input_tokens": 2820,
+            "output_tokens": 384,
+            "total_tokens": 3204,
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 0,
+              "cache_creation": 0
+            },
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 285
+            }
+          }
+        },
+        {
+          "text": "[[{ \"name\": \"read_file\", \"parameters\": { \"file_path\": \"/memories/daily/2026-10-14.md\" } }]",
+          "tool_calls": [],
+          "finish_reason": "stop",
+          "usage": {
+            "input_tokens": 4476,
+            "output_tokens": 63,
+            "total_tokens": 4539,
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 0,
+              "cache_creation": 0
+            },
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 20
+            }
+          }
+        },
+        {
+          "text": "",
+          "tool_calls": [
+            "write_file",
+            "read_file",
+            "MemoryOutcome"
+          ],
+          "finish_reason": "tool_calls",
+          "usage": {
+            "input_tokens": 4584,
+            "output_tokens": 2065,
+            "total_tokens": 6649,
+            "input_token_details": {
+              "audio": 0,
+              "cache_read": 0,
+              "cache_creation": 0
+            },
+            "output_token_details": {
+              "audio": 0,
+              "reasoning": 1720
+            }
+          }
+        }
+      ],
+      "failure_document": "# 独立记忆测试记录 2026-10-14摘要：独立记忆测试，必须原样保留标记 PMMEM_20261014。当前采用方案 A，原因为先验证最小流程。此信息为测试事实，非正式项目决定。## 已知事实- 标记 PMMEM_20261014 必须原样记录- 当前方案为 A，选择基于先验证最小流程- 相关信息为测试内容，非正式决定## 来源- observation：这是独立记忆测试。标记 PMMEM_20261014 必须原样记录。当前采用方案A，原因是先验证最小流程。此信息是测试事实，不是正式项目决定。- document_map：/bookmarks/220326f76b864fb49f3b4dda24d9eb8d.json",
+      "failure_has_plan_b": false,
+      "failed_source_id": "220326f76b864fb49f3b4dda24d9eb8d",
+      "failed_destination": "/memories/daily/2026-10-14.md",
+      "error_type": "RuntimeError",
+      "error": "Memory verification failed; inspect saved evidence",
+      "cross_process_checks": {
+        "source_persisted": true,
+        "document_persisted": true,
+        "search_persisted": true
+      },
+      "read_pid": 116532
+    },
+    "revision_only": false,
+    "tool_calls": [
+      "read_file",
+      "ls",
+      "read_file",
+      "read_file",
+      "write_file",
+      "read_file"
+    ],
+    "response_models": [
+      "liquid/lfm-2.5-2.6b:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "nvidia/nemotron-3.5-lightning:free",
+      "nvidia/nemotron-3-ultra-550b-a55b:free"
+    ],
+    "responses": [
+      {
+        "text": "",
+        "tool_calls": [
+          "read_file"
+        ],
+        "finish_reason": "tool_calls",
+        "usage": {
+          "input_tokens": 3337,
+          "output_tokens": 229,
+          "total_tokens": 3566,
+          "input_token_details": {
+            "audio": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "output_token_details": {
+            "audio": 0,
+            "reasoning": 189
+          }
+        }
+      },
+      {
+        "text": "",
+        "tool_calls": [
+          "ls"
+        ],
+        "finish_reason": "tool_calls",
+        "usage": {
+          "input_tokens": 4109,
+          "output_tokens": 152,
+          "total_tokens": 4261,
+          "input_token_details": {
+            "audio": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "output_token_details": {
+            "audio": 0,
+            "reasoning": 124
+          }
+        }
+      },
+      {
+        "text": "",
+        "tool_calls": [
+          "read_file"
+        ],
+        "finish_reason": "tool_calls",
+        "usage": {
+          "input_tokens": 3461,
+          "output_tokens": 107,
+          "total_tokens": 3568,
+          "input_token_details": {
+            "audio": 0,
+            "cache_read": 3328,
+            "cache_creation": 0
+          },
+          "output_token_details": {
+            "audio": 0,
+            "reasoning": 64
+          }
+        }
+      },
+      {
+        "text": "",
+        "tool_calls": [
+          "read_file"
+        ],
+        "finish_reason": "tool_calls",
+        "usage": {
+          "input_tokens": 4416,
+          "output_tokens": 111,
+          "total_tokens": 4527,
+          "input_token_details": {
+            "audio": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "output_token_details": {
+            "audio": 0,
+            "reasoning": 62
+          }
+        }
+      },
+      {
+        "text": "",
+        "tool_calls": [
+          "write_file"
+        ],
+        "finish_reason": "tool_calls",
+        "usage": {
+          "input_tokens": 4496,
+          "output_tokens": 752,
+          "total_tokens": 5248,
+          "input_token_details": {
+            "audio": 0,
+            "cache_read": 2288,
+            "cache_creation": 0
+          },
+          "output_token_details": {
+            "audio": 0,
+            "reasoning": 542
+          }
+        }
+      },
+      {
+        "text": "",
+        "tool_calls": [
+          "read_file"
+        ],
+        "finish_reason": "tool_calls",
+        "usage": {
+          "input_tokens": 4742,
+          "output_tokens": 57,
+          "total_tokens": 4799,
+          "input_token_details": {
+            "audio": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "output_token_details": {
+            "audio": 0,
+            "reasoning": 15
+          }
+        }
+      },
+      {
+        "text": "[\n[\n  {\n    \"name\": \"MemoryOutcome\",\n    \"parameters\": {\n      \"outcome\": \"candidate\"\n    }\n  }\n]",
+        "tool_calls": [],
+        "finish_reason": "stop",
+        "usage": {
+          "input_tokens": 4973,
+          "output_tokens": 172,
+          "total_tokens": 5145,
+          "input_token_details": {
+            "audio": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "output_token_details": {
+            "audio": 0,
+            "reasoning": 158
+          }
+        }
+      },
+      {
+        "text": "[\n[\n  {\n    \"name\": \"MemoryOutcome\",\n    \"parameters\": {\n      \"outcome\": \"candidate\"\n    }\n  }\n]",
+        "tool_calls": [],
+        "finish_reason": "stop",
+        "usage": {
+          "input_tokens": 5075,
+          "output_tokens": 154,
+          "total_tokens": 5229,
+          "input_token_details": {
+            "audio": 0,
+            "cache_read": 0,
+            "cache_creation": 0
+          },
+          "output_token_details": {
+            "audio": 0,
+            "reasoning": 144
+          }
+        }
+      }
+    ],
+    "failure_document": "# 独立记忆测试日志\n\n记录测试标记 PMMEM_20261014 和当前方案A的事实。\n\n## 事实\n- 这是独立记忆测试。\n- 标记 PMMEM_20261014 必须原样记录。\n- 当前采用方案A，原因是先验证最小流程。\n- 此信息是测试事实，不是正式项目决定。\n\n## 来源\n- [书签: /memories/bookmarks/7469eb55ea73411ba0ca8b3416e5d129.json]",
+    "failure_has_plan_b": false,
+    "failed_source_id": "7469eb55ea73411ba0ca8b3416e5d129",
+    "failed_destination": "/memories/daily/2026-10-14.md",
+    "error_type": "RuntimeError",
+    "error": "记忆模型未返回有效 MemoryOutcome；工具文字提议不算实际执行",
+    "cross_process_checks": {
+      "source_persisted": true,
+      "document_persisted": true,
+      "search_persisted": true
+    },
+    "read_pid": 75244
+  },
+  "revision_only": false,
+  "tool_calls": [
+    "read_file",
+    "read_file",
+    "ls",
+    "read_file",
+    "write_file",
+    "read_file",
+    "read_file",
+    "write_file",
+    "read_file"
+  ],
+  "response_models": [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "cohere/north-mini-code:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "nvidia/nemotron-3-super-120b-a12b:free"
+  ],
+  "responses": [
+    {
+      "text": "",
+      "tool_calls": [
+        "read_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 3998,
+        "output_tokens": 63,
+        "total_tokens": 4061,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 26
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "read_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 2799,
+        "output_tokens": 146,
+        "total_tokens": 2945,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 165
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "ls"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 3541,
+        "output_tokens": 105,
+        "total_tokens": 3646,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 87
+        }
+      }
+    },
+    {
+      "text": "[[{\"name\": \"write_file\", \"parameters\": {\"file_path\": \"/memories/daily/2026-10-14.md\", \"content\": \"# 2026-10-14 每日记录（独立记忆测试） 记录测试标记 PMMEM_20261014 与当前采用方案A，作为记忆写入验证的样本。 来源：/memories/bookmarks/4c4c8fe32db04720ad197fe168577560.json  时间：2026-10-14T07:45:16.654572+00:00  ## 事实 - 测试标记：PMMEM_20261014（必须原样记录） - 当前采用方案：方案A - 采用原因：先验证最小流程 - 性质：独立记忆测试，非正式项目决定  ## 原因 用户在测试指令中明确要求把标记 PMMEM_20261014 原样记录，并说明当前采用方案A是为验证最小流程。此信息仅作为记忆写入功能的验证样本，不代表正式项目决策。  ## 待确认 - 后续是否会将方案A修订为方案B或其他方案，需后续观察确认。  \"}}]",
+      "tool_calls": [],
+      "finish_reason": "stop",
+      "usage": {
+        "input_tokens": 4367,
+        "output_tokens": 379,
+        "total_tokens": 4746,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 14
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "write_file",
+        "read_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 4802,
+        "output_tokens": 1016,
+        "total_tokens": 5818,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 623
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "write_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 4252,
+        "output_tokens": 343,
+        "total_tokens": 4595,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 3536,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 93
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "write_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 4557,
+        "output_tokens": 1134,
+        "total_tokens": 5691,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 4240,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 883
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "write_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 3373,
+        "output_tokens": 595,
+        "total_tokens": 3968,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 418
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "write_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 6583,
+        "output_tokens": 478,
+        "total_tokens": 7061,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 4192,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 123
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "write_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 7023,
+        "output_tokens": 1473,
+        "total_tokens": 8496,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 1114
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "read_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 5791,
+        "output_tokens": 83,
+        "total_tokens": 5874,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 4544,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 43
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "MemoryOutcome"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 7810,
+        "output_tokens": 109,
+        "total_tokens": 7919,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 6288,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 87
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "read_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 4299,
+        "output_tokens": 495,
+        "total_tokens": 4794,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 443
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "write_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 3038,
+        "output_tokens": 448,
+        "total_tokens": 3486,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 286
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "read_file"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 3054,
+        "output_tokens": 18,
+        "total_tokens": 3072,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 0,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 0
+        }
+      }
+    },
+    {
+      "text": "",
+      "tool_calls": [
+        "MemoryOutcome"
+      ],
+      "finish_reason": "tool_calls",
+      "usage": {
+        "input_tokens": 5196,
+        "output_tokens": 1331,
+        "total_tokens": 6527,
+        "input_token_details": {
+          "audio": 0,
+          "cache_read": 4192,
+          "cache_creation": 0
+        },
+        "output_token_details": {
+          "audio": 0,
+          "reasoning": 1298
+        }
+      }
+    }
+  ],
+  "failure_document": "# 2026-10-14 日记\n\n记录了 PMMEM_20261014 的初始决策与后续更正。\n\n## 已知事实\n\n- 首次观察：制定了测试标记 PMMEM_20261014，记录为“当前采用方案 A，原因是先验证最小流程”。\n- 更正观察：方案 A 已作废，现在改为方案 B，原因是方案 B 支持后台排队。\n\n## 推断\n\n- 方案 B 支持后台排队，因此当前决策倾向于该方案。\n- 当前决策仅适用于独立测试，非正式项目决定。\n\n## 待确认问题\n\n- 需要进一步验证方案 B 的后台排队功能是否满足生产环境要求。\n\n## 来源\n\n- 来源 1：/memories/bookmarks/8d2c69e4b074407db356020a38d35978.json\n- 来源 2：/memories/bookmarks/8d2c69e4b074407db356020a38d35978.json",
+  "failure_has_plan_b": false,
+  "failed_source_id": "8d2c69e4b074407db356020a38d35978",
+  "failed_destination": "/memories/daily/2026-10-14.md",
+  "error_type": "RuntimeError",
+  "error": "Memory verification failed; inspect saved evidence",
+  "cross_process_checks": {
+    "source_persisted": true,
+    "document_persisted": true,
+    "search_persisted": true,
+    "revised_plan_persisted": true,
+    "old_plan_revoked": true,
+    "revision_reason_persisted": true,
+    "version_persisted": true,
+    "both_sources_indexed": true
+  },
+  "read_pid": 71356,
+  "verification_note": "方案名称允许空格，结果以独立进程实际读回为准"
+}

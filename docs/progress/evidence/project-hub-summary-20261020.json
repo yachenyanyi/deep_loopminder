@@ -1,0 +1,38 @@
+{
+  "observation_status": "finished_observation",
+  "pm_status": "success",
+  "pm_started_utc": "2026-10-20T09:09:35.077191+00:00",
+  "finished_utc": "2026-10-20T09:24:17.936188+00:00",
+  "elapsed_seconds": 882.8589999999385,
+  "parent_ai_messages": 130,
+  "parent_tool_requests": 138,
+  "tool_request_counts": {
+    "project_context": 1,
+    "project_read": 2,
+    "project_command": 52,
+    "project_create_artifact": 24,
+    "spawn_agent": 11,
+    "list_agents": 2,
+    "wait_agent": 26,
+    "project_read_artifact": 2,
+    "followup_task": 12,
+    "interrupt_agent": 1,
+    "memory_search": 2,
+    "pm_memory_status": 1,
+    "submit_pm_memory": 1,
+    "request_human_decision": 1
+  },
+  "instrumented_tool_executions": 129,
+  "shared_model_callback_responses": 148,
+  "worker_thread_count": 7,
+  "official_worker_run_count": 19,
+  "worker_status_counts": {
+    "error": 19
+  },
+  "native_session_count": 0,
+  "native_worker_prompt_rounds": 0,
+  "native_tool_count": 0,
+  "delivered_files": [],
+  "host_interventions": [],
+  "awaiting_human_decision": true
+}

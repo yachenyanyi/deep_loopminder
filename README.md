@@ -173,17 +173,14 @@ RedactionRule(pii_type="token", detector=r"token[=:]\s*\S+")
 
 ### 9. 模型懒加载工厂
 
-按优先级自动选择可用模型，支持8种LLM提供商：
+真实运行与命令测试统一调用 `src.models.llm.get_default_model()`：
 
-```python
-# 优先级链
-DeepSeek → OpenRouter → Ollama(本地)
+- 模型：`minimax/minimax-m3.1-flash:free`。
+- 输出上限：32768 tokens；请求超时120秒，SDK重试1次。
+- 密钥：`OPEN_ROUTER_API_KEY`，兼容 `OPENROUTER_API_KEY`。
+- 缺少密钥明确失败，不自动切换到其他模型或付费服务。
 
-# 支持的提供商
-DeepSeek, GPT-4o, Gemini, 通义千问, 智谱, 豆包, OpenRouter, Ollama
-```
-
-特性：缓存机制、无API Key自动回退、模型代理类懒加载。
+其他供应商保留显式工厂入口。后台记忆使用相同默认模型配置；命令测试只追加追踪回调，不覆盖模型参数。Claude ACP沿用本机Claude真实配置，项目环境统一输出预算32768，不再由测试覆盖模型别名。
 
 ### 10. PostgreSQL持久化 + 自动回退
 
@@ -440,12 +437,18 @@ deep_loopminder/
 │   │   │   ├── intelligent_web.py       # Web端多用户虚拟文件系统
 │   │   │   ├── collaborative_agents.py  # AI公司5协作智能体
 │   │   │   ├── role_playing.py          # 角色扮演智能体
-│   │   │   └── basic_filesystem.py      # 基础文件系统代理
+│   │   │   ├── basic_filesystem.py      # 基础文件系统代理
+│   │   │   └── pm_agent/               # PM 实现、配置、上下文与 Skills
+│   │   │       ├── agent.py            # PM 配置、提示词、上下文、装配与主图
+│   │   │       └── __init__.py         # 公共接口导出
 │   │   ├── create_custom_agents/
 │   │   │   └── deep_custom_agent.py     # 自定义智能体工厂
 │   │   ├── config.py                    # 全局配置
 │   │   └── db.py                        # PostgreSQL + 自动回退
 │   ├── middlewares/
+│   │   ├── memory/pm_agent_memory/    # PM 历史记忆与压缩交接
+│   │   ├── project_state/              # 项目状态规则、Store、工具和实时上下文
+│   │   ├── acp/                        # 可复用的 ACP 接入与会话控制
 │   │   ├── agent_communication.py       # A2A通信中间件
 │   │   ├── logging.py                   # 日志中间件（脱敏）
 │   │   ├── shell/
@@ -456,6 +459,7 @@ deep_loopminder/
 │   ├── models/
 │   │   └── llm.py                       # 模型懒加载工厂（8种LLM）
 │   ├── tools/                           # Shell/API工具
+│   ├── runtime/                         # 共享项目状态、Worker 路由与运行规则
 │   └── backend/
 │       └── backend.py                   # NamespacedStoreBackend
 ├── workspace/                           # 智能体工作目录（虚拟根目录）

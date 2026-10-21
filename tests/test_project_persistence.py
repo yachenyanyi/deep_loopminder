@@ -2,8 +2,8 @@ import asyncio
 
 from langgraph.store.memory import InMemoryStore
 
-from src.runtime.project.models import ProjectSnapshot, Task, TaskStatus
-from src.runtime.project.persistence import ProjectStore
+from src.middlewares.project_state.models import ProjectSnapshot, Task, TaskStatus
+from src.middlewares.project_state.persistence import ProjectStore
 
 
 def make_snapshot(project_id: str = "project-1") -> ProjectSnapshot:

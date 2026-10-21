@@ -1,0 +1,39 @@
+{
+  "scope": "configuration routing only; no model calls or native tool execution",
+  "roles": [
+    {
+      "role": "developer",
+      "provider": "claude",
+      "required_capability": "files.write",
+      "eligible": [
+        "claude"
+      ]
+    },
+    {
+      "role": "reviewer",
+      "provider": "codex",
+      "required_capability": "files.read",
+      "eligible": [
+        "codex"
+      ]
+    },
+    {
+      "role": "tester",
+      "provider": "codex",
+      "required_capability": "test.execute",
+      "eligible": [
+        "codex"
+      ]
+    },
+    {
+      "role": "researcher",
+      "provider": "codex",
+      "required_capability": "web.search",
+      "eligible": [
+        "codex"
+      ]
+    }
+  ],
+  "adapter_paths_exist": true,
+  "dotenv_roundtrip": true
+}

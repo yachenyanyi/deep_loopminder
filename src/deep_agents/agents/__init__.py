@@ -1,39 +1,29 @@
-# 现有代理
-from .intelligent_web import create_intelligent_deep_agent_web
-from .intelligent_local import create_intelligent_deep_agent
-from .role_playing import create_role_playing_agent
-from .basic_filesystem import create_basic_filesystem_agent
+"""Public agent exports, loaded only when requested."""
 
-# B站教授代理
-from .teacher_agent import create_teacher_agent
+from importlib import import_module
 
-# 协作智能体
-from .collaborative_agents import (
-    create_chat_agent,
-    create_coordinator_agent,
-    create_coder_agent,
-    create_researcher_agent,
-    create_assistant_agent,
-)
+_EXPORT_MODULES = {
+    "create_intelligent_deep_agent_web": ".intelligent_web",
+    "create_intelligent_deep_agent": ".intelligent_local",
+    "create_role_playing_agent": ".role_playing",
+    "create_basic_filesystem_agent": ".basic_filesystem",
+    "create_teacher_agent": ".teacher_agent",
+    "create_chat_agent": ".collaborative_agents",
+    "create_coordinator_agent": ".collaborative_agents",
+    "create_coder_agent": ".collaborative_agents",
+    "create_researcher_agent": ".collaborative_agents",
+    "create_assistant_agent": ".collaborative_agents",
+    "COLLABORATIVE_EMPLOYEES": ".employee_registry",
+    "get_employee_by_name": ".employee_registry",
+    "get_all_employee_names": ".employee_registry",
+}
 
-# 员工注册表
-from .employee_registry import COLLABORATIVE_EMPLOYEES, get_employee_by_name, get_all_employee_names
+__all__ = list(_EXPORT_MODULES)
 
-__all__ = [
-    "create_intelligent_deep_agent_web",
-    "create_intelligent_deep_agent",
-    "create_role_playing_agent",
-    "create_basic_filesystem_agent",
-    # B站教授代理
-    "create_teacher_agent",
-    # 协作智能体
-    "create_chat_agent",
-    "create_coordinator_agent",
-    "create_coder_agent",
-    "create_researcher_agent",
-    "create_assistant_agent",
-    # 员工注册表
-    "COLLABORATIVE_EMPLOYEES",
-    "get_employee_by_name",
-    "get_all_employee_names",
-]
+
+def __getattr__(name):
+    """Resolve existing public names without initializing unrelated agents."""
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(name)
+    return getattr(import_module(module_name, __name__), name)

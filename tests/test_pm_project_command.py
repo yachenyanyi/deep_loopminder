@@ -1,8 +1,8 @@
 """Tests that PM mutations stay on the #36 typed command boundary."""
 
-from src.runtime.pm import ProjectCommand, pm_project_command
-from src.runtime.project import CreateTaskCommand, ProjectSnapshot, Task, TaskStatus
-from src.runtime.project.service import apply_project_command
+from src.deep_agents.agents.pm_agent import ProjectCommand, pm_project_command
+from src.middlewares.project_state import CreateTaskCommand, ProjectSnapshot, Task, TaskStatus
+from src.middlewares.project_state.service import apply_project_command
 
 
 def test_pm_uses_project_domain_reducer_without_parallel_mutation_api() -> None:

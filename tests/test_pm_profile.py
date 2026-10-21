@@ -1,4 +1,4 @@
-from src.runtime.pm import PMProfile, default_pm_profile
+from src.deep_agents.agents.pm_agent import PMProfile, default_pm_profile
 
 
 def test_default_pm_profile_is_project_control_only() -> None:
@@ -20,6 +20,7 @@ def test_pm_profile_declares_reviewed_owner_requirements() -> None:
     assert profile.middleware_profile == (
         "HumanDecisionRequestMiddleware",
         "human_decision_hitl_middleware",
+        "ProjectStateMiddleware",
         "PMAgentMemoryMiddleware",
     )
 

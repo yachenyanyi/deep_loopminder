@@ -1,6 +1,6 @@
 import pytest
 
-from src.runtime.project.models import Task, TaskStatus
+from src.middlewares.project_state.models import Task, TaskStatus
 from src.runtime.routing.adapters import role_requirement_from_task
 
 

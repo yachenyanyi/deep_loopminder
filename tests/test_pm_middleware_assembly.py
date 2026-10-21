@@ -1,19 +1,21 @@
 import pytest
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 
-from src.middlewares.approval import HumanDecisionRequestMiddleware
+from src.deep_agents.agents.pm_agent import PMProfile, default_pm_profile
+from src.deep_agents.agents.pm_agent.agent import assemble_pm_user_middleware
 from src.middlewares.memory.pm_agent_memory import PMAgentMemoryMiddleware
-from src.runtime.middleware_assembly import assemble_pm_user_middleware
-from src.runtime.pm import PMProfile, default_pm_profile
+from src.middlewares.project_state import ProjectStateMiddleware
+from src.middlewares.approval import HumanDecisionRequestMiddleware
 
 
 def test_pm_assembly_resolves_reviewed_owner_middleware() -> None:
     middleware = assemble_pm_user_middleware(default_pm_profile())
 
-    assert len(middleware) == 4
+    assert len(middleware) == 5
     assert isinstance(middleware[1], HumanDecisionRequestMiddleware)
     assert isinstance(middleware[2], HumanInTheLoopMiddleware)
-    assert isinstance(middleware[3], PMAgentMemoryMiddleware)
+    assert isinstance(middleware[3], ProjectStateMiddleware)
+    assert isinstance(middleware[4], PMAgentMemoryMiddleware)
 
 
 def test_pm_profile_declares_pm_memory_policy_without_execution_capability() -> None:
@@ -55,3 +57,31 @@ def test_pm_assembly_fails_closed_for_unreviewed_context_policy() -> None:
 
     with pytest.raises(ValueError, match="#33 projection path"):
         assemble_pm_user_middleware(unreviewed)
+
+
+def test_pm_assembly_explicitly_enables_role_based_acp_tools() -> None:
+    from src.middlewares.acp import ACPMiddleware
+
+    acp = ACPMiddleware(
+        async_subagents=[
+            {
+                "name": "researcher",
+                "description": "Read-only investigation",
+                "graph_id": "acp_worker",
+            }
+        ]
+    )
+    profile = default_pm_profile(acp_enabled=True)
+    assembled = assemble_pm_user_middleware(profile, acp=acp)
+    assert assembled[-1] is acp
+    assert [tool.name for tool in acp.tools] == [
+        "spawn_agent",
+        "followup_task",
+        "send_message",
+        "wait_agent",
+        "list_agents",
+        "interrupt_agent",
+    ]
+    assert "provider.select" not in profile.capabilities
+    with pytest.raises(ValueError, match="exactly match the reviewed"):
+        assemble_pm_user_middleware(default_pm_profile(), acp=acp)

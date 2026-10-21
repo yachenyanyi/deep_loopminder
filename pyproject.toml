@@ -10,8 +10,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "langgraph>=1.0.0,<2.0.0",
-    "deepagents>=0.5.2",
-    "langchain>=0.3.9",
+    "langgraph-sdk>=0.3.0",
+    "deepagents>=0.7.21",
+    "langchain>=1.4.3",
+    "langgraph-checkpoint-postgres>=3.0.0",
+    "psycopg[binary]>=3.2.0",
     "langchain-ollama>=0.1.0",
     "langchain-openai>=0.1.22",
     "langchain-anthropic>=0.1.23",
@@ -29,7 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-acp = ["agent-client-protocol>=0.12.1,<0.13"]
+acp = ["agent-client-protocol>=0.12.1,<0.13", "starlette>=0.37"]
 dev = ["mypy>=1.11.1", "ruff>=0.6.1", "pytest>=8.3.5", "agent-client-protocol>=0.12.1,<0.13"]
 
 [build-system]
@@ -40,7 +43,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"*" = ["py.typed"]
+"*" = ["py.typed", "dashboard.html"]
 
 [tool.ruff]
 lint.select = [
@@ -57,6 +60,7 @@ lint.ignore = [
     "UP007",
     "UP035",
     "D417",
+    "D415",  # 中文文档字符串使用中文句号，避免按英文标点误报。
     "E501",
 ]
 [tool.ruff.lint.per-file-ignores]

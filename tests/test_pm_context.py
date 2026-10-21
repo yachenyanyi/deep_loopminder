@@ -1,8 +1,12 @@
 """Tests for the bounded PM project-context projection."""
 
+from src.deep_agents.agents.pm_agent import (
+    PMContextProjection,
+    pm_context_projection,
+    project_pm_context,
+)
 from src.middlewares.context_projection import select_context_blocks
-from src.runtime.pm import PMContextProjection, pm_context_projection, project_pm_context
-from src.runtime.project import ProjectSnapshot, Task, TaskStatus
+from src.middlewares.project_state import ProjectSnapshot, Task, TaskStatus
 
 
 def _task(task_id: str, status: TaskStatus) -> Task:
