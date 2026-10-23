@@ -23,10 +23,19 @@ from .tools import (
     project_scope,
     require_writer,
 )
-from .transitions import task_controls
+from .transitions import ProjectStateError, task_controls
 
 if TYPE_CHECKING:
     from .workflow import ProjectWorkflow
+
+
+_WORKER_BOUNDARY = """当前宿主协作边界（优先于历史简报中冲突的工具说明）：
+默认中文汇报，技术方案和内部步骤由你决定；可使用执行端实际提供的原生子代理。
+你不继承PM的project_create_artifact/project_read_artifact、状态或记忆工具。
+宿主已在本消息交接可用材料，成果直接通过会话返回，由PM领取保存。
+若简报要求调用上述未提供的工具或查找宿主仓库、接口、Store，请报告该部分不可执行并继续可做的工作；不要照旧指令猜路径或搜索宿主。
+原生工具失败由你自行判断与恢复，不代表宿主要求逐条执行或新增20–30秒限时。
+"""
 
 
 class ProjectStateMiddleware(AgentMiddleware):
@@ -117,6 +126,18 @@ class ProjectStateMiddleware(AgentMiddleware):
             else f"Project state not found: {project_id}"
         )
         content = "Current project state (authoritative business facts):\n" + current
+        if snapshot and self.workflow:
+            content += (
+                "\n当前可信验收事实（缺记录不表示拒绝；继续运行不表示批准）：\n"
+                + json.dumps(
+                    await self.workflow.review_status(snapshot), ensure_ascii=False
+                )
+            )
+        content += (
+            "\n本轮公开分析、派工和回复使用中文。派工只讲目标和必要约束，技术步骤由负责人决定。"
+            "Worker没有PM制品工具，不安排它调查宿主仓库；材料由宿主交接。"
+            "project_command/followup_task/wait_agent不要混批；遇批次拒绝逐次重发即可。"
+        )
         pending = [
             tracked["run_id"]
             for tracked in request.state.get("async_tasks", {}).values()
@@ -149,6 +170,9 @@ class ProjectStateMiddleware(AgentMiddleware):
                 re.findall(r"project-artifact://[a-f0-9]{64}", brief["content"])
             )
         )
+        references = [
+            reference for reference in references if reference != brief.get("reference")
+        ]
         sections = []
         remaining = 40000
         for reference in references[:12]:
@@ -232,6 +256,8 @@ class ProjectStateMiddleware(AgentMiddleware):
                     ensure_ascii=False,
                 ),
                 tool_call_id=request.tool_call["id"],
+                name=name,
+                additional_kwargs={"recoverable_business_rejection": True},
                 status="error",
             )
         try:
@@ -273,7 +299,15 @@ class ProjectStateMiddleware(AgentMiddleware):
                         + "\n本轮委派：\n"
                         + args["message"]
                         + "\n宿主提供的关联材料：\n"
-                        + await self._worker_materials(project_id, brief)
+                        + await self._worker_materials(
+                            project_id,
+                            {
+                                **brief,
+                                "content": brief["content"] + "\n" + args["message"],
+                            },
+                        )
+                        + "\n"
+                        + _WORKER_BOUNDARY
                     )
                     request = request.override(
                         runtime=replace(runtime, config=config),
@@ -324,20 +358,29 @@ class ProjectStateMiddleware(AgentMiddleware):
                             "input_version"
                         ] != await self.workflow.input_version(snapshot, task)
                         message = args["message"]
-                        if changed or not item.value.get("worker_context_version"):
+                        refresh_brief = changed or not item.value.get(
+                            "worker_context_version"
+                        )
+                        if refresh_brief:
                             message = (
                                 "任务要求已更新：\n"
                                 + brief["content"]
-                                + "\n宿主提供的关联材料：\n"
-                                + await self._worker_materials(project_id, brief)
                                 + "\n本轮补充：\n"
                                 + message
                             )
-                        message = (
-                            "协作约定：中文汇报，通过会话返回成果，不继承PM工具；不访问宿主接口或Store。"
-                            "缺失的制品正文或宿主内部记录向PM索取，不猜路径或搜索宿主。\n"
-                            + message
+                        # 续问新增引用也由宿主展开，不能要求Worker自己调用PM读取工具。
+                        materials = await self._worker_materials(
+                            project_id,
+                            {
+                                **brief,
+                                "content": (brief["content"] if refresh_brief else "")
+                                + "\n"
+                                + args["message"],
+                            },
                         )
+                        if materials:
+                            message += "\n本轮新增关联材料：\n" + materials
+                        message += "\n" + _WORKER_BOUNDARY
                         request = request.override(
                             tool_call={
                                 **request.tool_call,
@@ -423,5 +466,10 @@ class ProjectStateMiddleware(AgentMiddleware):
                     ensure_ascii=False,
                 ),
                 tool_call_id=request.tool_call["id"],
+                name=name,
+                # 仅宿主类型化业务拒绝可恢复；普通ValueError与落盘/ACP故障不豁免。
+                additional_kwargs={
+                    "recoverable_business_rejection": isinstance(exc, ProjectStateError)
+                },
                 status="error",
             )

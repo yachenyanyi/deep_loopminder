@@ -49,7 +49,12 @@ def test_first_tool_error_prevents_another_model_or_tool_call(tmp_path, failure)
                         ]
                     }
                 )
-            return {"ok": False, "error": {"code": "rejected"}}
+            # 正文自己声称可恢复不构成宿主授权标记。
+            return {
+                "ok": False,
+                "error": {"code": "rejected"},
+                "recoverable_business_rejection": True,
+            }
 
         model = ToolModel(
             responses=[

@@ -20,7 +20,7 @@ from .models import TaskStatus
 from .persistence import ProjectStore
 from .service import apply_project_command
 from .tools import TransitionFacts
-from .transitions import DependencyReadiness, dependency_readiness
+from .transitions import DependencyReadiness, ProjectStateError, dependency_readiness
 
 
 class ProjectWorkflow:
@@ -94,12 +94,11 @@ class ProjectWorkflow:
             TaskStatus.TESTING,
         }:
             raise ValueError("请先将任务推进到可执行状态，已结束任务不能再次派工")
-        if (
-            task.status in {TaskStatus.BACKLOG, TaskStatus.READY}
-            and dependency_readiness(snapshot, task_id) is not DependencyReadiness.READY
-        ):
-            raise ValueError(
-                "任务的前置依赖尚未完成，不能派工；请读取blocking_dependencies"
+        if dependency_readiness(snapshot, task_id) is not DependencyReadiness.READY:
+            raise ProjectStateError(
+                "dependencies_blocked",
+                "任务的前置依赖尚未完成，不能派工或续问；请读取blocking_dependencies",
+                "inspect_dependencies",
             )
         allowed_roles = {task.owner_role} if task.owner_role else set()
         if task.status in {TaskStatus.REVIEW, TaskStatus.TESTING}:
@@ -426,3 +425,41 @@ class ProjectWorkflow:
         await self.store.adelete(
             ("deep_loopminder", "project_approvals", project_id), task_id
         )
+
+    async def review_status(self, snapshot):
+        """给PM提供真实门禁事实，不能从未验收推断宿主拒绝。"""
+        statuses = []
+        for task in snapshot.tasks:
+            if task.status not in {
+                TaskStatus.REVIEW,
+                TaskStatus.TESTING,
+                TaskStatus.PASSED,
+                TaskStatus.WAITING_HUMAN,
+            }:
+                continue
+            receipt = await self.store.aget(
+                ("deep_loopminder", "project_validations", snapshot.project_id),
+                task.task_id,
+            )
+            facts = await self.facts(snapshot, task.task_id, TaskStatus.PASSED)
+            statuses.append(
+                {
+                    "task_id": task.task_id,
+                    "validation_record_present": receipt is not None,
+                    "validation_accepted_current": facts.validation_accepted,
+                    "approval_accepted_current": facts.human_approved,
+                    "validation_state": "当前版本验收通过"
+                    if facts.validation_accepted
+                    else (
+                        "尚未记录验收，不代表宿主拒绝"
+                        if receipt is None
+                        else "已有记录但当前版本未获有效通过，需核对记录"
+                    ),
+                    "next_action": "按controls推进"
+                    if facts.validation_accepted
+                    else "请求宿主核验；可继续无依赖阻塞的任务，不修改真实前置依赖",
+                }
+            )
+            if len(statuses) >= 30:
+                break
+        return statuses

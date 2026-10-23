@@ -12,11 +12,13 @@ from src.middlewares.project_state.commands import (
     AttachTaskEvidenceCommand,
     CreateTaskCommand,
     ReplaceTaskBriefCommand,
+    RestoreTaskDependenciesCommand,
     TransitionTaskCommand,
     UpdateTaskDependenciesCommand,
 )
 from src.middlewares.project_state.models import ProjectSnapshot, Task, TaskStatus
 from src.middlewares.project_state.transitions import (
+    ProjectStateError,
     TransitionDecision,
     transition_decision,
     transition_rejection,
@@ -29,6 +31,7 @@ ProjectCommand = (
     | AttachTaskEvidenceCommand
     | ReplaceTaskBriefCommand
     | UpdateTaskDependenciesCommand
+    | RestoreTaskDependenciesCommand
 )
 
 
@@ -56,14 +59,46 @@ def apply_project_command(
                 ),
             ),
         )
+    if isinstance(command, RestoreTaskDependenciesCommand):
+        task = _task(snapshot, command.task_id)
+        if not command.evidence_ref.strip():
+            raise ValueError("宿主恢复依赖必须提供历史证据引用")
+        candidate = _replace_task(
+            snapshot,
+            task.task_id,
+            replace(
+                task,
+                dependencies=task.dependencies | command.dependencies,
+                artifact_refs=_append_unique(task.artifact_refs, command.evidence_ref),
+            ),
+        )
+        validate_dependency_graph(candidate)
+        return candidate
     if isinstance(command, UpdateTaskDependenciesCommand):
         task = _task(snapshot, command.task_id)
         if (
             task.status not in {TaskStatus.BACKLOG, TaskStatus.READY}
             or task.execution_refs
         ):
-            raise ValueError(
-                "只能修改尚未执行的backlog/ready任务依赖；执行历史不能重写"
+            raise ProjectStateError(
+                "dependency_edit_locked",
+                "只能修改尚未执行的backlog/ready任务依赖；执行历史不能重写",
+                "request_human_decision",
+            )
+        removed = task.dependencies - command.dependencies
+        protected = [
+            dependency.task_id
+            for dependency in snapshot.tasks
+            if dependency.task_id in removed
+            and dependency.execution_refs
+            and dependency.status is not TaskStatus.DONE
+        ]
+        if protected:
+            raise ProjectStateError(
+                "active_dependency_removal_forbidden",
+                "不能删除已执行但尚未done的真实前置依赖来绕过验收："
+                + ", ".join(protected),
+                "request_human_decision",
             )
         candidate = _replace_task(
             snapshot,

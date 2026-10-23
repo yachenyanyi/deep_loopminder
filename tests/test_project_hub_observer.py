@@ -11,6 +11,39 @@ import run_pm_project_hub as observer
 from run_pm_project_hub import cancel_observed_run
 
 
+def test_official_human_interrupt_is_retained_as_pending_host_request():
+    request = {
+        "id": "decision",
+        "value": {"action_requests": [{"name": "request_human_decision"}]},
+    }
+    assert observer.pending_host_requests({"tasks": [{"interrupts": [request]}]}) == [
+        request
+    ]
+    assert observer.pending_host_requests(
+        {"interrupts": [request], "tasks": [{"interrupts": [request]}]}
+    ) == [request]
+    assert observer.pending_host_requests({"tasks": []}) == []
+
+
+def test_resume_hitl_requires_explicit_response_and_does_not_approve():
+    request = {
+        "id": "decision",
+        "value": {"action_requests": [{"name": "request_human_decision"}]},
+    }
+    checkpoint = {"tasks": [{"interrupts": [request]}]}
+    with pytest.raises(ValueError):
+        observer.host_resume_command(checkpoint)
+    command = observer.host_resume_command(checkpoint, "继续，未决定验收通过")
+    assert command == {
+        "resume": {
+            "decisions": [{"type": "respond", "message": "继续，未决定验收通过"}]
+        }
+    }
+    assert observer.host_resume_command({"tasks": []}) is None
+    with pytest.raises(ValueError):
+        observer.host_resume_command({"tasks": []}, "不能投递错检查点")
+
+
 @pytest.mark.parametrize("code", [404, 409])
 @pytest.mark.parametrize("status", ["error", "running"])
 def test_cancel_race_requires_official_terminal_confirmation(code, status):
@@ -38,11 +71,14 @@ def test_cancel_race_requires_official_terminal_confirmation(code, status):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("provider,stopped", [("claude", False), ("codex", True)])
+@pytest.mark.parametrize(
+    "provider,stopped", [("claude", False), ("codex", False), ("strict-provider", True)]
+)
+@pytest.mark.parametrize("failure", ["failed_status", "exit_code"])
 def test_native_tool_failure_respects_developer_recovery_scope(
-    tmp_path, monkeypatch, provider, stopped
+    tmp_path, monkeypatch, provider, stopped, failure
 ):
-    """原生开发工具失败仍留红色事件，但不再提前杀掉Claude整轮开发。"""
+    """两种Worker的failed/非零退出仍留红色事件，但不终止整场测试。"""
 
     async def scenario():
         monkeypatch.setenv("PROJECT_HUB_RUN_DIRECTORY", str(tmp_path))
@@ -58,6 +94,9 @@ def test_native_tool_failure_respects_developer_recovery_scope(
                 "status": "failed",
             },
         }
+        if failure == "exit_code":
+            payload["update"].pop("status")
+            payload["update"]["_meta"] = {"terminal_exit": {"exit_code": 1}}
         event = SimpleNamespace(
             update=SimpleNamespace(session_update="tool_call_update"),
             model_dump=lambda **kw: payload,
@@ -102,7 +141,8 @@ def test_resume_native_replay_is_logged_but_new_failure_still_stops(
             },
         }
         (source / "native-events.jsonl").write_text(
-            json.dumps({"provider": "codex", "event": payload}) + "\n", encoding="utf-8"
+            json.dumps({"provider": "strict-provider", "event": payload}) + "\n",
+            encoding="utf-8",
         )
         monkeypatch.setattr(observer, "ROOT", tmp_path)
         monkeypatch.setenv("PROJECT_HUB_RESUME_RUN_DIRECTORY", str(source))
@@ -111,7 +151,7 @@ def test_resume_native_replay_is_logged_but_new_failure_still_stops(
         monkeypatch.setattr(
             observer, "ObservedWorker", lambda *a, **kw: SimpleNamespace(**kw)
         )
-        worker = observer.instrumented_worker("codex")
+        worker = observer.instrumented_worker("strict-provider")
         event = SimpleNamespace(
             update=SimpleNamespace(session_update="tool_call"),
             model_dump=lambda **kw: payload,

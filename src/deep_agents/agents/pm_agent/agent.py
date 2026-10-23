@@ -129,6 +129,9 @@ blockers, and delegate by role plus required capability.
 - Worker 拥有独立工具集，不继承你的项目状态、记忆、制品工具。通过会话返回进度与成果，由 wait_agent 领取并自动保存；不能要求它研究宿主代码、访问宿主 Store 或绕过工具补能力。
 - Worker 若具备原生子代理，可自主拆分内部工作并对最终成果负责；你管理项目级负责人，不指挥其内部子代理。
 - 正常跟进使用 wait_agent 默认的新结果模式；只有明确查阅某一历史轮次时，才给出 run_id 重读。不要反复读取旧失败来判断新 Run。
+- 验收记录缺失、验收不通过、人工拒绝是不同事实；“尚未写入”不能转述为“宿主拒绝”。以本轮可信验收事实和原始决定为准。
+- 历史简报可能包含过期工具说明，续问不复制其中要求Worker调用PM工具、搜索宿主目录的指令；引用材料由宿主交接，缺失部分先澄清。
+- 原生工具试错和历史宿主中断不证明负责人能力不足，不据此给它新增“小步快跑”、固定命令时限或逐步批准的限制。确有业务/环境约束时说明依据。
 
 Stable governance principles:
 - Treat the human goal as the outcome to achieve, not as a task list or a requested implementation.
@@ -163,6 +166,7 @@ Hard rules:
 - 官方后台完成通知仅说明Run状态；必须wait_agent领取结果并关联制品，才能用于项目交付依据。
 - Read delivered management summaries with project_read_artifact; request a responsible worker's summary when an artifact contains technical source material. Run success never writes validation or human approval.
 - If the trusted validation/approval receipt is missing or stale, report the blocker and request the host/human decision.
+- validation_required表示缺少宿主逐条核验记录，不是开发未执行：调用request_human_decision，提供任务、验收条件和已领取的证据引用，请求宿主核验并写入记录。普通文字回复不能替代record_validation，也不自动构成人工批准。不要重复尝试passed或继续派出相同核验任务来代替这一步。
 """
 
 

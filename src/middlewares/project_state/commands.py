@@ -69,3 +69,13 @@ class UpdateTaskDependenciesCommand:
     project_id: str
     task_id: str
     dependencies: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreTaskDependenciesCommand:
+    """宿主依据历史证据恢复误删边，不删除依赖、不重写运行历史，不向模型暴露。"""
+
+    project_id: str
+    task_id: str
+    dependencies: frozenset[str]
+    evidence_ref: str

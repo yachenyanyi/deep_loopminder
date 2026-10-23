@@ -37,9 +37,13 @@ python -m src.middlewares.trajectory.web --directory workspace/my-run --port 626
 
 首错保存 `first-error.json`，阻止后续模型/工具调用并抛出 `TrajectoryStopped`。已在执行的其他 Worker 要由宿主取消，不是同步强杀进程。网页停止按钮只写 `stop-request.json`，**宿主必须监听并通过官方接口取消父/子 Run**；未接入宿主时按钮不能保证取消。`tests/run_pm_project_hub.py` 已接入该契约，每0.5秒检查并并发取消官方 Run，不在错误后修参数或重跑。
 
+项目状态中间件标记的类型化业务拒绝属于可恢复控制流：轨迹仍显示红色并记录 `recoverable=true`，但不生成首错，下一轮模型可按拒绝原因请求宿主或修正操作。该标记只读取 ToolMessage.additional_kwargs，不相信工具正文自称可恢复。工具异常、未知失败信封、模型参数错误及基础设施故障仍遵循严格停止；业务验收和批准门禁不因此放宽。
+
+观察入口恢复官方人工中断时，宿主须设置 `PROJECT_HUB_HOST_RESPONSE_FILE` 指向UTF-8响应文件。只接受唯一的 `request_human_decision`，经官方 `command.resume` 的 `respond` 决定继续；没有人工中断时禁止误投响应，有中断而没有响应则拒绝创建Run。响应文字不自动写入验收或批准记录；普通失败节点仍使用 `input=None`。运行元数据保存恢复方式与响应，旧日志不覆盖。
+
 正常取消不记作新故障。采集文件系统失败会作为异常暴露，不能悄悄继续并宣称轨迹完整。运行退出码或 official Run success 不代表业务验收通过。
 
-正式网站观察入口按用户要求，对Claude原生开发工具只记录错误、允许其自行恢复；PM工具/模型和ACP传输/官方新Run失败仍立即停止。宿主从已结束运行续跑时，复制官方dev持久化目录到新的证据目录，保持原PM线程与项目，以`input=None`恢复待执行节点；恢复前已经终止的旧Worker错误记录为历史基线，不能冒充新故障，也不能改成成功。`PROJECT_HUB_RESUME_RUN_DIRECTORY`由宿主提供，不是模型工具参数。
+正式网站观察入口按用户要求，对Claude和Codex原生工具的failed或非零退出码只记录错误、允许Worker自行恢复，不触发整场停止；PM工具/模型和ACP传输/官方新Run失败仍立即停止。红色错误事件及原始输出保留，不把失败伪装成成功。宿主从已结束运行续跑时，复制官方dev持久化目录到新的证据目录，保持原PM线程与项目，以`input=None`恢复待执行节点；恢复前已经终止的旧Worker错误记录为历史基线，不能冒充新故障，也不能改成成功。`PROJECT_HUB_RESUME_RUN_DIRECTORY`由宿主提供，不是模型工具参数。
 
 ## 数据边界
 

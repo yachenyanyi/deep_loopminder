@@ -52,6 +52,83 @@ async def fixture(status=TaskStatus.IN_PROGRESS):
 
 
 @pytest.mark.parametrize(
+    "status,target,code",
+    [
+        (TaskStatus.TESTING, "passed", "validation_required"),
+        (TaskStatus.PASSED, "approved", "approval_required"),
+    ],
+)
+def test_missing_trusted_receipt_reaches_hitl_without_bypassing_gate(
+    tmp_path, status, target, code
+):
+    """真实状态工具拒绝后可继续到官方人工中断，不生成框架首错或伪造验收。"""
+    from src.middlewares.approval.human_decision import (
+        HumanDecisionRequestMiddleware,
+        human_decision_hitl_middleware,
+    )
+    from src.middlewares.trajectory import TrajectoryMiddleware, TrajectoryRecorder
+
+    async def scenario():
+        store, work, _ = await fixture(status)
+        graph = create_agent(
+            ToolModel(
+                responses=[
+                    call(
+                        "project_command",
+                        {
+                            "action": "transition_task",
+                            "task_id": "t",
+                            "target_status": target,
+                        },
+                        "transition",
+                    ),
+                    call(
+                        "request_human_decision",
+                        {
+                            "question": "请宿主核验当前任务证据并补齐可信记录",
+                            "context": "项目p，任务t，不能凭Worker自述通过",
+                        },
+                        "decision",
+                    ),
+                ]
+            ),
+            middleware=[
+                TrajectoryMiddleware(TrajectoryRecorder(tmp_path), stop_on_error=True),
+                HumanDecisionRequestMiddleware(),
+                human_decision_hitl_middleware(),
+                ProjectStateMiddleware(workflow=work),
+            ],
+            store=store,
+            checkpointer=InMemorySaver(),
+        )
+        result = await graph.ainvoke(
+            {"messages": [("user", "核对并推进")]},
+            {
+                "configurable": {
+                    "project_id": "p",
+                    "thread_id": "parent",
+                    "project_state_single_writer": True,
+                },
+            },
+        )
+        rejected = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+        error = json.loads(rejected.content)["error"]
+        assert (
+            error["code"] == code and error["next_action"] == "request_human_decision"
+        )
+        assert rejected.additional_kwargs["recoverable_business_rejection"] is True
+        assert result["__interrupt__"]
+        assert not (tmp_path / "first-error.json").exists()
+        assert (await ProjectStore(store).load("p")).tasks[0].status == status
+        assert (
+            await store.asearch(("deep_loopminder", "project_validations", "p")) == []
+        )
+        assert await store.asearch(("deep_loopminder", "project_approvals", "p")) == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
     "bad", ["C:/missing/brief.md", "project-artifact://" + "a" * 64]
 )
 def test_pm_task_creation_rejects_unresolved_brief(bad):
@@ -516,12 +593,17 @@ def test_followup_uses_current_brief_and_rejects_increased_requirements(
         from dataclasses import replace
 
         store, work, _ = await fixture()
+        note = await work.artifacts.create("p", "t", "note", "本轮新增证据正文")
         client = client_fixture()
         model = ToolModel(
             responses=[
                 call("spawn_agent", {"task_name": "t", "message": "首次"}, "spawn"),
                 AIMessage(content="started"),
-                call("followup_task", {"target": "t", "message": "继续"}, "follow"),
+                call(
+                    "followup_task",
+                    {"target": "t", "message": "继续，参考" + note["reference"]},
+                    "follow",
+                ),
                 AIMessage(content="end"),
             ]
         )
@@ -593,8 +675,12 @@ def test_followup_uses_current_brief_and_rejects_increased_requirements(
                     "content"
                 ]
             )
+            assert "本轮新增证据正文" in request["message"]
+            assert request["message"].endswith(
+                "原生工具失败由你自行判断与恢复，不代表宿主要求逐条执行或新增20–30秒限时。\n"
+            )
             if increase_capabilities == "unchanged":
-                assert request["message"].endswith("继续")
+                assert "继续" in request["message"]
                 assert "# 任务" not in request["message"]
             else:
                 assert "更新后的任务说明" in request["message"]
@@ -602,6 +688,151 @@ def test_followup_uses_current_brief_and_rejects_increased_requirements(
                 "langgraph-run://child/run-1",
                 "langgraph-run://child/run-2",
             )
+
+    asyncio.run(scenario())
+
+
+def test_mixed_project_write_and_followup_can_be_retried_without_partial_effects(
+    tmp_path,
+):
+    """重放本次混批形态，拒绝后下一轮串行修改可以继续，续问不应偷偷启动。"""
+    from src.middlewares.trajectory import TrajectoryMiddleware, TrajectoryRecorder
+
+    async def scenario():
+        store, work, _ = await fixture()
+        mixed = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "project_command",
+                    "args": {"action": "update_project", "goal": "不应生效"},
+                    "id": "write",
+                },
+                {
+                    "name": "followup_task",
+                    "args": {"target": "absent", "message": "不应发出"},
+                    "id": "follow",
+                },
+            ],
+        )
+        graph = create_agent(
+            ToolModel(
+                responses=[
+                    mixed,
+                    call("project_read", {}, "check"),
+                    call(
+                        "project_command",
+                        {"action": "update_project", "goal": "分开执行后的目标"},
+                        "retry",
+                    ),
+                    AIMessage(content="已恢复"),
+                ]
+            ),
+            middleware=[
+                TrajectoryMiddleware(TrajectoryRecorder(tmp_path), stop_on_error=True),
+                ProjectStateMiddleware(workflow=work),
+                ACPMiddleware(
+                    async_subagents=[
+                        {
+                            "name": "reviewer",
+                            "description": "核验",
+                            "graph_id": "worker",
+                        }
+                    ]
+                ),
+            ],
+            store=store,
+        )
+        result = await graph.ainvoke(
+            {"messages": [("user", "继续")]},
+            {
+                "configurable": {
+                    "project_id": "p",
+                    "thread_id": "parent",
+                    "project_state_single_writer": True,
+                }
+            },
+        )
+        outputs = {
+            m.tool_call_id: m for m in result["messages"] if isinstance(m, ToolMessage)
+        }
+        assert all(
+            json.loads(outputs[key].content)["error"]["code"]
+            == "parallel_project_writes"
+            for key in ("write", "follow")
+        )
+        assert "不应生效" not in outputs["check"].content
+        assert not result.get("async_tasks")
+        assert (await ProjectStore(store).load("p")).goal == "分开执行后的目标"
+        assert not (tmp_path / "first-error.json").exists()
+
+    asyncio.run(scenario())
+
+
+def test_review_context_distinguishes_missing_receipt_from_current_acceptance():
+    async def scenario():
+        store, work, _ = await fixture(TaskStatus.REVIEW)
+        snapshot = await ProjectStore(store).load("p")
+        current = (await work.review_status(snapshot))[0]
+        assert current["validation_record_present"] is False
+        assert current["validation_accepted_current"] is False
+        assert "不代表宿主拒绝" in current["validation_state"]
+        await store.aput(
+            ("deep_loopminder", "project_validations", "p"), "t", {"subject": "旧版本"}
+        )
+        current = (await work.review_status(snapshot))[0]
+        assert current["validation_record_present"] is True
+        assert current["validation_accepted_current"] is False
+
+    asyncio.run(scenario())
+
+
+def test_active_prerequisite_cannot_be_removed_and_host_restore_preserves_history():
+    from dataclasses import replace
+
+    from src.middlewares.project_state.commands import (
+        RestoreTaskDependenciesCommand,
+        UpdateTaskDependenciesCommand,
+    )
+    from src.middlewares.project_state.transitions import ProjectStateError
+
+    async def scenario():
+        store, _, base = await fixture(TaskStatus.REVIEW)
+        base = replace(base, execution_refs=("langgraph-run://base/run",))
+        downstream = replace(
+            base,
+            task_id="feature",
+            status=TaskStatus.BACKLOG,
+            dependencies=frozenset({"t"}),
+            execution_refs=(),
+        )
+        snapshot = ProjectSnapshot("p", "不能删边绕门禁", (), (base, downstream))
+        with pytest.raises(ProjectStateError) as error:
+            apply_project_command(
+                snapshot, UpdateTaskDependenciesCommand("p", "feature", frozenset())
+            )
+        assert error.value.details["code"] == "active_dependency_removal_forbidden"
+        # 宿主恢复已被旧漏洞误删的边，只增加约束，保持执行、状态及制品历史。
+        running = replace(
+            downstream,
+            dependencies=frozenset(),
+            status=TaskStatus.IN_PROGRESS,
+            execution_refs=("langgraph-run://feature/run",),
+        )
+        broken = replace(snapshot, tasks=(base, running))
+        repaired = apply_project_command(
+            broken,
+            RestoreTaskDependenciesCommand(
+                "p", "feature", frozenset({"t"}), "project-artifact://historical-proof"
+            ),
+        )
+        task = repaired.tasks[1]
+        assert task.dependencies == frozenset({"t"})
+        assert (
+            task.status == running.status
+            and task.execution_refs == running.execution_refs
+        )
+        assert set(running.artifact_refs) <= set(task.artifact_refs)
 
     asyncio.run(scenario())
 
@@ -1265,11 +1496,14 @@ def test_dispatch_advances_business_state_only_after_confirmed_run(status):
     asyncio.run(scenario())
 
 
-def test_dispatch_does_not_bypass_unfinished_dependencies():
+@pytest.mark.parametrize(
+    "status", [TaskStatus.BACKLOG, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW]
+)
+def test_dispatch_does_not_bypass_unfinished_dependencies(status):
     async def scenario():
         from dataclasses import replace
 
-        store, work, task = await fixture(TaskStatus.BACKLOG)
+        store, work, task = await fixture(status)
         dependency = replace(task, task_id="dependency", status=TaskStatus.IN_PROGRESS)
         await ProjectStore(store).save(
             ProjectSnapshot(

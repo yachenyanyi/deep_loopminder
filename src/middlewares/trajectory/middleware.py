@@ -23,6 +23,25 @@ class TrajectoryStopped(RuntimeError):
     """严格观察已停止，不得把这个异常转成模型可继续重试的普通工具返回。"""
 
 
+def recoverable_rejection(value):
+    """只认宿主标记的业务拒绝，不根据错误正文或客户材料猜测可恢复性。"""
+    if isinstance(value, ToolMessage):
+        return (
+            value.status == "error"
+            and value.additional_kwargs.get("recoverable_business_rejection") is True
+        )
+    if isinstance(value, Command):
+        errors = [
+            message
+            for message in (value.update or {}).get("messages", [])
+            if tool_errors(message)
+        ]
+        return bool(errors) and all(
+            recoverable_rejection(message) for message in errors
+        )
+    return False
+
+
 def tool_errors(value, *, nested=False):
     """识别真实错误信封、ToolMessage和Command，不对普通文本做关键词猜测。"""
     if isinstance(value, Command):
@@ -297,7 +316,7 @@ class TrajectoryMiddleware(AgentMiddleware):
                 if not isinstance(message, ToolMessage):
                     break
                 errors = tool_errors(message)
-                if errors:
+                if errors and not recoverable_rejection(message):
                     event = self.recorder.emit(
                         "tool",
                         "error",
@@ -461,9 +480,13 @@ class TrajectoryMiddleware(AgentMiddleware):
             span_id=call["id"],
             runtime=request.runtime,
             duration_ms=(time.monotonic() - started) * 1000,
-            data={"result": value, "errors": errors},
+            data={
+                "result": value,
+                "errors": errors,
+                "recoverable": recoverable_rejection(result),
+            },
         )
-        if errors and self.stop_on_error:
+        if errors and self.stop_on_error and not recoverable_rejection(result):
             self.recorder.fail(event)
             self.recorder.check_stop()
         return result

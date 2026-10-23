@@ -82,7 +82,7 @@ def transition_rejection(
         return ProjectStateError(
             "validation_required",
             "当前版本缺少有效可信验收记录，需由宿主核验写入，不能凭Worker自述通过",
-            "request_host_validation",
+            "request_human_decision",
         )
     if command.target_status is TaskStatus.APPROVED and task.status in {
         TaskStatus.PASSED,
@@ -245,6 +245,13 @@ def task_controls(snapshot: ProjectSnapshot, task_id: str) -> dict:
         "blocking_dependencies": blockers,
         "dependency_editable": task.status in {TaskStatus.BACKLOG, TaskStatus.READY}
         and not task.execution_refs,
+        "protected_dependencies": sorted(
+            dependency.task_id
+            for dependency in snapshot.tasks
+            if dependency.task_id in task.dependencies
+            and dependency.execution_refs
+            and dependency.status is not TaskStatus.DONE
+        ),
         "execution_refs": list(task.execution_refs),
         "allowed_worker_roles": sorted(
             ({task.owner_role} if task.owner_role else set())

@@ -136,6 +136,7 @@ def make_project_command(
         trusted host evidence, never self-reported approval. Runtime binds scope.
         update_task_dependencies requires task_id/dependencies and only edits unexecuted backlog/ready tasks,
         resetting them to backlog. dependencies always wait for DONE; do not make a review depend on its
+        已执行但尚未done的前置依赖不能删除，不能用删边绕过验收；protected_dependencies列出受保护的边。
         own subject being DONE. Use spawn_agent with same task_id/new task_name for review/testing.
         On rejection read controls; missing trusted evidence requires host/human action, not status guessing.
         """
@@ -232,7 +233,7 @@ def make_project_command(
                     raise ProjectStateError(
                         "evidence_required",
                         "当前版本缺少有效验收或人工批准，不能完成任务",
-                        "request_host_validation_or_approval",
+                        "request_human_decision",
                     )
                 candidate = apply_project_command(
                     snapshot,

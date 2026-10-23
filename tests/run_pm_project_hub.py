@@ -41,6 +41,29 @@ def stamp():
     return datetime.now(UTC).isoformat()
 
 
+def pending_host_requests(snapshot):
+    """读取官方检查点的人工中断，不把Run success当作交付或审批通过。"""
+    pending = list(snapshot.get("interrupts", []))
+    for task in snapshot.get("tasks", []):
+        pending.extend(task.get("interrupts", []))
+    return list({json.dumps(item, sort_keys=True): item for item in pending}.values())
+
+
+def host_resume_command(snapshot, response=None):
+    """人工中断必须通过官方respond恢复，不能用input=None反复重入。"""
+    pending = pending_host_requests(snapshot)
+    if not pending:
+        if response is not None:
+            raise ValueError("当前检查点没有人工请求，不能投递人工响应")
+        return None
+    if len(pending) != 1 or not response or not response.strip():
+        raise ValueError("需为唯一待处理人工请求提供明确响应；未创建Run")
+    actions = pending[0].get("value", {}).get("action_requests", [])
+    if len(actions) != 1 or actions[0].get("name") != "request_human_decision":
+        raise ValueError("此入口只响应单个request_human_decision，不批准其他工具")
+    return {"resume": {"decisions": [{"type": "respond", "message": response}]}}
+
+
 async def cancel_observed_run(client, thread_id, run_id):
     """取消与结束有竞态；404/409必须重新读取官方状态，不能仅凭错误码忽略。"""
     requested = True
@@ -385,14 +408,16 @@ def instrumented_worker(*args, **kwargs):
         )
 
     async def native(event):
-        # Claude开发工具的试错由它自行恢复；ACP调用异常仍由ObservedWorker首错停止。
+        # Claude/Codex原生工具失败由Worker自行恢复；ACP执行异常仍触发首错停止。
         value = event.model_dump(mode="json", by_alias=True, exclude_none=True)
         replay = (
             value.get("sessionId"),
             value.get("update", {}).get("toolCallId"),
         ) in historical
         trajectory().native(
-            provider, event, stop_on_error=provider != "claude" and not replay
+            provider,
+            event,
+            stop_on_error=provider not in {"claude", "codex"} and not replay,
         )
         update = event.update
         if update.session_update in {
@@ -587,7 +612,7 @@ async def main():
     state.update(
         monitor_url=monitor_info["url"],
         monitor_pid=monitor.pid,
-        stop_policy="pm_and_acp_errors_stop_claude_native_tools_observe_only",
+        stop_policy="pm_and_acp_errors_stop_claude_codex_native_tools_observe_only",
     )
     monitor_log.close()
     state["worker_configuration_scope"] = {
@@ -647,6 +672,7 @@ cli()
                 await asyncio.sleep(1)
         client = get_client(url=url, timeout=60)
         historical_errors = set()
+        resume_command = None
         if previous:
             thread_id = previous["thread_id"]
             restored = await client.threads.get_state(thread_id)
@@ -661,6 +687,16 @@ cli()
                     if run["status"] == "error"
                 )
             state["historical_worker_errors"] = sorted(historical_errors)
+            response_file = os.getenv("PROJECT_HUB_HOST_RESPONSE_FILE")
+            response = (
+                Path(response_file).read_text(encoding="utf-8")
+                if response_file
+                else None
+            )
+            resume_command = host_resume_command(restored, response)
+            if resume_command:
+                state["resumed_from"]["mode"] = "official_hitl_respond"
+                state["host_response"] = response
         else:
             thread_id = (await client.threads.create())["thread_id"]
         state["thread_id"] = thread_id
@@ -685,6 +721,7 @@ cli()
             input=None
             if previous
             else {"messages": [{"role": "user", "content": prompt}]},
+            **({"command": resume_command} if resume_command else {}),
             config={
                 "configurable": {
                     "project_id": state["project_id"],
@@ -811,7 +848,10 @@ cli()
         state.update(
             status="stopped_on_error"
             if state.get("framework_stop")
+            else "waiting_for_host"
+            if pending_host_requests(snapshot)
             else "finished_observation",
+            host_requests=pending_host_requests(snapshot),
             pm_status=current["status"],
             finished_utc=stamp(),
             elapsed_seconds=time.monotonic() - started,

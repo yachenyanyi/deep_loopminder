@@ -77,6 +77,10 @@ PM 默认入口使用 `ProjectStateMiddleware(workflow=ProjectWorkflow(store))`�
 
 宿主同时展开简报直接引用的同项目制品正文（最多12份、正文合计40000字符，不递归）；无法解析或被截断的材料明确要求向PM索取，不猜路径或查宿主接口。旧会话来源记录没有 `worker_context_version` 时，在下一次续接补齐一次新交接格式，之后同输入不重复全文。原不可变简报中的错引用不自动纠正，交由PM处理；宿主内部记录不因简报提及就成为Worker授权范围。
 
+续问message新增的制品引用同样由宿主展开。当前工具边界放在派工/续问消息末尾，明确旧简报中的PM工具、宿主仓库访问要求不生效，负责人自主安排技术细节。PM每轮获得Store计算的验收记录存在性、当前版本验收和批准事实，不能将“尚未记录”解释为“宿主拒绝”。混批拒绝也带宿主可恢复标记，整批不执行，PM可随后逐次重发；执行异常不因该规则被豁免。
+
+删除依赖还须检查前置任务：有执行来源且尚未done的边属于 `protected_dependencies`，PM不能以“只差验收账本”为由删除；新派工及同会话续问均检查依赖是否完成。宿主纠正旧漏洞误删时，可使用不暴露给模型的 `RestoreTaskDependenciesCommand`，仅增加依赖、附加历史证据，保留状态、运行和制品历史，并继续做DAG校验。该命令不授予验收或批准，也不清理已经产生的产品文件。
+
 并行相同制品的正文/引用保持一致；BaseStore不提供通用put-if-absent，创建时间等非哈希元数据不承诺跨进程精确一次写入，不把本地并行验证当作分布式事务保证。
 
 BaseStore 不提供通用原子 CAS，单纯 aget/aput 不具备跨线程并发更新保护。本包没有自造进程锁、队列或执行注册表；不能在多个线程都启用写入。
@@ -93,6 +97,8 @@ BaseStore 不提供通用原子 CAS，单纯 aget/aput 不具备跨线程并发�
 任务读取和修改返回 controls，包括 current_status、allowed_transitions、gated_transitions、blocking_dependencies、allowed_worker_roles 和 dependency_editable。写操作仅返回修改后的任务或项目概要，不再每一步重复全部任务；需要完整快照时使用 project_read。通过官方后台通知看到成功后，仍须 wait_agent 领取交付制品；通知不会自动写入项目验收。
 
 状态拒绝返回明确 code/reason/next_action：dependencies_blocked 要核对前置依赖；validation_required 需要宿主可信验收；approval_required 需要认证人工批准；invalid_task_transition 要依照 controls 修正。错误依赖仅在尚未执行的 backlog/ready 任务上用 update_task_dependencies 修正，修改后重回 backlog 并重新检查未知依赖和环；真正的前置依赖仍必须等到 done，不得为了推进而删除。review 与 testing 可以互转，均不能绕过可信验收。
+
+只有 `ProjectStateError` 类型的业务拒绝由中间件在 ToolMessage.additional_kwargs 标记为可恢复。严格轨迹保留红色事件并把响应交回PM，不生成首错文件；普通ValueError、来源记录失败、未知工具错误和基础设施异常不受豁免。缺少验收/批准/完成证据时，next_action 指向现有 `request_human_decision` 官方HITL入口，携带任务、逐条条件和已领取证据，请求可信宿主处理。宿主独立核验后调用 `record_validation`，认证人工批准另走 `record_approval`；人工文字回复不自动生成这两种记录。测试观察入口将待处理官方中断保存为 `waiting_for_host`，不把Run成功当成验收或项目交付。
 
 相同普通状态重复提交是幂等的；重复 passed/approved/done 仍检查可信依据。外部调用已返回后发生业务来源关联错误，会抛出明确异常并要求停止核对官方 Run，不能作为普通参数错误盲目重试。官方 Run 和业务 Store 不具备跨系统事务，人工核对与恢复仍可能需要。
 

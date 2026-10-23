@@ -187,3 +187,57 @@ DSH实页复刻最终checkpoint：本阶段完成。实际打开本机DSH既有�
 续跑checkpoint：155205-594580已恢复原PM线程，runner session12825，监控http://127.0.0.1:49894。启动约15秒PM running，无first-error；完整验收尚未完成。模型、权限、审批模式、产品文件及首错停止策略未由宿主修改。
 
 Git提交checkpoint：用户授权将当前最新代码提交并推送AI分支；只暂存源码、测试、配置示例和允许跟踪的进度资料，排除.env、运行目录、IDE与浏览器缓存。发现原已跟踪deep_agent.py.bak含疑似凭据，将仅从索引移除并忽略，保留本地文件，不改历史提交。未运行测试、切换分支、重启或取消Agent。提交前155205轮次已自行stopped_on_error（PM interrupted），并非Git操作造成。
+
+155205结果及授权续跑：225.75秒后15:55:57停止，Codex查询node watch进程和43172端口的原生命令exit1；有两组watch进程输出，无端口查询结果，具体exit来源未确认，不据此宣称产品功能失败。用户要求继续，从155205最新官方tools检查点恢复，保留原PM/Worker会话，不修改验收命令、不清理未确认归属进程、不改首错策略。
+
+续跑checkpoint：160656-a77fa5已恢复原PM线程，runner session63447，监控http://127.0.0.1:50247。启动后PM running，无first-error；后续状态以run.json为准，完整验收未完成。没有改模型/审批模式/权限或产品代码。
+
+160656结果及授权续跑：56.484秒后停止，Codex持久化验收脚本首次写入HTTP302并停止成功；第二次Start-Process之前Remove-Item Env:PORT，启动之后才重设39141，随后curl连接失败且对空。这是Worker验收脚本顺序错误证据，不改产品或代修脚本。用户再次要求继续，原PM检查点next=tools，旧Server已退出，恢复原进度，首错策略不变。
+
+续跑checkpoint：161539-513e2b沿原PM线程恢复，runner session82245，监控http://127.0.0.1:50231。启动约16秒PM running，无新首错；完整验收未完成，后续以run.json为准。保留现有模型、权限、模式和停止策略，不重复测试。
+
+161539结果及授权续跑：74.156秒后停止，Codex原生SQLite检查命令exit1（node --input-type=module -e读取verify-persistence.sqlite并查询sqlite_master），通知未提供具体错误输出，不能断言数据库缺陷。用户要求继续，原检查点next=tools，旧Server已退出。从本轮恢复，保留原生失败历史，宿主不改验收命令或产品。
+
+续跑checkpoint：161953-cbc758沿原PM线程恢复，runner session69155，监控http://127.0.0.1:53232。启动约35秒PM running，无first-error；后续以run.json为准。未改模型、权限、模式、产品和首错策略，完整验收未完成。
+
+## 两种Worker原生工具错误不停止（2026-10-21）
+用户明确要求Claude和Codex工具错误都不能导致整场测试停止。原161953轮次44.5秒后停止，原因Codex原生工具exit1。修改仅正式观察入口的native桥接策略：两提供方failed与非零退出只记录，保留红色证据并允许自行恢复；PM工具/模型、ACP调用异常、官方新Run失败与网页停止仍有效。无模型、权限、审批模式或产品改动。增加两提供方两种通知失败回归，并保留其他严格提供方与历史重放/新错误边界测试。
+
+验证checkpoint：12项观察器测试通过，Ruff通过。覆盖Claude/Codex两种通知（status=failed、仅嵌套exit_code=1）不生成first-error，红色轨迹与native日志仍保存；未知严格提供方继续停止、历史重放仍分类。准备恢复161953检查点使新策略生效，旧首错保留。
+
+新策略实机checkpoint：162757-1af823已沿原PM线程恢复，runner session72577，监控http://127.0.0.1:59569；run.json已确认stop_policy=pm_and_acp_errors_stop_claude_codex_native_tools_observe_only。启动约9秒PM running，无first-error。定向测试已证明工具通知不停止，真实新工具失败后的恢复尚待运行观察，不代表整场产品验收通过。
+
+## 验收门禁业务拒绝恢复（2026-10-21，进行中）
+162757轮次348.89秒后PM尝试testing→passed被validation_required拒绝并触发严格停止。验收门禁正确，错误在可恢复拒绝被当成执行故障，且next_action指向不存在的request_host_validation工具。方案比较：自动相信Worker并写验收会破坏可信边界；放行所有工具错误会吞基础设施故障；选择仅ProjectStateError类型加宿主响应标记，轨迹仍显示红色但允许PM按下一步处理。普通异常和未知失败仍停止，外层before_model也识别该标记。缺失验收的下一步改为已有request_human_decision官方HITL入口，要求任务/逐条条件/证据，由宿主独立核验后调用record_validation；不把人工文字或Worker自述当作可信记录。准备验证真实官方图能从拒绝进入HITL且状态不变。
+
+修复验证checkpoint：58项工作流/轨迹/状态转换测试通过；补充运行入口人工中断分类与缺证据done路径后52项工作流/观察器相关测试通过，Ruff通过。真实官方create_agent+项目状态工具+严格轨迹+HITL回归确认validation_required/approval_required返回后进入人工中断，状态和可信验收/批准Store保持不变；工具正文声称可恢复不能豁免未知错误。运行入口保存官方中断为waiting_for_host及host_requests，不宣称交付通过。准备接续162757原检查点；这不是自动替用户审批或补造验收记录。
+
+实机验证完成：165343-4fec72恢复原passed请求，收到validation_required后未生成first-error；PM成功转review并调用request_human_decision。44.421秒后官方Run success且有真实HITL中断，观察入口准确保存status=waiting_for_host、host_requests和中断IDcdb113acb35edf9e5f3dafab2778c347。监控http://127.0.0.1:53069。宿主请求明确列出低版本Node未实跑与dev/stop端到端验证缺口，未写入可信验收或批准，不代表基础任务passed/done或完整网站交付。本阶段业务拒绝继续处理与官方等待入口已实机验证；下一步是宿主独立核对证据/处理未知项并写可信记录，再通过官方HITL响应恢复，不能直接input=None循环人工中断。
+
+## 从最远进度恢复（2026-10-21）
+用户要求从此前跑得最远处继续。比较各轮运行与检查点，最远为165343-4fec72：原PM线程沿用、35个文件、基础开发和独立测试已交付，停在官方HITL等待宿主核验。增加观察入口PROJECT_HUB_HOST_RESPONSE_FILE，仅向唯一request_human_decision提供官方respond恢复，不将继续运行当作accept/approve；缺失响应拒绝创建Run，普通失败节点仍input=None。14项观察器测试和Ruff通过。此次响应如实说明用户要继续、没有批准未知项；不写可信验收或批准，不回退旧运行。为避免堆积标签页，本次不自动打开新监控标签。
+
+最远检查点恢复实机checkpoint：171455-8576a1已成功从165343原PM线程恢复，resumed_from.mode=official_hitl_respond，runner session76383，监控http://127.0.0.1:56883。启动约18秒PM running，无first-error；没有重做基础开发、没有写验收/批准，没有自动打开新标签。材料和原Worker会话保留。后续以本轮run.json为准，继续运行不代表缺失可信验收已解决。
+
+## 混批恢复与协作上下文纠偏（2026-10-21，进行中）
+171455轮次105.343秒后因project_command+followup_task混批停止。PM还将尚未验收理解为宿主拒绝，并续问旧简报要求Worker用PM工具/搜索宿主。方案：保持混批整体零副作用拒绝，补宿主可恢复标记让PM逐次执行；不放开共享快照并发写。每轮从官方Store注入记录是否存在、当前版本是否通过、批准是否有效的独立事实，未记录不推断拒绝。续问新增制品引用也由宿主展开；在消息末尾明确现行能力边界、负责人自治和错误自恢复，历史材料冲突不构成工具或宿主访问授权。不删除历史对话，不改产品或放宽验收，准备定向验证。
+
+修复验证checkpoint：41项工作流回归通过，覆盖真实官方图中project_command+followup混批零副作用拒绝、下一轮串行操作继续且无first-error，以及缺失/旧版本验收记录事实。后续材料交接改动仅重跑5项相关测试通过：续问新增证据正文被交接、边界置末、同版不重复简报，材料合并去重、自身简报引用不重复展开。Ruff通过。PM稳定规则同步禁止把未记录说成拒绝、复制历史无效工具要求、从原生工具试错推断需要20–30秒限时。不能保证弱模型语义遵从，准备以实机观察为准。
+
+175116实机结果：36.422秒后PM模型回调Connection error停止，first-error为model，尚未完成新的PM决策；不是混批拒绝再次触发。不能声称当前修复已实机验证全部语义效果。框架专项已通过，继续检查连接并保留旧现场，不改模型或停止策略。
+
+实机发现新增依赖绕过：175530重试模型连接成功，PM按序执行，但把app-registrations对app-foundation的依赖删除并启动Claude开发，称仅差宿主账本验收；这违反真实前置依赖不可为推进删除的约束。宿主通过官方接口取消父/子Run并写stop-request留证，不清理产品文件。补确定性保护：移除依赖时若前置已有执行记录且未done，返回可恢复active_dependency_removal_forbidden，请求人工决定。为纠正旧漏洞已造成的误删，比较直接改Store与可信领域命令，选择仅宿主可调用的RestoreTaskDependenciesCommand：只增加约束、附加历史证据、不改状态或执行历史；不暴露给PM工具。49项工作流/服务测试通过；Ruff导入排序已修正。准备根据171455原始project_read证据恢复误删边。
+
+依赖纠偏checkpoint：官方父子Run已停止，旧Server退出后，宿主脚本依据171455原始project_read恢复app-registrations→app-foundation；通过新增仅宿主RestoreTaskDependenciesCommand只补边、附真实历史证据，不改in_progress状态或执行来源、不删除产品。证据workspace/dependency-repair-20261021.json，制品project-artifact://3085788305b98a46e4594666be205969cb9560f68bae62b5cf6a6bfbb7482c18。当前缺少可信验收仍保持。59项工作流/服务/转换回归通过；将已执行任务依赖编辑拒绝补成可恢复业务错误后，仅重跑5项相关测试，Ruff通过。新派工与旧Worker续问均检查依赖，不能用in_progress绕过。准备从175530保留检查点恢复，后续若进入宿主等待则如实停留，不伪造验收。
+
+当前checkpoint：181357-154fe2从175530继续，runner session76320，监控http://127.0.0.1:63019；不自动开新标签。最新元数据status=running，无first-error；PM已看到依赖受保护的事实，仍需观察其后续决策。混批恢复已实机验证，语义遵从不作完全保证，基础可信验收仍未补齐。代码修改、依赖纠偏来源、测试范围和两次真实停止均已留证；没有把继续运行当作批准。
+
+## 恢复运行并继续观测（2026-10-22）
+读取最新索引确认181357-154fe2已于10月21日18:16:52正常进入waiting_for_host，非仍运行，原检查点为官方HITL且旧Server已退出。请求仍含原四脚本实跑与dev未验矛盾、Node版本说明待澄清；本次使用现有官方respond入口要求PM按原条件自主补齐，不批准未知项、不写可信记录、不删除依赖。保留原项目/会话，已验证未变内容不重复，模型和权限不变。只记录新轮次，不自动新开轨迹标签。
+
+恢复观测checkpoint：20261022-103938-d0990e以official_hitl_respond成功恢复原PM线程，runner session30220，监控http://127.0.0.1:51733，不自动开标签。运行约76秒无first-error，PM已followup_task续接原app-foundation-test-2并wait_agent，明确准备补齐脚本验证矛盾及Node版本证据；不是重新开发。元数据6个Worker/29个Run含历史，不能报成新派29次。PM公开分析仍英文，未声称语言修复。后续以本轮run.json与原生事件为准。
+
+继续观测记录：Codex本轮首次补充验证正常返回（142.36秒）；管理摘要确认start/dev访问HTTP200，stop释放端口但watch父进程仍需额外回收，seed沿用旧充分证据；当前PM已再次followup同一tester核对Node版本。未修改产品/验收，也未重复宿主测试。为满足继续观测，已在当前线程创建heartbeat观测（automationId=pm），每5分钟只读检查；正常不通知，出现故障/等待宿主/门禁绕过/完成时报告，终态后暂停，不重启、不指导Worker、不自动开标签。使用内置automation_update，无独立任务。
+
+## 提交与推送（2026-10-23）
+用户授权提交当前项目并推送。范围为上次592fe01之后的业务拒绝恢复、官方HITL续接、Worker材料交接与能力边界、验收事实及真实前置依赖保护、相关回归和文档。提交前15个修改文件的凭据检查和git diff --check通过；沿用既有相关验证结果，不重复运行测试，不修改产品、业务状态或运行进程。目标origin/AI，不切分支，不强推。最近实机103938轮次已正常waiting_for_host；完整网站未交付，验收/批准未自动写入。
