@@ -51,6 +51,22 @@ class Policy:
         return self.decision
 
 
+def test_context_usage_is_only_taken_from_native_usage_update(tmp_path):
+    from acp.schema import UsageUpdate
+
+    async def scenario():
+        async with worker(tmp_path) as instance:
+            ref = await new(instance)
+            assert instance.observe(ref)["context_usage"] is None
+            instance._update_metadata(ref.session_id, UsageUpdate(sessionUpdate="usage_update", used=300, size=1000))
+            observed = instance.observe(ref)
+            assert observed["context_usage"]["remaining"] == 700
+            assert observed["context_usage"]["source"] == "acp.session_update.usage_update"
+            assert observed["compaction_visibility"] == "unknown"
+
+    asyncio.run(scenario())
+
+
 def worker(tmp_path, profile="full", **kwargs):
     grants = kwargs.pop(
         "grants", lambda _ref: SecurityGrant(CONTROL_GRANTS | {"external_tool.read"})
@@ -371,7 +387,13 @@ def test_cli_json_stream_and_native_resume_using_saved_domain_ref(tmp_path):
         "role",
         "cwd",
         "handoff_id",
+        "isolation",
+        "config_version",
     }
+    # References written before isolation metadata existed remain resumable.
+    ref.pop("isolation")
+    ref.pop("config_version")
+    ref_file.write_text(json.dumps(ref), encoding="utf-8")
     second = subprocess.run(
         [*base, "--prompt", "history", "--ref-in", str(ref_file)],
         text=True,

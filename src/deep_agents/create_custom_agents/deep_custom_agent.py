@@ -17,7 +17,7 @@ from langgraph.types import Checkpointer
 
 from deepagents._models import resolve_model
 from deepagents.backends import StateBackend
-from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -58,7 +58,7 @@ def create_custom_agent(
     context_schema: type[Any] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
-    backend: BackendProtocol | BackendFactory | None = None,
+    backend: BackendProtocol | Callable[..., BackendProtocol] | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     debug: bool = False,
     name: str | None = None,
@@ -73,7 +73,7 @@ def create_custom_agent(
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
-        
+
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
     ]

@@ -18,6 +18,12 @@ class PMMemoryStore:
     durability: str
 
 
+@asynccontextmanager
+async def generate_studio_store():
+    """Keep Studio test data in a separate process-local store."""
+    yield InMemoryStore()
+
+
 async def get_pm_memory_store() -> PMMemoryStore:
     """复用官方运行时或项目已有存储，不额外创建另一套数据层。"""
     # 官方 Server 已提供 Store 时直接复用，避免图工厂再创建另一份连接。

@@ -49,6 +49,25 @@ def get_command_goat_model() -> Optional[ChatOpenAI]:
     return _models["command_goat"]
 
 
+def get_easycli_model() -> Optional[ChatOpenAI]:
+    """通过 EasyCLI 代理使用 Gemini 3.8 Flash High 模型"""
+    if "easycli" in _models:
+        return _models["easycli"]
+
+    api_key = os.getenv("EASYCLI_API_KEY") or "123456"
+    base_url = os.getenv("EASYCLI_BASE_URL") or "http://127.0.0.1:8317/v1"
+    model = os.getenv("EASYCLI_MODEL") or "gpt-6-luna"
+    reasoning_effort = os.getenv("EASYCLI_REASONING_EFFORT") or "high"
+
+    _models["easycli"] = ChatOpenAI(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        reasoning_effort=reasoning_effort,
+    )
+    return _models["easycli"]
+
+
 def get_open_router_model() -> Optional[ChatOpenAI]:
     """真实运行与测试共享的免费模型配置，默认输出上限32k。"""
     if "open_router" in _models:
@@ -249,6 +268,10 @@ class _ModelProxy:
         return get_command_goat_model()
 
     @property
+    def easycli(self):
+        return get_easycli_model()
+
+    @property
     def open_router(self):
         return get_open_router_model()
 
@@ -308,6 +331,7 @@ def list_available_models() -> dict:
     """列出所有可用模型"""
     return {
         "command_goat": get_command_goat_model() is not None,
+        "easycli": get_easycli_model() is not None,
         "anthropic": get_anthropic_model() is not None,
         "deepseek": get_deepseek_model() is not None,
         "open_router": get_open_router_model() is not None,

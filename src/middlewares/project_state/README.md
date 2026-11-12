@@ -41,19 +41,21 @@ result = await graph.ainvoke(
 )
 ```
 
-PM 默认入口使用 `ProjectStateMiddleware(workflow=ProjectWorkflow(store))`，与图共享同一 Store。
+PM 默认入口使用 `ProjectStateMiddleware(workflow=ProjectWorkflow(store), pm_discussion_gate=True)`，与图共享同一 Store。
 独立装配 `ProjectStateMiddleware()` 仍兼容原有用法；此时不提供制品与 ACP 业务关联工具，passed/approved 需要宿主显式的可信 facts_provider。
 
 ## PM 交付与验收闭环
 
-启用 workflow 时，按以下顺序操作：
+PM 启用商讨门禁时，按以下顺序操作：
 
 1. 创建项目；调用 `project_create_artifact(task_id, content, kind="task_brief")` 保存完整任务说明。
 2. 使用返回的 `project-artifact://...` 作为 create_task 的 task_brief_ref；路径、自造引用、外项目/外任务制品均拒绝。
-3. 调用 `spawn_agent(task_name=业务task_id, ...)`；依赖满足的 backlog/ready 任务可直接派工，只有官方 Run 确认创建后才按既有转换规则推进 ready/assigned/in_progress，创建失败不提前标进行中。省略角色时使用 owner_role；实现阶段传入角色须一致。进入 review/testing 后，可用新的 task_name、原业务 task_id 和 reviewer/tester 角色派独立 Worker，仍归同一任务，不用创建依赖原任务 done 的审查任务。
-4. 项目中间件复制运行配置，将当前任务、能力要求及真实说明正文注入 ACP；从官方工具实际返回的 Command 附加 Run 引用。
-5. `wait_agent` 领取完成结果后，将官方最终 checkpoint 正文保存为制品，自动写回任务并返回 artifact_ref；重复领取不会重复附加。
-6. 独立宿主核验每条条件后调用 `ProjectWorkflow.record_validation(...)`，状态工具才允许 passed。人工批准由可信宿主另行调用 `record_approval(...)`，之后才能 approved/done。
+3. 依赖满足后通过 `begin_discussion` 与负责人商讨；领取实际讨论结果，PM 确认后调用 `assess_discussion`。只有当前输入版本的 Clef 通过结果才允许开发。
+4. 使用 `followup_task` 在已商讨的负责人会话开发；宿主注入已确认的任务材料，确认官方 Run 后关联任务。结果不明时先核对，不能盲目重派。
+5. `wait_agent` 领取开发结果；进入审查后通过 `begin_codex_review` 发起独立 Codex 会话，再领取其审查结果。原范围返工可使用当前不通过审查的发现；实质变化须重新商讨和判断。
+6. 独立审查通过后，可信宿主逐条记录验收；人工批准单独记录。只有对应记录有效时才能推进 passed、approved 或 done。
+
+非 PM 场景若未启用商讨门禁，仍可使用通用 ACP `spawn_agent`；这不适用于上述 PM 流程。当前 WSL 只读边界尚未完成安全验证，PM Worker 保持不可用。
 
 `project_read_artifact(reference, offset, limit)` 按字符分页读取制品。任务说明有误时，先创建新说明，再调用 `project_command(action="update_task_brief", task_id=..., task_brief_ref=...)`；历史交付保留，approved/done 任务不能修改说明。
 
@@ -66,14 +68,12 @@ PM 默认入口使用 `ProjectStateMiddleware(workflow=ProjectWorkflow(store))`�
 
 ## 写入与并发边界
 
-默认只读。只有宿主已保证每个项目一个串行写入线程时，才设置
-`config.configurable.project_state_single_writer=True`。这是宿主承诺，不会自动加锁。
-在 Agent Server 上应使用一个项目写入线程，并通过官方 enqueue 依次提交运行；其他 Agent 使用读取工具。
+默认只读。宿主必须设置 `config.configurable.project_state_single_writer=True` 并保证项目写入遵循该约定。项目中间件对支持的本机写入口使用跨进程文件锁；共享 Store 的本机服务还必须使用相同的 `LOOPMINDER_DATA_DIR` 或应用数据目录。锁不是分布式事务，也不能约束绕过这些入口的其他写入者。
 同一模型回复中的多个独立 `project_create_artifact` 可以并行：它们按内容哈希写入独立制品键，不读改写项目快照，相同正文/归属返回相同引用。此入口不会自动将引用附加到任务，任务绑定仍由后续命令完成。
 
-`project_command` 和启用 workflow 后的 spawn/followup/wait 会修改项目快照。不同业务任务、不同别名的纯 `spawn_agent` 批次允许同轮调用，由中间件在本进程内串行完成创建与来源写回，Worker 后台并发执行；该批次不承诺全有或全无，单项失败时保留已确认的官方 Run，不可整批盲目重试。此锁不提供跨进程事务，宿主仍须保证项目单写者。其他多快照写、同业务任务重复派工或与制品创建混批仍整批拒绝，返回 `parallel_project_writes`。先创建说明、取得真实引用，再创建任务；不能同批创建项目和该项目的制品。读取工具不受这个多写规则阻断。项目范围和共享 Store 检查继续生效。
+`project_command` 和启用 workflow 后的 spawn/followup/wait 会修改项目快照。不同业务任务、不同别名的纯 `spawn_agent` 批次由中间件串行处理；该批次不承诺全有或全无，单项失败时保留已确认的官方 Run，不可整批盲目重试。其他多快照写、同业务任务重复派工或与制品创建混批仍整批拒绝，返回 `parallel_project_writes`。先创建说明、取得真实引用，再创建任务；不能同批创建项目和该项目的制品。
 
-首次派工自动注入完整 TaskBrief 和 Worker 工具边界，PM 的 message 只写本轮重点。同一原生会话续问仅发送补充；目标、约束、任务要求或简报的输入版本变化时才重注入当前简报，能力增加仍要求重新派工。Worker 不继承 PM 的项目/记忆/制品工具，通过会话返回成果，`wait_agent` 领取时自动保存并关联；不新增通用 Store 写入权限。此约定不是网络隔离，能执行 shell 的 Worker 对宿主接口的网络访问仍需部署侧单独限制。
+启用 PM 商讨门禁时，先通过 `begin_discussion` 和 Clef 建立当前版本的授权；开发续问使用固定指令，宿主交接当前授权材料并核验完整消息摘要。审查返工使用已记录的独立审查发现。在途自由消息被阻断。Worker 不继承 PM 的项目、记忆或制品工具，通过会话返回成果；`wait_agent` 领取时保存并关联。当前 WSL 隔离边界尚待独立验证，相关 Worker 保持不可用。
 
 宿主同时展开简报直接引用的同项目制品正文（最多12份、正文合计40000字符，不递归）；无法解析或被截断的材料明确要求向PM索取，不猜路径或查宿主接口。旧会话来源记录没有 `worker_context_version` 时，在下一次续接补齐一次新交接格式，之后同输入不重复全文。原不可变简报中的错引用不自动纠正，交由PM处理；宿主内部记录不因简报提及就成为Worker授权范围。
 

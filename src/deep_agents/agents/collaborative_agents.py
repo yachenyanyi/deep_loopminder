@@ -18,6 +18,7 @@ workspace/
 └── (其他工作文件)     # 代理创建的文件
 """
 
+import asyncio
 import os
 import logging
 from pathlib import Path
@@ -171,7 +172,8 @@ async def create_agent_backend():
     LocalShellBackend 同时提供文件系统工具和 Shell 执行，
     路径统一在 WORKSPACE_DIR 下，不会出现虚拟路径和 Shell 路径不一致的问题。
     """
-    return LocalShellBackend(
+    return await asyncio.to_thread(
+        LocalShellBackend,
         root_dir=WORKSPACE_DIR,
         virtual_mode=True,
         env=os.environ.copy(),
@@ -252,7 +254,8 @@ async def create_chat_agent():
     logging_middleware = create_logging_middleware("chat_agent")
     approval_middleware = create_approval_middleware("chat_agent")
 
-    return create_deep_agent(
+    return await asyncio.to_thread(
+        create_deep_agent,
         model=get_default_model(),
         tools=[],
         system_prompt=CHAT_AGENT_PROMPT,
@@ -350,7 +353,8 @@ async def create_coordinator_agent():
     logging_middleware = create_logging_middleware("coordinator_agent")
     approval_middleware = create_approval_middleware("coordinator_agent")
 
-    return create_deep_agent(
+    return await asyncio.to_thread(
+        create_deep_agent,
         model=get_default_model(),
         tools=[],
         system_prompt=COORDINATOR_AGENT_PROMPT,
@@ -452,7 +456,8 @@ async def create_coder_agent():
     logging_middleware = create_logging_middleware("coder_agent")
     approval_middleware = create_approval_middleware("coder_agent")
 
-    return create_deep_agent(
+    return await asyncio.to_thread(
+        create_deep_agent,
         model=get_default_model(),
         tools=[],
         system_prompt=CODER_AGENT_PROMPT,
@@ -543,7 +548,8 @@ async def create_researcher_agent():
     logging_middleware = create_logging_middleware("researcher_agent")
     approval_middleware = create_approval_middleware("researcher_agent")
 
-    return create_deep_agent(
+    return await asyncio.to_thread(
+        create_deep_agent,
         model=get_default_model(),
         tools=[call_tool_tool, list_resources_tool],
         system_prompt=RESEARCHER_AGENT_PROMPT,
@@ -601,7 +607,8 @@ async def create_assistant_agent():
     logging_middleware = create_logging_middleware("assistant_agent")
     approval_middleware = create_approval_middleware("assistant_agent")
 
-    return create_deep_agent(
+    return await asyncio.to_thread(
+        create_deep_agent,
         model=get_default_model(),
         tools=[],
         system_prompt=ASSISTANT_AGENT_PROMPT,

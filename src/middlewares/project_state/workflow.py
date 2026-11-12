@@ -1,10 +1,17 @@
 """任务交付闭环：官方Run来源关联、结果制品与宿主可信验收/审批。"""
 
+import asyncio
 import json
+import uuid
 from dataclasses import asdict
 
 from langgraph.store.base import BaseStore
+from langgraph_sdk import get_client
 
+from src.middlewares.execution.security_policy import (
+    EnforcementCapability,
+    EnforcementFact,
+)
 from src.middlewares.execution.validation_policy import (
     EvidenceFact,
     ReviewFact,
@@ -16,8 +23,10 @@ from src.middlewares.execution.validation_policy import (
 
 from .artifacts import ProjectArtifacts, content_hash
 from .commands import AttachTaskEvidenceCommand, TransitionTaskCommand
+from .folders import ProjectFolders
 from .models import TaskStatus
 from .persistence import ProjectStore
+from .scope import project_write_lock
 from .service import apply_project_command
 from .tools import TransitionFacts
 from .transitions import DependencyReadiness, ProjectStateError, dependency_readiness
@@ -111,6 +120,119 @@ class ProjectWorkflow:
         )
         return task, brief
 
+    async def delivery_subject(self, project_id, task_id):
+        """Bind the latest developer result and current project files to review."""
+        snapshot, task = await self.task(project_id, task_id)
+        input_version = await self.input_version(snapshot, task)
+        latest = None
+        for reference in task.execution_refs:
+            run_id = reference.rsplit("/", 1)[-1]
+            item = await self.store.aget(("deep_loopminder", "project_execution_refs", project_id), run_id)
+            binding = item.value if item else {}
+            worker = binding.get("worker_ref") or {}
+            if (binding.get("task_id") != task_id or binding.get("reference") != reference):
+                raise ValueError("任务含无法验证的执行来源")
+            if binding.get("phase", "execution") != "execution":
+                continue
+            if not worker.get("role") or not worker.get("session_id"):
+                raise ValueError("执行会话来源尚不可验证")
+            if worker.get("role") == "developer":
+                latest = binding
+        if (not latest or latest.get("input_version") != input_version or not latest.get("result_ref")):
+            raise ValueError("当前版本缺少已完成的开发负责人交付")
+        artifact = await self.artifacts.get(project_id, latest["result_ref"], task_id=task_id, kind="worker_result")
+        result = json.loads(artifact["content"])
+        if result.get("status") != "success" or result.get("run_id") != latest["run_id"]:
+            raise ValueError("开发负责人最新 Run 未成功交付")
+        files = await ProjectFolders(self.store).content_digest(project_id)
+        value = {"project_id": project_id, "task_id": task_id, "input_version": input_version,
+                 "developer_agent_id": latest["agent_id"], "developer_run_id": latest["run_id"],
+                 "developer_result_ref": latest["result_ref"], "project_content_digest": files}
+        return {**value, "subject": content_hash(value), "developer_worker_ref": latest["worker_ref"]}
+
+    async def begin_dispatch(self, project_id, task_id, *, owner_thread, operation, decision_id=None,
+                             worker_agent_id=None, phase="execution", readonly_enforcement=None,
+                             message_digest=None, discussion_question=None, expected_review_subject=None):
+        """Persist a dispatch intent before contacting Agent Server.
+
+        The caller must serialize project writers. A pending intent is deliberately
+        not retried: the remote run may exist even when its response was lost.
+        """
+        readonly_authorized = (readonly_enforcement is not None
+                               and readonly_enforcement.capability is EnforcementCapability.ENFORCEABLE
+                               and "worker.readonly" in readonly_enforcement.enforced_capabilities)
+        if (operation not in {"spawn_agent", "followup_task"} or not owner_thread
+                or phase not in {"execution", "discussion", "review"}
+                or not message_digest
+                or (phase == "execution" and not decision_id)
+                or (phase != "execution" and not readonly_authorized)
+                or (phase == "discussion" and not discussion_question)
+                or (phase == "review" and not expected_review_subject)
+                or (operation == "followup_task" and not worker_agent_id)):
+            raise ValueError("派工意图缺少可信授权信息")
+        snapshot, task = await self.task(project_id, task_id)
+        uncertain = await self.store.asearch(("deep_loopminder", "project_worker_quarantine", project_id), limit=1)
+        if uncertain:
+            raise ProjectStateError("worker_shutdown_unknown", "存在未确认停止的项目 Worker，不能继续派工。", "reconcile_worker_shutdown")
+        namespace = ("deep_loopminder", "project_dispatch_intents", project_id)
+        previous = await self.store.aget(namespace, task_id)
+        if previous and previous.value.get("status") == "pending":
+            raise ProjectStateError(
+                "dispatch_outcome_unknown", "上次派工结果未确认，需核对官方 Run 后人工处理，不能重复派工。", "reconcile_dispatch"
+            )
+        if previous and previous.value.get("status") == "confirmed":
+            old = previous.value
+            agent_id, run_id = old.get("agent_id"), old.get("run_id")
+            if not agent_id or not run_id:
+                raise ProjectStateError("dispatch_outcome_unknown", "上次派工缺少官方 Run 来源。", "reconcile_dispatch")
+            try:
+                async with asyncio.timeout(15):
+                    run = await get_client(url=None).runs.get(agent_id, run_id)
+            except Exception as exc:
+                raise ProjectStateError("dispatch_status_unknown", "无法确认上一 Run 状态，暂不能重复派工。", "wait_agent") from exc
+            if run.get("status") not in {"success", "error", "cancelled", "interrupted", "timeout"}:
+                raise ProjectStateError("dispatch_still_running", "上一 Run 尚未结束，不能并发派工同一任务。", "wait_agent")
+        value = {
+            "project_id": project_id, "task_id": task_id, "owner_thread": owner_thread,
+            "operation": operation, "decision_id": decision_id,
+            "message_digest": message_digest,
+            "phase": phase,
+            "readonly_mechanism": readonly_enforcement.mechanism if readonly_enforcement else None,
+            "discussion_question": discussion_question,
+            "expected_review_subject": expected_review_subject,
+            "worker_agent_id": worker_agent_id,
+            "input_version": await self.input_version(snapshot, task), "status": "pending",
+            "intent_id": uuid.uuid4().hex,
+        }
+        await self.store.aput((*namespace, "history"), value["intent_id"], value, index=False)
+        await self.store.aput(namespace, task_id, value, index=False)
+        return value
+
+    async def complete_dispatch(self, project_id, task_id, *, agent_id, run_id):
+        """Record the official Run only after its project association succeeds."""
+        namespace = ("deep_loopminder", "project_dispatch_intents", project_id)
+        item = await self.store.aget(namespace, task_id)
+        if not item or item.value.get("status") != "pending" or not agent_id or not run_id:
+            raise ValueError("没有待确认的派工意图")
+        binding = await self.store.aget(("deep_loopminder", "project_execution_refs", project_id), run_id)
+        if (not binding or binding.value.get("task_id") != task_id
+                or binding.value.get("agent_id") != agent_id
+                or (item.value.get("worker_agent_id") and item.value["worker_agent_id"] != agent_id)
+                or binding.value.get("owner_thread") != item.value.get("owner_thread")
+                or binding.value.get("dispatch_id") != item.value.get("intent_id")):
+            raise ValueError("官方 Run 尚未关联当前任务")
+        if binding.value.get("input_version") != item.value.get("input_version"):
+            raise ValueError("官方 Run 输入与派工授权不一致")
+        historical = await self.store.aget((*namespace, "history"), item.value["intent_id"])
+        claimed = historical.value.get("claimed_run_id") if historical else None
+        if claimed and claimed != run_id:
+            raise ValueError("派工意图已绑定另一官方 Run")
+        confirmed = {**item.value, "status": "confirmed", "agent_id": agent_id, "run_id": run_id}
+        if claimed:
+            confirmed["claimed_run_id"] = claimed
+        await self.store.aput((*namespace, "history"), item.value["intent_id"], confirmed, index=False)
+        await self.store.aput(namespace, task_id, confirmed, index=False)
+
     async def attach(self, project_id, task_id, *, executions=(), artifacts=()):
         """在唯一项目写入线程附加已核验引用。"""
         snapshot, _ = await self.task(project_id, task_id)
@@ -122,9 +244,30 @@ class ProjectWorkflow:
         )
         await ProjectStore(self.store).save(updated)
 
-    async def record_start(self, project_id, task_id, owner_thread, agent_id, run_id):
+    async def record_start(
+        self, project_id, task_id, owner_thread, agent_id, run_id, *,
+        phase="execution", readonly_enforcement: EnforcementFact | None = None,
+        dispatch_id: str | None = None,
+        expected_review_subject: str | None = None,
+        discussion_question: str | None = None,
+    ):
         """关联官方工具创建的Run；重复相同关联不增加任务引用。"""
+        if phase not in {"execution", "discussion", "review"}:
+            raise ValueError("未知的Worker阶段")
+        if phase in {"discussion", "review"} and (
+            readonly_enforcement is None
+            or readonly_enforcement.capability is not EnforcementCapability.ENFORCEABLE
+            or "worker.readonly" not in readonly_enforcement.enforced_capabilities
+        ):
+            raise ValueError("商讨和审查需要可信的只读执行能力")
         snapshot, task = await self.task(project_id, task_id)
+        review_subject = None
+        if phase == "review":
+            if task.status not in {TaskStatus.REVIEW, TaskStatus.TESTING}:
+                raise ValueError("独立审查只能针对待审查或测试中的任务")
+            review_subject = await self.delivery_subject(project_id, task_id)
+            if not expected_review_subject or review_subject["subject"] != expected_review_subject:
+                raise ValueError("提交审查前交付版本已变化")
         reference = f"langgraph-run://{agent_id}/{run_id}"
         namespace = ("deep_loopminder", "project_execution_refs", project_id)
         previous = await self.store.aget(namespace, run_id)
@@ -139,9 +282,14 @@ class ProjectWorkflow:
             "reference": reference,
             "input_version": await self.input_version(snapshot, task),
             "required_capabilities": sorted(task.required_capabilities),
+            "phase": phase,
+            "dispatch_id": dispatch_id,
+            "readonly_mechanism": readonly_enforcement.mechanism if readonly_enforcement else None,
+            "review_subject": review_subject,
+            "discussion_question": discussion_question,
         }
         if previous and any(
-            previous.value.get(key) != value[key]
+            previous.value.get(key, "execution" if key == "phase" else None) != value[key]
             for key in value
             if key != "worker_context_version"
         ):
@@ -152,11 +300,11 @@ class ProjectWorkflow:
         updated = apply_project_command(
             snapshot, AttachTaskEvidenceCommand(project_id, task_id, (reference,), ())
         )
-        for source, target in (
+        for source, target in (() if phase in {"discussion", "review"} else (
             (TaskStatus.BACKLOG, TaskStatus.READY),
             (TaskStatus.READY, TaskStatus.ASSIGNED),
             (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS),
-        ):
+        )):
             if task.status is source:
                 updated = apply_project_command(
                     updated, TransitionTaskCommand(project_id, task_id, target)
@@ -176,6 +324,18 @@ class ProjectWorkflow:
             or binding["owner_thread"] != owner_thread
         ):
             raise ValueError("交付结果不属于当前PM线程")
+        worker_ref = result.get("worker_ref")
+        if worker_ref is not None and (
+            not isinstance(worker_ref, dict)
+            or worker_ref.get("project_id") != project_id
+            or worker_ref.get("task_id") != binding["task_id"]
+            or worker_ref.get("thread_id") != binding["agent_id"]
+        ):
+            raise ValueError("Worker会话与交付来源不一致")
+        if worker_ref is not None:
+            if binding.get("worker_ref") is not None and binding["worker_ref"] != worker_ref:
+                raise ValueError("同一 Run 的 Worker 会话不能改变")
+            binding = {**binding, "worker_ref": worker_ref}
         # 正文来自ACP官方最终checkpoint，不解析其中的通过声明。
         stable_result = {
             key: result[key]
@@ -187,8 +347,12 @@ class ProjectWorkflow:
                 "checkpoint",
                 "error",
                 "stop_reason",
+                "context_usage",
+                "compaction_visibility",
             )
             if key in result
+            and not (key == "context_usage" and result[key] is None)
+            and not (key == "compaction_visibility" and result[key] == "unknown")
         }
         artifact = await self.artifacts.create(
             project_id,
@@ -246,7 +410,113 @@ class ProjectWorkflow:
         )
         return artifact["reference"]
 
+    async def record_codex_review(self, project_id, task_id, *, review_run_id):
+        """Record only a sourced, independent Codex review of current delivery.
+
+        This host-only method is intentionally not exposed as a PM tool. The
+        caller must serialize project writes and supply an official Run ID.
+        """
+        item = await self.store.aget(("deep_loopminder", "project_execution_refs", project_id), review_run_id)
+        binding = item.value if item else {}
+        ref = binding.get("worker_ref") or {}
+        before = binding.get("review_subject") or {}
+        if (binding.get("task_id") != task_id or binding.get("phase") != "review"
+                or not binding.get("readonly_mechanism") or ref.get("provider_id") != "codex"
+                or ref.get("role") != "reviewer" or not ref.get("session_id")
+                or not binding.get("result_ref")):
+            raise ValueError("缺少可验证的只读 Codex 审查来源")
+        current = await self.delivery_subject(project_id, task_id)
+        developer = current["developer_worker_ref"]
+        if (before.get("subject") != current["subject"]
+                or binding.get("agent_id") == current["developer_agent_id"]
+                or (developer.get("provider_id"), developer.get("session_id"))
+                == (ref.get("provider_id"), ref.get("session_id"))):
+            raise ValueError("审查与开发会话不独立，或交付已发生变化")
+        artifact = await self.artifacts.get(project_id, binding["result_ref"], task_id=task_id, kind="worker_result")
+        result = json.loads(artifact["content"])
+        if result.get("status") != "success" or result.get("run_id") != review_run_id:
+            raise ValueError("Codex 审查 Run 未成功完成")
+        try:
+            report = json.loads(result["result"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Codex 审查未返回有效的结构化结论") from exc
+        if (not isinstance(report, dict) or report.get("decision") not in {"pass", "fail", "unknown"}
+                or report.get("subject") != current["subject"]
+                or not isinstance(report.get("summary"), str) or not report["summary"].strip()
+                or not isinstance(report.get("findings"), list)
+                or (report.get("decision") == "pass" and bool(report["findings"]))):
+            raise ValueError("Codex 审查结论或交付版本不完整")
+        receipt = {"project_id": project_id, "task_id": task_id, "review_run_id": review_run_id,
+                   "review_agent_id": binding["agent_id"], "review_result_ref": binding["result_ref"],
+                   "subject": current["subject"], "decision": report["decision"],
+                   "summary": report["summary"], "findings": report.get("findings")}
+        receipt["review_id"] = content_hash(receipt)
+        namespace = ("deep_loopminder", "project_codex_reviews", project_id, task_id)
+        await self.store.aput(namespace, receipt["review_id"], receipt, index=False)
+        await self.store.aput(namespace, "latest", {"review_id": receipt["review_id"]}, index=False)
+        return receipt
+
+    async def codex_review_status(self, project_id, task_id):
+        """Resolve the current independently sourced review, if still valid."""
+        namespace = ("deep_loopminder", "project_codex_reviews", project_id, task_id)
+        pointer = await self.store.aget(namespace, "latest")
+        item = await self.store.aget(namespace, pointer.value["review_id"]) if pointer else None
+        if item is None:
+            return {"status": "unknown", "reason": "independent_review_missing"}
+        value = dict(item.value)
+        try:
+            if value.get("review_id") != content_hash({key: val for key, val in value.items() if key != "review_id"}):
+                raise ValueError("invalid review receipt")
+            _, task = await self.task(project_id, task_id)
+            latest_review_run = None
+            for reference in task.execution_refs:
+                run_id = reference.rsplit("/", 1)[-1]
+                source = await self.store.aget(("deep_loopminder", "project_execution_refs", project_id), run_id)
+                if source and source.value.get("phase") == "review":
+                    latest_review_run = run_id
+            if latest_review_run != value.get("review_run_id"):
+                return {"status": "unknown", "reason": "newer_review_pending"}
+            source = await self.store.aget(("deep_loopminder", "project_execution_refs", project_id), value["review_run_id"])
+            binding = source.value if source else {}
+            worker = binding.get("worker_ref") or {}
+            if (binding.get("task_id") != task_id or binding.get("result_ref") != value.get("review_result_ref")
+                    or binding.get("agent_id") != value.get("review_agent_id")
+                    or not binding.get("readonly_mechanism") or worker.get("provider_id") != "codex"
+                    or worker.get("role") != "reviewer"):
+                raise ValueError("invalid review source")
+            current = await self.delivery_subject(project_id, task_id)
+            if (current["subject"] != value.get("subject")
+                    or (binding.get("review_subject") or {}).get("subject") != current["subject"]):
+                return {"status": "unknown", "reason": "review_subject_changed"}
+            developer = current["developer_worker_ref"]
+            if (binding.get("agent_id") == current["developer_agent_id"]
+                    or (developer.get("provider_id"), developer.get("session_id"))
+                    == (worker.get("provider_id"), worker.get("session_id"))):
+                raise ValueError("reviewer is not independent")
+            artifact = await self.artifacts.get(project_id, binding["result_ref"], task_id=task_id, kind="worker_result")
+            report_result = json.loads(artifact["content"])
+            if not isinstance(report_result, dict):
+                raise ValueError("invalid review result")
+            report = json.loads(report_result["result"])
+            if (not isinstance(report, dict) or report_result.get("status") != "success" or report.get("decision") != value.get("decision")
+                    or report.get("subject") != value.get("subject")):
+                raise ValueError("invalid review result")
+        except (ValueError, TypeError, KeyError):
+            return {"status": "unknown", "reason": "review_subject_unavailable"}
+        return {"status": value.get("decision", "unknown"), "review_id": value["review_id"],
+                "summary": value.get("summary"), "findings": value.get("findings"), "review_run_id": value.get("review_run_id"),
+                "developer_run_id": current["developer_run_id"]}
+
     async def record_validation(
+        self, project_id, task_id, *, validator_id: str,
+        criteria: dict[str, bool], evidence_refs: tuple[str, ...],
+    ):
+        """Serialize trusted validation with the same project writer lock."""
+        async with project_write_lock(project_id):
+            return await self._record_validation(project_id, task_id, validator_id=validator_id,
+                                                 criteria=criteria, evidence_refs=evidence_refs)
+
+    async def _record_validation(
         self,
         project_id,
         task_id,
@@ -254,6 +524,7 @@ class ProjectWorkflow:
         validator_id: str,
         criteria: dict[str, bool],
         evidence_refs: tuple[str, ...],
+        required_run_ids: tuple[str, ...] | None = None,
     ):
         """宿主专用：独立核验后写入，未注册为模型工具，不能仅凭Worker自述。"""
         snapshot, task = await self.task(project_id, task_id)
@@ -272,8 +543,11 @@ class ProjectWorkflow:
         input_version = await self.input_version(snapshot, task)
         # 每个子代理只取最新运行；追问或重试后，旧运行不能替代新结果。
         latest = {}
+        found_runs = set()
         for ref in task.execution_refs:
             run_id = ref.rsplit("/", 1)[-1]
+            if required_run_ids is not None and run_id not in required_run_ids:
+                continue
             item = await self.store.aget(
                 ("deep_loopminder", "project_execution_refs", project_id), run_id
             )
@@ -284,6 +558,9 @@ class ProjectWorkflow:
             ):
                 raise ValueError("任务含未知执行来源")
             latest[item.value["agent_id"]] = item.value
+            found_runs.add(run_id)
+        if required_run_ids is not None and found_runs != set(required_run_ids):
+            raise ValueError("验收缺少指定的开发或审查 Run")
         if not latest:
             raise ValueError("任务没有可验证的执行来源")
         subject = SubjectRef(
@@ -348,6 +625,14 @@ class ProjectWorkflow:
         return receipt["reference"]
 
     async def record_approval(
+        self, project_id, task_id, *, actor_id: str, decision_ref: str, approved: bool = True,
+    ):
+        """Serialize trusted human approval with project mutations."""
+        async with project_write_lock(project_id):
+            return await self._record_approval(project_id, task_id, actor_id=actor_id,
+                                               decision_ref=decision_ref, approved=approved)
+
+    async def _record_approval(
         self,
         project_id,
         task_id,
@@ -435,6 +720,8 @@ class ProjectWorkflow:
                 TaskStatus.TESTING,
                 TaskStatus.PASSED,
                 TaskStatus.WAITING_HUMAN,
+                TaskStatus.APPROVED,
+                TaskStatus.DONE,
             }:
                 continue
             receipt = await self.store.aget(
@@ -442,12 +729,23 @@ class ProjectWorkflow:
                 task.task_id,
             )
             facts = await self.facts(snapshot, task.task_id, TaskStatus.PASSED)
+            approval = await self.store.aget(
+                ("deep_loopminder", "project_approvals", snapshot.project_id), task.task_id
+            )
+            approval_current = bool(
+                approval and receipt and approval.value.get("subject") == await self.subject(snapshot, task)
+                and approval.value.get("validation_ref") == receipt.value.get("reference")
+            )
+            approval_state = ("not_recorded" if approval is None else "stale" if not approval_current
+                              else "rejected" if approval.value.get("approved") is False
+                              else "approved" if facts.human_approved else "unknown")
             statuses.append(
                 {
                     "task_id": task.task_id,
                     "validation_record_present": receipt is not None,
                     "validation_accepted_current": facts.validation_accepted,
                     "approval_accepted_current": facts.human_approved,
+                    "approval_state": approval_state,
                     "validation_state": "当前版本验收通过"
                     if facts.validation_accepted
                     else (

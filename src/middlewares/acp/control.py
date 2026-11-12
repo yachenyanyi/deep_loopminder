@@ -4,6 +4,7 @@ import asyncio
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 from acp import PROTOCOL_VERSION, spawn_agent_process, text_block
@@ -119,6 +120,11 @@ class ACPWorker:
         on_update: UpdateSink | None = None,
         env: Mapping[str, str] | None = None,
         timeout: float | None = 60,
+        native_cwd: str | None = None,
+        readonly_enforcement: EnforcementFact | None = None,
+        session_isolation: str | None = None,
+        config_version: str | None = None,
+        suppress_stderr: bool = False,
     ):
         """配置启动参数与权限；timeout=None 时不按总耗时取消原生调用。"""
         if not provider_id.strip() or not command or (timeout is not None and timeout <= 0):
@@ -128,6 +134,16 @@ class ACPWorker:
         self.cwd = str(Path(cwd).resolve(strict=True))
         if not Path(self.cwd).is_dir():
             raise ValueError("cwd must be a directory")
+        if native_cwd is not None and (not isinstance(native_cwd, str) or not native_cwd.strip()):
+            raise ValueError("native_cwd must be a nonempty path when supplied")
+        # The ACP process may run in a different OS namespace (e.g. WSL).
+        # Keep the host path in WorkerRef for isolation checks while sending
+        # the corresponding native path to the adapter's session methods.
+        self.native_cwd = native_cwd or self.cwd
+        self.readonly_enforcement = readonly_enforcement
+        self.session_isolation = session_isolation or ("wsl-readonly" if readonly_enforcement is not None else None)
+        self.config_version = config_version
+        self.suppress_stderr = suppress_stderr
         self.grants, self.approval, self.review = grants, approval, review
         self.on_update = on_update
         self.env, self.timeout = env, timeout
@@ -137,6 +153,7 @@ class ACPWorker:
         self._transport = None
         self._refs: dict[str, WorkerRef] = {}
         self._metadata: dict[str, object] = {}
+        self._usage: dict[str, dict] = {}
         self._prompt_locks: dict[str, asyncio.Lock] = {}
         self._turn_sinks: dict[str, UpdateSink] = {}
 
@@ -162,7 +179,7 @@ class ACPWorker:
             *self.command,
             cwd=self.cwd,
             env={**os.environ, **(self.env or {})},
-            transport_kwargs={"stderr": None},
+            transport_kwargs={"stderr": asyncio.subprocess.DEVNULL if self.suppress_stderr else None},
             use_unstable_protocol=True,
         )
         self.connection, self.process = await self._transport.__aenter__()
@@ -192,6 +209,7 @@ class ACPWorker:
             self.connection = None
             self._refs.clear()
             self._metadata.clear()
+            self._usage.clear()
 
     async def _call(self, request):
         return await asyncio.wait_for(request, timeout=self.timeout)
@@ -205,6 +223,14 @@ class ACPWorker:
             raise ValueError("worker ref must be created or resumed on this connection")
 
     def _update_metadata(self, session_id, update):
+        if update.session_update == "usage_update" and session_id in self._refs:
+            self._usage[session_id] = {
+                "used": update.used,
+                "size": update.size,
+                "remaining": update.size - update.used if update.used <= update.size else None,
+                "source": "acp.session_update.usage_update",
+                "observed_at": datetime.now(UTC).isoformat(),
+            }
         response = self._metadata.get(session_id)
         if response is None:
             return
@@ -241,12 +267,14 @@ class ACPWorker:
             role,
             self.cwd,
             handoff_id,
+            self.session_isolation,
+            self.config_version,
         )
         if self.connection is None:
             raise RuntimeError("ACP worker is not connected")
         self._authorize("worker.new", provisional)
         response = await self._call(
-            self.connection.new_session(cwd=self.cwd, mcp_servers=mcp_servers or [])
+            self.connection.new_session(cwd=self.native_cwd, mcp_servers=mcp_servers or [])
         )
         ref = replace(provisional, session_id=response.session_id)
         self._refs[ref.session_id], self._metadata[ref.session_id] = ref, response
@@ -258,6 +286,10 @@ class ACPWorker:
             raise RuntimeError("ACP worker is not connected")
         if ref.provider_id != self.provider_id or ref.cwd != self.cwd:
             raise ValueError("worker ref provider/cwd does not match this connection")
+        if ref.isolation != self.session_isolation:
+            raise ValueError("worker isolation cannot change on this connection")
+        if ref.config_version != self.config_version:
+            raise ValueError("worker configuration changed; the session cannot be resumed safely")
         self._authorize("worker.resume", ref)
         if self._refs.get(ref.session_id) == ref:
             return self._metadata[ref.session_id]
@@ -268,13 +300,13 @@ class ACPWorker:
             if self.initialized.agent_capabilities.load_session:
                 request = self.connection.load_session(
                     session_id=ref.session_id,
-                    cwd=self.cwd,
+                    cwd=self.native_cwd,
                     mcp_servers=mcp_servers or [],
                 )
             else:
                 request = self.connection.resume_session(
                     session_id=ref.session_id,
-                    cwd=self.cwd,
+                    cwd=self.native_cwd,
                     mcp_servers=mcp_servers or [],
                 )
             response = await self._call(request)
@@ -307,6 +339,7 @@ class ACPWorker:
                 mode="json", by_alias=True, exclude_none=True
             ),
             "supported_controls": sorted(self._controls(ref)),
+            "context_usage": self._usage.get(ref.session_id),
             "compaction_visibility": "unknown",
             "connection_process_returncode": self.process.returncode,
         }
@@ -413,12 +446,13 @@ class ACPWorker:
             )
             self._refs.pop(ref.session_id, None)
             self._metadata.pop(ref.session_id, None)
+            self._usage.pop(ref.session_id, None)
             return response
         if action == "fork":
             response = await self._call(
                 self.connection.fork_session(
                     session_id=ref.session_id,
-                    cwd=self.cwd,
+                    cwd=self.native_cwd,
                     mcp_servers=payload.get("mcp_servers", []),
                 )
             )
@@ -444,7 +478,7 @@ class ACPWorker:
         if "list" not in negotiated_controls(self.initialized):
             raise UnsupportedControl("adapter does not advertise session/list")
         return await self._call(
-            self.connection.list_sessions(cwd=self.cwd, cursor=cursor)
+            self.connection.list_sessions(cwd=self.native_cwd, cursor=cursor)
         )
 
     async def authenticate(self, method_id: str):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import importlib
 import json
 import os
 from dataclasses import dataclass
@@ -10,6 +12,8 @@ from typing import TYPE_CHECKING
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 
+from src.middlewares.agent.user_configurable import PMModelSelectionMiddleware
+from src.deep_agents.agents.pm_agent.discussion import PMDiscussionMiddleware
 from src.middlewares.approval import (
     HumanDecisionRequestMiddleware,
     human_decision_hitl_middleware,
@@ -80,6 +84,8 @@ _FORBIDDEN_EXECUTION_CAPABILITIES = frozenset(
 )
 
 _PM_MIDDLEWARE_REQUIREMENTS = (
+    "PMModelSelectionMiddleware",
+    "PMDiscussionMiddleware",
     "HumanDecisionRequestMiddleware",
     "human_decision_hitl_middleware",
     "ProjectStateMiddleware",
@@ -123,12 +129,19 @@ blockers, and delegate by role plus required capability.
 
 协作方式：
 - 公开分析、进度说明、派工、追问和最终回复默认使用中文；要求 Worker 用中文汇报，命令、路径、标识符和原始错误保留原文。
+- 将 Worker 当作专业同事：礼貌交流，先讨论业务目标、约束、方案和风险；对分歧继续追问，不用命令口吻代替商讨。
+- 每个开发任务先与负责人明确形成共同结论，经宿主记录双方确认并由 Clef 判断通过后才能开发；未知、失败或过期都不能当作通过。
+- 审查后的同任务返工是否补充讨论由你判断；目标、方案、范围或关键约束实质变化时必须重新商讨并判断。
+- 开发使用 followup_task，message 严格填写“按照已确认方案开展工作”；处理当前不通过审查时填写“按照已确认方案处理审查问题”。宿主交接已确认内容和审查发现，不在执行消息中添加新指令。
+- 负责人完成开发后，领取真实交付并按项目状态进入审查，调用 begin_codex_review 创建独立 Codex 只读审查；审查不可用或结论未知时保持等待，不把它当作通过或人工批准。
+- Worker 上下文用量和压缩信息仅依据宿主提供的实际事件；未上报时视为未知，不推测。
 - 将 Worker 当作能自主工作的负责人：交代业务目标、范围、必要约束和完成标准，技术方案与执行细节由它决定。
-- 首次派工的完整 TaskBrief 由宿主自动注入，message 只写本轮重点，不重复粘贴简报，也不要求 Worker 调用项目制品工具读取简报。
-- 同一 Worker 会话续接时，结合最近交付判断它已知什么，只说明变化、优先级和待完成项；不重复背景、不因上次失败猜测原因后追加永久限制。
+- 商讨问题交给 begin_discussion；宿主交接 TaskBrief 和引用材料，不要求 Worker 调用项目制品工具。
+- 同一负责人会话续接时，不因上次失败猜测原因或追加永久限制；需要改变目标、方案、范围或关键约束时重新商讨。
 - Worker 拥有独立工具集，不继承你的项目状态、记忆、制品工具。通过会话返回进度与成果，由 wait_agent 领取并自动保存；不能要求它研究宿主代码、访问宿主 Store 或绕过工具补能力。
 - Worker 若具备原生子代理，可自主拆分内部工作并对最终成果负责；你管理项目级负责人，不指挥其内部子代理。
 - 正常跟进使用 wait_agent 默认的新结果模式；只有明确查阅某一历史轮次时，才给出 run_id 重读。不要反复读取旧失败来判断新 Run。
+- 工作台核对并关联了派工结果、但当前会话缺少该负责人时，使用 recover_dispatched_session 恢复引用，再用 wait_agent 领取结果；不要重新派工。
 - 验收记录缺失、验收不通过、人工拒绝是不同事实；“尚未写入”不能转述为“宿主拒绝”。以本轮可信验收事实和原始决定为准。
 - 历史简报可能包含过期工具说明，续问不复制其中要求Worker调用PM工具、搜索宿主目录的指令；引用材料由宿主交接，缺失部分先澄清。
 - 原生工具试错和历史宿主中断不证明负责人能力不足，不据此给它新增“小步快跑”、固定命令时限或逐步批准的限制。确有业务/环境约束时说明依据。
@@ -159,8 +172,8 @@ Hard rules:
 - Never weaken acceptance criteria in order to claim completion.
 - Create a TaskBrief with project_create_artifact before create_task; use its returned reference, never invent paths.
 - 业务task_id和Worker别名区分大小写，使用字母开头的字母/数字/下划线/连字符，最长64字符。保留现有编号，不为大小写另建任务。
-- spawn_agent默认以task_name绑定同名业务任务；独立审查/测试使用新的task_name、原业务task_id和reviewer/tester角色，仅在review/testing阶段允许。
-- 依赖满足、角色和任务说明有效时，可直接派工backlog/ready任务；官方Run创建成功后工具自动推进分配和进行中状态，无需手动补齐中间状态。前置依赖不满足仍禁止派工。
+- 开发任务使用 begin_discussion 建立或续接负责人会话；独立 Codex 审查使用 begin_codex_review，审查结果通过 wait_agent 领取。
+- 依赖满足、角色和任务说明有效只是开始商讨的前提；开发仍须通过当前版本的商讨与 Clef 门禁。官方开发 Run 创建成功后工具自动推进分配和进行中状态。
 - dependencies只在依赖任务done后满足。审查工作不能依赖被审查任务先done；未执行任务可用update_task_dependencies修正，不重建同名任务。
 - 按工具controls中的allowed_transitions推进；gated_transitions由实际可信记录检查。passed/approved/done缺少可信记录时请求宿主/人工决定，不猜状态或反复重试。
 - 官方后台完成通知仅说明Run状态；必须wait_agent领取结果并关联制品，才能用于项目交付依据。
@@ -286,6 +299,7 @@ def assemble_pm_user_middleware(
     keep_messages: int = 20,
     recent_daily_days: int = 3,
     trajectory: AgentMiddleware | None = None,
+    dynamic_memory_model: bool = False,
 ) -> tuple[AgentMiddleware, ...]:
     """检查 PM 配置并装配中间件，运行生命周期交给官方接口。"""
     if profile.context_policy != _PM_CONTEXT_POLICY:
@@ -301,6 +315,8 @@ def assemble_pm_user_middleware(
     # 基础提示词先注入，再接入人工审批、项目状态和历史记忆。
     middleware = (
         make_context_projection_prompt(stable_pm_system_prompt()),
+        PMModelSelectionMiddleware(),
+        PMDiscussionMiddleware(acp),
         HumanDecisionRequestMiddleware(),
         human_decision_hitl_middleware(),
         project_state if project_state is not None else ProjectStateMiddleware(),
@@ -309,6 +325,7 @@ def assemble_pm_user_middleware(
             recent_daily_days=recent_daily_days,
             context_token_threshold=compaction_token_threshold // 2,
             context_token_limit=context_token_limit,
+            model_profile_enabled=dynamic_memory_model,
         ),
     )
     # 配置后台记忆服务后，追加压缩交接，避免长对话丢失关键依据。
@@ -319,6 +336,8 @@ def assemble_pm_user_middleware(
                 summary_model or memory_jobs.model,
                 token_threshold=compaction_token_threshold,
                 keep_messages=keep_messages,
+                dynamic_model=dynamic_memory_model and summary_model is None,
+                model_profile_enabled=dynamic_memory_model,
             ),
         )
     # ACP 是可选能力；启用后才向 PM 暴露子代理工具。
@@ -334,27 +353,53 @@ def assemble_pm_user_middleware(
 # 5. 创建主图：读取模型和运行配置，调用官方 create_agent 完成组装。
 
 
-async def pm_agent():
+async def pm_agent(model=None, *, studio=False, trace_project_id=None):
     """创建 PM 主图，运行与检查点生命周期交给官方 Server。"""
-    from src.models.llm import get_default_model
+    model_module = await asyncio.to_thread(importlib.import_module, "src.models.llm")
 
     # 先确定模型与共享存储，项目状态和历史记忆使用同一个 Store。
-    model = get_default_model()
+    # Every PM session may switch models through middleware, including when
+    # the host supplied the graph's initial model explicitly.
+    dynamic_memory_model = True
+    if model is None:
+        model = model_module.get_easycli_model()
     store = (await get_pm_memory_store()).store
-    memory = PMMemory(store, model)
+    memory = None if studio else PMMemory(store, model)
     from src.middlewares.project_state.workflow import ProjectWorkflow
 
-    project_state = ProjectStateMiddleware(workflow=ProjectWorkflow(store))
+    project_state = ProjectStateMiddleware(
+        workflow=ProjectWorkflow(store), pm_discussion_gate=not studio
+    )
     trajectory = None
-    if directory := os.getenv("PM_TRAJECTORY_DIRECTORY"):
+    if trace_project_id and not studio:
+        from src.workbench.paths import trajectory_directory
+
+        trace_settings = await store.aget(("deep_loopminder", "pm_settings"), "workspace")
+        enabled = trace_settings is None or trace_settings.value.get("trace_enabled") is True
+        directory = trajectory_directory(trace_project_id) if enabled else None
+    else:
+        directory = None if studio else os.getenv("PM_TRAJECTORY_DIRECTORY")
+    if directory:
         from src.middlewares.trajectory import TrajectoryMiddleware, TrajectoryRecorder
 
         trajectory = TrajectoryMiddleware(
-            TrajectoryRecorder(directory),
+            await asyncio.to_thread(TrajectoryRecorder, directory),
             stop_on_error=os.getenv("PM_TRAJECTORY_STOP_ON_ERROR", "false").lower() == "true",
         )
     # 根据部署配置启用 ACP；角色与 Worker 连接仍由 ACP 中间件管理。
-    specs = json.loads(os.getenv("ACP_SUBAGENTS_JSON") or "[]")
+    specs = [] if studio else json.loads(os.getenv("ACP_SUBAGENTS_JSON") or "[]")
+    if not studio:
+        from src.middlewares.acp.server import load_managed_worker_settings
+
+        for provider, role, description in (
+            ("claude", "developer", "开发负责人：先与 PM 商讨方案、范围和风险；通过门禁后负责实现并交付。"),
+            ("codex", "reviewer", "独立 Codex 审查者：只读核查实际交付与验收要求，并报告发现。"),
+        ):
+            managed = await asyncio.to_thread(load_managed_worker_settings, provider)
+            if managed is not None:
+                specs = [spec for spec in specs if spec.get("name") != role]
+                if managed["enabled"]:
+                    specs.append({"name": role, "graph_id": "acp_worker", "description": description})
     acp = None
     if specs:
         from src.middlewares.acp import ACPMiddleware
@@ -363,6 +408,7 @@ async def pm_agent():
         acp = ACPMiddleware(
             async_subagents=specs,
             candidate_source=worker_catalog if all(not spec.get("url") for spec in specs) else None,
+            pm_governed=True,
         )
     # 最后把身份提示词、已装配的中间件和 Store 交给官方 Agent 工厂。
     return create_agent(
@@ -374,6 +420,7 @@ async def pm_agent():
             memory_jobs=memory,
             project_state=project_state,
             trajectory=trajectory,
+            dynamic_memory_model=dynamic_memory_model,
             compaction_token_threshold=int(
                 os.getenv("PM_COMPACTION_TOKEN_THRESHOLD") or "300000"
             ),
@@ -381,3 +428,17 @@ async def pm_agent():
         ),
         store=store,
     )
+
+
+async def pm_agent_server():
+    """Expose a zero-argument graph factory to Agent Server."""
+    from langgraph.config import get_config
+
+    configurable = get_config().get("configurable", {})
+    project_id = configurable.get("project_id") if configurable.get("workbench_trace") is True else None
+    return await pm_agent(trace_project_id=project_id)
+
+
+async def pm_agent_studio():
+    """Build a Studio-only PM with an isolated project per thread."""
+    return await pm_agent(studio=True)

@@ -236,6 +236,12 @@ logs/
 skills_repo/
 /tests/*
 !/tests/test_pm_memory_integration.py
+!/tests/test_pm_studio_scope.py
+!/tests/test_project_folders.py
+!/tests/test_pm_clef.py
+!/tests/test_pm_discussion.py
+!/tests/test_model_catalog.py
+!/tests/test_workbench.py
 !/tests/test_acp_middleware.py
 .local-acp/
 test.jsonl

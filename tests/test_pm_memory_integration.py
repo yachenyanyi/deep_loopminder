@@ -194,6 +194,7 @@ def test_registered_memory_graph_executes_snapshot_job(monkeypatch):
             "src.models.llm",
             SimpleNamespace(
                 get_default_model=lambda: model,
+                get_easycli_model=lambda: model,
                 get_command_goat_model=lambda: None,
             ),
         )

@@ -3,6 +3,7 @@
 from datetime import date, datetime, timedelta
 from hashlib import sha256
 from pathlib import PurePosixPath
+import re
 from zoneinfo import ZoneInfo
 
 from deepagents.backends import StoreBackend
@@ -47,6 +48,8 @@ async def read_document(store: BaseStore, project_id: str, path: str) -> str:
     )
     if result.error:
         raise FileNotFoundError(result.error)
+    if result.next_offset is not None:
+        raise ValueError("记忆文件超过安全读取范围，无法核验完整内容")
     return result.file_data["content"]
 
 
@@ -171,7 +174,10 @@ async def memory_context(
             (path for path in paths if path.startswith("/daily/")), reverse=True
         ):
             try:
-                day = date.fromisoformat(PurePosixPath(path).stem)
+                stem = PurePosixPath(path).stem
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:-[0-9a-f]{16})?", stem):
+                    continue
+                day = date.fromisoformat(stem[:10])
             except ValueError:
                 continue
             if cutoff <= day <= today:

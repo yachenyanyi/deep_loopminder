@@ -17,6 +17,24 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.types import Command
 
 _request_identity = ContextVar("trajectory_request_identity", default=None)
+_secret_lock = threading.RLock()
+_known_secrets: set[str] = set()
+
+
+def register_secret(value):
+    """Keep runtime credentials available only to the in-memory redactor."""
+    if isinstance(value, str) and value:
+        with _secret_lock:
+            _known_secrets.add(value)
+
+
+def _runtime_secrets():
+    with _secret_lock:
+        registered = tuple(_known_secrets)
+    return registered + tuple(
+        value for key, value in os.environ.items()
+        if re.search(r"(?:KEY|TOKEN|PASSWORD|SECRET)$", key, re.I) and value
+    )
 
 
 class TrajectoryStopped(RuntimeError):
@@ -102,10 +120,10 @@ class TrajectoryRecorder:
         self._secret_values = [
             value
             for key, value in os.environ.items()
-            if re.search(r"(?:KEY|TOKEN|PASSWORD|SECRET)$", key) and len(value) >= 8
+            if re.search(r"(?:KEY|TOKEN|PASSWORD|SECRET)$", key, re.I) and value
         ]
 
-    def clean(self, value):
+    def clean(self, value, *, limit=True):
         """先脱敏再落盘；不记录隐藏思考，长内容明确标注截断。"""
         if hasattr(value, "model_dump"):
             value = value.model_dump(mode="json")
@@ -118,17 +136,17 @@ class TrajectoryRecorder:
                         str(key),
                         re.I,
                     )
-                    else self.clean(item)
+                    else self.clean(item, limit=limit)
                 )
-                for key, item in list(value.items())[:150]
+                for key, item in (list(value.items())[:150] if limit else value.items())
                 if key
                 not in {"reasoning", "reasoning_content", "thinking", "signature"}
                 or (key == "reasoning" and isinstance(item, int))
             }
         if isinstance(value, (list, tuple)):
             items = [
-                self.clean(item)
-                for item in value[:100]
+                self.clean(item, limit=limit)
+                for item in (value[:100] if limit else value)
                 if not (
                     isinstance(item, dict)
                     and item.get("type")
@@ -136,7 +154,7 @@ class TrajectoryRecorder:
                 )
             ]
             return items + (
-                [f"[其余{len(value) - 100}项已截断]"] if len(value) > 100 else []
+                [f"[其余{len(value) - 100}项已截断]"] if limit and len(value) > 100 else []
             )
         if isinstance(value, str):
             try:
@@ -144,8 +162,8 @@ class TrajectoryRecorder:
             except (ValueError, TypeError):
                 structured = None
             if isinstance(structured, (dict, list)):
-                return json.dumps(self.clean(structured), ensure_ascii=False)
-            for secret in self._secret_values:
+                return json.dumps(self.clean(structured, limit=limit), ensure_ascii=False)
+            for secret in (*self._secret_values, *_runtime_secrets()):
                 value = value.replace(secret, "[已脱敏]")
             value = re.sub(r"(?i)(bearer\s+)[\w.\-]+", r"\1[已脱敏]", value)
             value = re.sub(
@@ -157,12 +175,24 @@ class TrajectoryRecorder:
                 r"(postgres(?:ql)?://[^\s:/]+:)[^@\s]+@", r"\1[已脱敏]@", value
             )
             value = re.sub(r"\bsk-[A-Za-z0-9_-]{12,}", "[已脱敏]", value)
-            return value[:16000] + (
-                f"\n[内容截断，原长{len(value)}字符]" if len(value) > 16000 else ""
-            )
+            return value[:16000] + (f"\n[内容截断，原长{len(value)}字符]" if len(value) > 16000 else "") if limit else value
         if value is None or isinstance(value, (bool, int, float)):
             return value
-        return self.clean(str(value))
+        return self.clean(str(value), limit=limit)
+
+    @classmethod
+    def clean_public(cls, value):
+        """Redact a user-facing payload without creating a trajectory file."""
+        cleaner = cls.__new__(cls)
+        cleaner._secret_values = ()
+        return cleaner.clean(value)
+
+    @classmethod
+    def clean_for_judgment(cls, value):
+        """Redact without truncation; the decision client enforces its own size bound."""
+        cleaner = cls.__new__(cls)
+        cleaner._secret_values = ()
+        return cleaner.clean(value, limit=False)
 
     def emit(
         self,

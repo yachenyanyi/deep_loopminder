@@ -8,8 +8,8 @@
   "graphs": {
     "acp_worker": "src.middlewares.acp.server:acp_worker",
     "acp_control": "src.middlewares.acp.server:acp_control",
-    "pm_agent": "./src/deep_agents/agents/pm_agent/agent.py:pm_agent",
-    "pm_memory_agent": "src.middlewares.memory.pm_agent_memory.graph:pm_memory_agent",
+    "pm_agent": "./src/deep_agents/agents/pm_agent/agent.py:pm_agent_server",
+    "pm_memory_agent": "src.middlewares.memory.pm_agent_memory.graph:pm_memory_agent_server",
     "tools_Assistant": "./src/agents/agent.py:tools_Assistant",
     "Intelligent_Assistant": "./src/agents/agent.py:Intelligent_Assistant",
     "intelligent_deep_agent": "./src/deep_agents/agents/intelligent_local.py:create_intelligent_deep_agent",

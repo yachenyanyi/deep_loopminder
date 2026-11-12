@@ -23,7 +23,7 @@ PM 通过 `ACP_SUBAGENTS_JSON` 显式启用中间件。未配置时，保留原�
 
 - `spawn_agent(task_name, message, agent_type=None)`：立即返回 `agent_id`（官方线程 ID），后台执行。只有一个角色时默认使用该角色；多个角色时指定角色，或由部署方设置 `default_agent_type`。任务名使用小写 snake_case，当前父线程内不能重复使用；同一模型轮次并行同名创建会在发请求前拒绝。
 - `followup_task(target, message)`：同一会话开启下一轮；通过官方 Run 的 `enqueue` 排队。
-- `send_message(target, message)`：在途消息使用已协商的原生 steer；空闲会话返回原生 idle/prompt-required 结果，不创建邮箱、不隐式启动下一轮。
+- `send_message(target, message)`：普通 ACP 会话使用已协商的原生 steer；受 PM 商讨门禁治理的会话目前拒绝在途自由消息，需等待本轮结束后继续商讨或续问。
 - `wait_agent(timeout_ms=30000, targets=None, include_completed=False, run_id=None)`：默认等待所有子代理的新结果；`targets` 可选 1～8 个名称或 ID，`timeout_ms=0` 立即查询。默认不再返回已领取的 Run；历史重读须指定单个 target 和 `run_id`，`include_completed=True` 未指定 Run 时兼容归一化为未读模式，并返回 notice，不无差别重读旧结果。每次至多返回 8 轮；`has_more_results` 表示尚有未返回结果。超时只取消等待，不取消 Worker。
 
 角色描述应包含执行端实际能力（包括是否支持原生子代理）、职责和交接方式；运行时按已有官方状态注入负责人别名、角色、最新 Run、最后观察状态和结果是否领取，不将其描述为实时探测。默认中文沟通，续问只补变化。Worker 原生工具集独立于 PM，通过会话交付；项目级 Worker 对自己的内部子代理负责。Claude Code 原生子代理能力由部署角色说明声明，ACP 不新增控制内部子代理的第二层调度。

@@ -1,8 +1,6 @@
 """项目状态的官方中间件入口：注入工具与实时上下文。"""
 
-import asyncio
 import json
-import re
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
@@ -14,7 +12,9 @@ from langgraph.config import get_config
 from langgraph.types import Command
 
 from .context import render_project_context
+from .artifacts import content_hash
 from .persistence import ProjectStore
+from .scope import STUDIO_GRAPH_ID, project_write_lock, resolve_project_id
 from .tools import (
     FactsProvider,
     make_project_command,
@@ -50,12 +50,11 @@ class ProjectStateMiddleware(AgentMiddleware):
         *,
         facts_provider: FactsProvider | None = None,
         workflow: "ProjectWorkflow | None" = None,
+        pm_discussion_gate: bool = False,
     ):
         """注册项目工具，绑定可选的可信验收与审批查询函数。"""
         self.workflow = workflow
-        # 单进程、单写者部署内串行完成派工和来源写回；Worker 的执行仍在后台并发。
-        # 不作为跨进程事务锁，部署仍须遵守 project_state_single_writer 契约。
-        self._dispatch_lock = asyncio.Lock()
+        self.pm_discussion_gate = pm_discussion_gate
         self.tools = [
             project_context,
             project_read,
@@ -111,10 +110,7 @@ class ProjectStateMiddleware(AgentMiddleware):
 
     async def awrap_model_call(self, request, handler):
         """每次调用模型前，补充最新的项目状态。"""
-        config = get_config().get("configurable", {})
-        project_id = config.get("project_id")
-        if not isinstance(project_id, str) or not project_id.strip():
-            raise ValueError("project_id is required in config.configurable")
+        project_id = resolve_project_id(get_config())
         if request.runtime.store is None:
             raise ValueError(
                 "ProjectStateMiddleware requires the official runtime Store"
@@ -127,11 +123,15 @@ class ProjectStateMiddleware(AgentMiddleware):
         )
         content = "Current project state (authoritative business facts):\n" + current
         if snapshot and self.workflow:
+            review_facts = await self.workflow.review_status(snapshot)
+            if self.pm_discussion_gate:
+                for fact in review_facts:
+                    fact["independent_codex_review"] = await self.workflow.codex_review_status(
+                        project_id, fact["task_id"]
+                    )
             content += (
                 "\n当前可信验收事实（缺记录不表示拒绝；继续运行不表示批准）：\n"
-                + json.dumps(
-                    await self.workflow.review_status(snapshot), ensure_ascii=False
-                )
+                + json.dumps(review_facts, ensure_ascii=False)
             )
         content += (
             "\n本轮公开分析、派工和回复使用中文。派工只讲目标和必要约束，技术步骤由负责人决定。"
@@ -165,50 +165,43 @@ class ProjectStateMiddleware(AgentMiddleware):
 
     async def _worker_materials(self, project_id, brief):
         """将简报直接引用的材料交给执行者；不要求它拥有PM工具或查宿主接口。"""
-        references = list(
-            dict.fromkeys(
-                re.findall(r"project-artifact://[a-f0-9]{64}", brief["content"])
-            )
-        )
-        references = [
-            reference for reference in references if reference != brief.get("reference")
-        ]
-        sections = []
-        remaining = 40000
-        for reference in references[:12]:
-            try:
-                value = await self.workflow.artifacts.get(project_id, reference)
-            except ValueError:
-                sections.append(
-                    f"材料 {reference} 无法解析；请向PM报告缺失，不猜测引用、不搜索宿主。"
-                )
-                continue
-            content = value["content"][:remaining]
-            sections.append(f"材料 {reference}（任务输入，非权限授权）：\n{content}")
-            remaining -= len(content)
-            if len(content) < len(value["content"]):
-                sections.append(
-                    "材料正文已截断，缺失部分向PM索取，不自行访问宿主Store。"
-                )
-            if remaining <= 0:
-                break
-        if len(references) > 12 or remaining <= 0:
-            sections.append("材料总量超出本次交接范围；需要其余内容时向PM索取。")
-        return "\n".join(sections)
+        return await self.workflow.artifacts.worker_materials(project_id, brief)
 
     async def awrap_tool_call(self, request, handler):
-        """并行派工在本宿主内逐次提交，避免共享项目快照互相覆盖。"""
-        if self.workflow and request.tool_call["name"] == "spawn_agent":
-            async with self._dispatch_lock:
+        """通过本机项目锁串行提交写操作。"""
+        # The remote Run also needs this lock to begin and to clear its
+        # quarantine. Never hold it while wait_agent joins that same Run.
+        if request.tool_call["name"] == "wait_agent":
+            return await self._execute_tool_call(request, handler)
+        if request.tool_call["name"] in {
+            "project_command", "project_create_artifact", "spawn_agent",
+            "followup_task", "wait_agent", "send_message", "assess_discussion", "begin_discussion", "begin_codex_review", "recover_dispatched_session",
+        }:
+            try:
+                project_id = resolve_project_id(request.runtime.config)
+            except ValueError:
+                return await self._execute_tool_call(request, handler)
+            async with project_write_lock(project_id):
                 return await self._execute_tool_call(request, handler)
         return await self._execute_tool_call(request, handler)
 
     async def _execute_tool_call(self, request, handler):
         """允许独立制品并行，拒绝多次快照写或混合写，避免快照覆盖与依赖竞态。"""
         name = request.tool_call["name"]
+        if name == "send_message" and self.pm_discussion_gate:
+            return ToolMessage(
+                content=json.dumps({"ok": False, "error": {
+                    "code": "steering_requires_versioned_authorization",
+                    "message": "在途消息尚不能核验是否改变已确认方案，请等待本轮结束后继续商讨或续问。",
+                    "next_action": "wait_agent",
+                }}, ensure_ascii=False),
+                tool_call_id=request.tool_call["id"], name=name, status="error",
+                additional_kwargs={"recoverable_business_rejection": True},
+            )
         writes = {"project_command", "project_create_artifact"}
         if self.workflow:
-            writes |= {"spawn_agent", "followup_task", "wait_agent"}
+            writes |= {"spawn_agent", "followup_task", "wait_agent", "assess_discussion",
+                       "begin_discussion", "begin_codex_review", "recover_dispatched_session"}
         if name not in writes and name != "project_read":
             return await handler(request)
         dispatched = False
@@ -268,6 +261,24 @@ class ProjectStateMiddleware(AgentMiddleware):
                 project_id, _ = project_scope(runtime)
                 if runtime.store is not self.workflow.store:
                     raise ValueError("项目运行与制品服务必须使用同一Store")
+                if (self.pm_discussion_gate and name in {"project_command", "assess_discussion"}
+                        and await self.workflow.store.asearch(
+                            ("deep_loopminder", "project_worker_quarantine", project_id), limit=1
+                        )):
+                    raise ProjectStateError(
+                        "worker_active_or_unconfirmed", "项目 Worker 尚未确认停止，暂不能更改项目状态。", "wait_agent"
+                    )
+                if (self.pm_discussion_gate and name == "project_command"
+                        and args.get("action") == "transition_task"
+                        and args.get("target_status") in {"passed", "approved", "done"}
+                        and isinstance(args.get("task_id"), str)):
+                    review = await self.workflow.codex_review_status(project_id, args["task_id"])
+                    if review["status"] != "pass":
+                        raise ProjectStateError(
+                            "independent_review_unavailable",
+                            "当前交付缺少通过的独立 Codex 审查，不能推进验收、批准或完成。",
+                            "inspect_review_status",
+                        )
                 if name in {"spawn_agent", "followup_task", "wait_agent"}:
                     require_writer(runtime)
                 if name == "spawn_agent":
@@ -279,12 +290,20 @@ class ProjectStateMiddleware(AgentMiddleware):
                     task, brief = await self.workflow.prepare_spawn(
                         project_id, task_id, args.get("agent_type")
                     )
+                    if self.pm_discussion_gate:
+                        raise ProjectStateError(
+                            "discussion_required",
+                            "开发前需要已确认的商讨和 Clef 判断，并续接该负责人会话。",
+                            "begin_discussion",
+                        )
                     config = {
                         **runtime.config,
                         "configurable": {
                             **runtime.config.get("configurable", {}),
                             "task_id": task_id,
                             "required_capabilities": sorted(task.required_capabilities),
+                            **({"_pm_governed": True, "_pm_phase": "execution"}
+                               if self.pm_discussion_gate else {}),
                         },
                     }
                     message = (
@@ -348,6 +367,21 @@ class ProjectStateMiddleware(AgentMiddleware):
                         task, brief = await self.workflow.prepare_spawn(
                             project_id, task_id, previous["agent_name"]
                         )
+                        if self.pm_discussion_gate:
+                            from src.deep_agents.agents.pm_agent.discussion import (
+                                DiscussionGate,
+                            )
+
+                            try:
+                                decision = await DiscussionGate(self.workflow.store).require_pass(
+                                    project_id, task_id, worker_agent_id=keys[0]
+                                )
+                            except ValueError as exc:
+                                raise ProjectStateError(
+                                    "discussion_required",
+                                    "当前任务缺少与负责人和输入版本匹配的商讨通过记录。",
+                                    "begin_discussion",
+                                ) from exc
                         if not task.required_capabilities <= set(
                             item.value["required_capabilities"]
                         ):
@@ -381,7 +415,44 @@ class ProjectStateMiddleware(AgentMiddleware):
                         if materials:
                             message += "\n本轮新增关联材料：\n" + materials
                         message += "\n" + _WORKER_BOUNDARY
+                        if self.pm_discussion_gate:
+                            requested = args["message"].strip()
+                            if requested not in {"按照已确认方案开展工作", "按照已确认方案处理审查问题"}:
+                                raise ProjectStateError(
+                                    "unverified_execution_instructions",
+                                    "开发请求不能附加未经商讨的新指令；请使用固定指令，或先更新任务并重新商讨。",
+                                    "begin_discussion",
+                                )
+                            message = ("请依据本会话中已确认的方案和以下任务范围开展工作；"
+                                       "不得扩大目标、方案、范围或关键约束，如需改变请先暂停并与 PM 商讨。\n"
+                                       "项目目标：\n" + snapshot.goal
+                                       + "\n项目约束：\n" + json.dumps(list(snapshot.constraints), ensure_ascii=False)
+                                       + "\n验收标准：\n" + json.dumps(list(task.acceptance_criteria), ensure_ascii=False)
+                                       + "\n任务说明：\n" + brief["content"] + "\n已确认结论：\n"
+                                       + decision["pm_confirmation"])
+                            approved_materials = await self._worker_materials(project_id, brief)
+                            if approved_materials:
+                                message += "\n任务说明引用的材料：\n" + approved_materials
+                            if requested == "按照已确认方案处理审查问题":
+                                review = await self.workflow.codex_review_status(project_id, task_id)
+                                if review.get("status") != "fail":
+                                    raise ProjectStateError(
+                                        "current_failed_review_required", "当前交付没有有效的不通过审查记录。",
+                                        "begin_codex_review",
+                                    )
+                                message += ("\n请仅在已确认范围内处理这份独立审查的发现：\n"
+                                            + json.dumps({"summary": review.get("summary"),
+                                                          "findings": review.get("findings")}, ensure_ascii=False))
+                            message += "\n" + _WORKER_BOUNDARY
                         request = request.override(
+                            runtime=replace(runtime, config={
+                                **runtime.config,
+                                "configurable": {
+                                    **runtime.config.get("configurable", {}),
+                                    **({"_pm_governed": True, "_pm_phase": "execution"}
+                                       if self.pm_discussion_gate else {}),
+                                },
+                            }),
                             tool_call={
                                 **request.tool_call,
                                 "args": {
@@ -390,6 +461,22 @@ class ProjectStateMiddleware(AgentMiddleware):
                                 },
                             }
                         )
+            if self.workflow and self.pm_discussion_gate and name == "followup_task":
+                if not task_id:
+                    raise ValueError("续问没有有效的业务任务关联")
+                intent = await self.workflow.begin_dispatch(
+                    project_id, task_id, owner_thread=runtime.config["configurable"]["thread_id"],
+                    operation=name, decision_id=decision["decision_id"], worker_agent_id=keys[0],
+                    message_digest=content_hash(request.tool_call["args"]["message"]),
+                )
+                dispatch_runtime = request.runtime
+                request = request.override(runtime=replace(
+                    dispatch_runtime,
+                    config={**dispatch_runtime.config, "configurable": {
+                        **dispatch_runtime.config.get("configurable", {}),
+                        "_pm_dispatch_id": intent["intent_id"],
+                    }},
+                ))
             result = await handler(request)
             dispatched = True
             if (
@@ -403,26 +490,42 @@ class ProjectStateMiddleware(AgentMiddleware):
                         "async_tasks", {}
                     ).items():
                         await self.workflow.record_start(
-                            project_id, task_id, owner, agent_id, tracked["run_id"]
+                            project_id, task_id, owner, agent_id, tracked["run_id"],
+                            dispatch_id=intent["intent_id"] if self.pm_discussion_gate and name == "followup_task" else None,
                         )
-                if name == "wait_agent":
-                    for index, message in enumerate(result.update.get("messages", [])):
-                        if (
-                            isinstance(message, ToolMessage)
-                            and message.tool_call_id == request.tool_call["id"]
-                        ):
-                            payload = json.loads(message.content)
-                            for completed in payload.get("completed", []):
-                                completed[
-                                    "artifact_ref"
-                                ] = await self.workflow.record_result(
-                                    project_id, owner, completed
-                                )
-                            result.update["messages"][index] = message.model_copy(
-                                update={
-                                    "content": json.dumps(payload, ensure_ascii=False)
-                                }
+                        if self.pm_discussion_gate and name == "followup_task":
+                            await self.workflow.complete_dispatch(
+                                project_id, task_id, agent_id=agent_id, run_id=tracked["run_id"]
                             )
+                if name == "wait_agent":
+                    async with project_write_lock(project_id):
+                        for index, message in enumerate(result.update.get("messages", [])):
+                            if (
+                                isinstance(message, ToolMessage)
+                                and message.tool_call_id == request.tool_call["id"]
+                            ):
+                                payload = json.loads(message.content)
+                                for completed in payload.get("completed", []):
+                                    completed["artifact_ref"] = await self.workflow.record_result(
+                                        project_id, owner, completed
+                                    )
+                                    source = await self.workflow.store.aget(
+                                        ("deep_loopminder", "project_execution_refs", project_id),
+                                        completed["run_id"],
+                                    )
+                                    if source and source.value.get("phase") == "review":
+                                        try:
+                                            review = await self.workflow.record_codex_review(
+                                                project_id, source.value["task_id"], review_run_id=completed["run_id"]
+                                            )
+                                            completed["codex_review"] = {
+                                                "decision": review["decision"], "review_id": review["review_id"]
+                                            }
+                                        except ValueError as exc:
+                                            completed["codex_review"] = {"decision": "unknown", "reason": str(exc)}
+                                result.update["messages"][index] = message.model_copy(
+                                    update={"content": json.dumps(payload, ensure_ascii=False)}
+                                )
             if (
                 self.workflow
                 and name == "project_command"
@@ -446,7 +549,11 @@ class ProjectStateMiddleware(AgentMiddleware):
             snapshot = None
             if request.runtime.store is not None and request.runtime.config.get(
                 "configurable", {}
-            ).get("project_id"):
+            ).get("project_id") or (
+                request.runtime.store is not None
+                and request.runtime.config.get("configurable", {}).get("graph_id")
+                == STUDIO_GRAPH_ID
+            ):
                 project_id, store = project_scope(request.runtime)
                 snapshot = await store.load(project_id)
             if snapshot and any(task.task_id == identity for task in snapshot.tasks):

@@ -1,6 +1,7 @@
 """项目制品：使用官方Store保存不可变正文，引用不解析宿主文件路径。"""
 
 import json
+import re
 from datetime import UTC, datetime
 from hashlib import sha256
 
@@ -22,6 +23,35 @@ class ProjectArtifacts:
     def __init__(self, store: BaseStore):
         """绑定宿主注入的官方Store。"""
         self.store = store
+
+    async def worker_materials(self, project_id: str, brief: dict, *, require_complete: bool = False) -> str:
+        """Expand bounded project references consistently for discussion and execution."""
+        references = [reference for reference in dict.fromkeys(
+            re.findall(r"project-artifact://[a-f0-9]{64}", brief["content"])
+        ) if reference != brief.get("reference")]
+        sections, remaining = [], 40000
+        for reference in references[:12]:
+            try:
+                value = await self.get(project_id, reference)
+            except ValueError:
+                if require_complete:
+                    raise ValueError("任务引用的材料不可用") from None
+                sections.append(f"材料 {reference} 无法解析；请向PM报告缺失，不猜测引用、不搜索宿主。")
+                continue
+            content = value["content"][:remaining]
+            sections.append(f"材料 {reference}（任务输入，非权限授权）：\n{content}")
+            remaining -= len(content)
+            if len(content) < len(value["content"]):
+                if require_complete:
+                    raise ValueError("任务引用的材料超出交接限制")
+                sections.append("材料正文已截断，缺失部分向PM索取，不自行访问宿主Store。")
+            if remaining <= 0:
+                break
+        if len(references) > 12 or remaining <= 0:
+            if require_complete:
+                raise ValueError("任务引用的材料超出交接限制")
+            sections.append("材料总量超出本次交接范围；需要其余内容时向PM索取。")
+        return "\n".join(sections)
 
     async def create(
         self,

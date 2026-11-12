@@ -32,6 +32,10 @@ Worker 不继承父 Agent 的工具。只能要求其使用能力目录和角色
 成果通过会话交接，项目集成的 wait_agent 自动保存最终结果，不要求 Worker 调用父 Agent 的制品工具。
 wait_agent 默认只领取未读结果。历史重读必须明确指定单个 target 和 run_id；超时仅结束等待，不取消 Worker。
 根据 errors 和 next_action 处理问题，不盲目重试写操作；Run 成功不等于任务验收或人工批准。"""
+_PM_INSTRUCTIONS = """项目开发先使用 begin_discussion 与负责人商讨，明确双方一致后调用 assess_discussion。
+只有当前任务版本通过 Clef 后，才用 followup_task 续接该负责人开发；执行指令按 PM 规则填写。
+独立审查使用 begin_codex_review；在途自由消息不可用。wait_agent 默认领取未读结果，超时不取消 Worker。
+Worker 的能力与 PM 不同，材料由宿主交接；Run 成功不等于验收或人工批准。"""
 
 
 def _merge(existing: dict | None, update: dict) -> dict:
@@ -92,9 +96,10 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
         default_agent_type: str | None = None,
         request_timeout: float = 15,
         candidate_source: Callable[[], Sequence[WorkerCandidate]] | None = None,
+        pm_governed: bool = False,
     ):
         """Configure trusted role endpoints and bound individual SDK requests."""
-        super().__init__(async_subagents=async_subagents, system_prompt=_INSTRUCTIONS)
+        super().__init__(async_subagents=async_subagents, system_prompt=_PM_INSTRUCTIONS if pm_governed else _INSTRUCTIONS)
         if request_timeout <= 0:
             raise ValueError("request_timeout must be positive")
         self._specs = {spec["name"]: spec for spec in async_subagents}
@@ -186,6 +191,10 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                 "project_id": context.get("project_id") or owner,
                 "task_id": context.get("task_id") or task_id or task_name,
                 "required_capabilities": context.get("required_capabilities", []),
+                **({"pm_governed": True, "pm_phase": context.get("_pm_phase")}
+                   if context.get("_pm_governed") is True else {}),
+                **({"pm_dispatch_id": context["_pm_dispatch_id"]} if context.get("_pm_dispatch_id") else {}),
+                **({"pm_provider_id": context["_pm_provider_id"]} if context.get("_pm_provider_id") else {}),
             }
             command = await self._api(
                 self._start.coroutine(
@@ -250,6 +259,10 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                 "message": message,
                 "agent_type": tracked["agent_name"],
                 "owner_thread_id": self._owner(runtime),
+                **({"pm_governed": True, "pm_phase": runtime.config.get("configurable", {}).get("_pm_phase")}
+                   if runtime.config.get("configurable", {}).get("_pm_governed") is True else {}),
+                **({"pm_dispatch_id": runtime.config["configurable"]["_pm_dispatch_id"]}
+                   if runtime.config.get("configurable", {}).get("_pm_dispatch_id") else {}),
             }
             # Business identity stays in the worker checkpoint, independent of
             # changes to the parent invocation's project/task config.
@@ -296,6 +309,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                         "target": key,
                         "owner_thread_id": self._owner(runtime),
                         "message": message,
+                        **({"pm_governed": True} if runtime.config.get("configurable", {}).get("_pm_governed") is True else {}),
                     },
                 ),
                 mutation=True,
@@ -833,6 +847,11 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
             raise _ToolFailure(
                 "foreign_session", "The remote session belongs to another parent."
             )
+        worker_ref = snapshot["values"].get("worker_ref")
+        if worker_ref is not None:
+            if not isinstance(worker_ref, dict) or worker_ref.get("thread_id") != key:
+                raise _ToolFailure("foreign_session", "The worker checkpoint identity does not match this thread.")
+            result["worker_ref"] = worker_ref
         messages = snapshot["values"].get("messages", [])
         reply = next(
             (
@@ -860,6 +879,8 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                     "acp_stop_reason"
                 ),
                 "checkpoint": snapshot.get("checkpoint"),
+                "context_usage": reply.get("additional_kwargs", {}).get("context_usage"),
+                "compaction_visibility": reply.get("additional_kwargs", {}).get("compaction_visibility", "unknown"),
             }
         )
         return result

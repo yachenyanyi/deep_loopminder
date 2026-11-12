@@ -15,6 +15,8 @@ class WorkerRef:
     role: str
     cwd: str
     handoff_id: str | None = None
+    isolation: str | None = None
+    config_version: str | None = None
 
     def __post_init__(self) -> None:
         """Require complete correlation rather than guessing from transport state."""
@@ -31,6 +33,8 @@ class WorkerRef:
             )
         ):
             raise ValueError("worker correlation identities and cwd must be non-empty")
+        if self.config_version is not None and not self.config_version.strip():
+            raise ValueError("config_version must be non-empty when supplied")
 
     def to_dict(self) -> dict:
         """Serialize only domain correlations, never provider conversation/state."""

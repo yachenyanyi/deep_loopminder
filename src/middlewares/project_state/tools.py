@@ -17,6 +17,7 @@ from .commands import (
 from .context import render_project_context
 from .models import ProjectSnapshot, Task, TaskStatus
 from .persistence import ProjectStore, _snapshot_to_value
+from .scope import STUDIO_GRAPH_ID, resolve_project_id
 from .service import apply_project_command
 from .transitions import ProjectStateError, task_controls
 
@@ -48,10 +49,7 @@ class TaskDraft(BaseModel):
 
 def project_scope(runtime) -> tuple[str, ProjectStore]:
     """从宿主运行配置中读取项目标识，并绑定官方 Store。"""
-    configurable = runtime.config.get("configurable", {})
-    project_id = configurable.get("project_id")
-    if not isinstance(project_id, str) or not project_id.strip():
-        raise ValueError("project_id is required in config.configurable")
+    project_id = resolve_project_id(runtime.config)
     if runtime.store is None:
         raise ValueError("project state requires the official runtime Store")
     return project_id, ProjectStore(runtime.store)
@@ -59,6 +57,8 @@ def project_scope(runtime) -> tuple[str, ProjectStore]:
 
 def require_writer(runtime) -> None:
     """保存快照前，确认宿主已声明每个项目仅有一个串行写入者。"""
+    if runtime.config.get("configurable", {}).get("graph_id") == STUDIO_GRAPH_ID:
+        raise ValueError("Project writes are disabled in Studio test mode")
     if (
         runtime.config.get("configurable", {}).get("project_state_single_writer")
         is not True

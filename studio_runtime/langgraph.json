@@ -1,0 +1,10 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": [".."],
+  "graphs": {
+    "pm_agent_studio": "../src/deep_agents/agents/pm_agent/agent.py:pm_agent_studio"
+  },
+  "store": {
+    "path": "../src/middlewares/memory/pm_agent_memory/provider.py:generate_studio_store"
+  }
+}
