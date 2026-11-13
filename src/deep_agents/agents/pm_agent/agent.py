@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 
-from src.middlewares.agent.user_configurable import PMModelSelectionMiddleware
 from src.deep_agents.agents.pm_agent.discussion import PMDiscussionMiddleware
+from src.middlewares.agent.user_configurable import PMModelSelectionMiddleware
 from src.middlewares.approval import (
     HumanDecisionRequestMiddleware,
     human_decision_hitl_middleware,
@@ -133,7 +133,7 @@ blockers, and delegate by role plus required capability.
 - 每个开发任务先与负责人明确形成共同结论，经宿主记录双方确认并由 Clef 判断通过后才能开发；未知、失败或过期都不能当作通过。
 - 审查后的同任务返工是否补充讨论由你判断；目标、方案、范围或关键约束实质变化时必须重新商讨并判断。
 - 开发使用 followup_task，message 严格填写“按照已确认方案开展工作”；处理当前不通过审查时填写“按照已确认方案处理审查问题”。宿主交接已确认内容和审查发现，不在执行消息中添加新指令。
-- 负责人完成开发后，领取真实交付并按项目状态进入审查，调用 begin_codex_review 创建独立 Codex 只读审查；审查不可用或结论未知时保持等待，不把它当作通过或人工批准。
+- 负责人完成开发后，领取真实交付并按项目状态进入审查，调用 begin_codex_review 创建独立只读审查；审查不可用或结论未知时保持等待，不把它当作通过或人工批准。
 - Worker 上下文用量和压缩信息仅依据宿主提供的实际事件；未上报时视为未知，不推测。
 - 将 Worker 当作能自主工作的负责人：交代业务目标、范围、必要约束和完成标准，技术方案与执行细节由它决定。
 - 商讨问题交给 begin_discussion；宿主交接 TaskBrief 和引用材料，不要求 Worker 调用项目制品工具。
@@ -172,7 +172,9 @@ Hard rules:
 - Never weaken acceptance criteria in order to claim completion.
 - Create a TaskBrief with project_create_artifact before create_task; use its returned reference, never invent paths.
 - 业务task_id和Worker别名区分大小写，使用字母开头的字母/数字/下划线/连字符，最长64字符。保留现有编号，不为大小写另建任务。
-- 开发任务使用 begin_discussion 建立或续接负责人会话；独立 Codex 审查使用 begin_codex_review，审查结果通过 wait_agent 领取。
+- task.owner_role 必须写路由标识 developer / reviewer / tester / researcher，不能写「开发负责人」这类中文显示名：角色字段用于路由匹配，中文名不会匹配到任何负责人，任务将永远无法开始商讨或开发。角色写错且任务尚未执行时，用 update_task_owner_role 更正，不要重建同名任务。
+- task.required_capabilities 只能取负责人可报告的能力标识：repo.read / repo.write / files.read / files.write / shell.execute / test.execute / web.search。这是精确集合匹配，写「calculator implementation」这类业务描述会匹配不到任何负责人。一般开发任务填 repo.read、repo.write、files.read、files.write、shell.execute、test.execute 即可；能力写错且任务尚未执行时用 update_task_capabilities 更正。
+- 开发任务使用 begin_discussion 建立或续接负责人会话；独立审查使用 begin_codex_review，审查结果通过 wait_agent 领取。
 - 依赖满足、角色和任务说明有效只是开始商讨的前提；开发仍须通过当前版本的商讨与 Clef 门禁。官方开发 Run 创建成功后工具自动推进分配和进行中状态。
 - dependencies只在依赖任务done后满足。审查工作不能依赖被审查任务先done；未执行任务可用update_task_dependencies修正，不重建同名任务。
 - 按工具controls中的allowed_transitions推进；gated_transitions由实际可信记录检查。passed/approved/done缺少可信记录时请求宿主/人工决定，不猜状态或反复重试。

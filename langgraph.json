@@ -28,8 +28,7 @@
     "app": "src.middlewares.acp.server:app"
   },
   "checkpointer": {
-    "type": "postgres",
-    "connection_string": "LANGGRAPH_POSTGRES_URI"
+    "path": "./src/middlewares/persistence/checkpointer.py:generate_pm_checkpointer"
   },
   "watch": {
     "exclude": [

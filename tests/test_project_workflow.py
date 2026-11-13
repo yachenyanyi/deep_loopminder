@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -20,8 +21,14 @@ from src.middlewares.project_state import (
     Task,
     TaskStatus,
 )
-from src.middlewares.project_state.commands import ReplaceTaskBriefCommand
+from src.middlewares.project_state.commands import (
+    ReplaceTaskBriefCommand,
+    UpdateTaskCapabilitiesCommand,
+    UpdateTaskOwnerRoleCommand,
+)
 from src.middlewares.project_state.service import apply_project_command
+from src.middlewares.project_state.tools import TaskDraft
+from src.middlewares.project_state.transitions import ProjectStateError
 from src.middlewares.project_state.workflow import ProjectWorkflow
 
 
@@ -1182,6 +1189,91 @@ def test_dependency_diagnostics_repair_and_history_protection():
     asyncio.run(scenario())
 
 
+def test_owner_role_and_capabilities_are_routing_keys_not_free_text():
+    """A display name in owner_role or a prose capability blocks routing forever.
+
+    Both fields were previously unconstrained strings. A live run wrote
+    owner_role="开发负责人" and required_capabilities=["calculator implementation"];
+    the task was accepted, then matched no worker and could never be discussed or
+    developed. The fields must reject values no provider can answer.
+    """
+    async def scenario():
+        subject = Task(
+            task_id="t",
+            title="计算器",
+            status=TaskStatus.READY,
+            owner_role="开发负责人",
+            required_capabilities=frozenset({"calculator implementation"}),
+            dependencies=frozenset(),
+            acceptance_criteria=("加法正确",),
+        )
+        snapshot = ProjectSnapshot("p", "计算器", (), (subject,))
+
+        fixed_role = apply_project_command(
+            snapshot, UpdateTaskOwnerRoleCommand("p", "t", "developer")
+        )
+        assert fixed_role.tasks[0].owner_role == "developer"
+
+        fixed_caps = apply_project_command(
+            fixed_role,
+            UpdateTaskCapabilitiesCommand(
+                "p", "t", frozenset({"repo.read", "repo.write", "shell.execute"})
+            ),
+        )
+        assert fixed_caps.tasks[0].required_capabilities == frozenset(
+            {"repo.read", "repo.write", "shell.execute"}
+        )
+
+        # 不在路由词汇表里的值必须被拒绝，而不是静默写入不可路由的任务。
+        with pytest.raises(ValueError, match="路由标识"):
+            apply_project_command(snapshot, UpdateTaskOwnerRoleCommand("p", "t", "开发负责人"))
+        with pytest.raises(ValueError, match="能力标识"):
+            apply_project_command(
+                snapshot,
+                UpdateTaskCapabilitiesCommand("p", "t", frozenset({"calculator implementation"})),
+            )
+
+        # 已执行的任务归属实际运行的负责人，不能事后改写历史。
+        running = replace(subject, status=TaskStatus.IN_PROGRESS,
+                          execution_refs=("thread/run",))
+        started = ProjectSnapshot("p", "计算器", (), (running,))
+        for command in (
+            UpdateTaskOwnerRoleCommand("p", "t", "developer"),
+            UpdateTaskCapabilitiesCommand("p", "t", frozenset({"repo.read"})),
+        ):
+            with pytest.raises(ProjectStateError, match="尚未执行"):
+                apply_project_command(started, command)
+
+        # 创建任务时同样只接受词汇表内的值。
+        with pytest.raises(ValueError):
+            TaskDraft(task_id="t2", title="x", task_brief_ref="project-artifact://a",
+                      acceptance_criteria=["ok"], owner_role="开发负责人")
+
+    asyncio.run(scenario())
+
+
+def test_wrapped_review_verdict_is_read_not_discarded():
+    """A reviewer that prefixes its JSON with a sentence still reports a verdict.
+
+    In the live run the Codex reviewer wrote one line of prose and then the
+    required JSON object. ``json.loads`` failed on the leading text, so
+    ``record_codex_review`` raised, the middleware recorded
+    ``{"decision": "unknown"}``, and a completed ``fail`` became
+    indistinguishable from "no review at all".
+    """
+    from src.middlewares.project_state.workflow import parse_review_report
+
+    verdict = '{"decision":"fail","subject":"abc","summary":"乱码","findings":["x"]}'
+    wrapped = "我会只检查项目目录内的交付文件和版本状态。" + verdict
+    assert parse_review_report(wrapped) == json.loads(verdict)
+    assert parse_review_report(verdict) == json.loads(verdict)
+
+    # 仍然只接受一个完整对象；畸形或空输出必须继续失败，不能猜。
+    for broken in ("没有结论", '{"decision":', '{"a":1}{"b":2}'):
+        with pytest.raises(ValueError):
+            parse_review_report(broken)
+
+
 def test_post_dispatch_binding_failure_aborts_instead_of_inviting_duplicate_spawn():
     async def scenario():
         store, work, _ = await fixture()
@@ -1562,5 +1654,65 @@ def test_interrupted_run_recovery_keeps_both_failure_observations():
         assert (
             await store.aget(("deep_loopminder", "project_execution_refs", "p"), "run")
         ).value["result_ref"] == second
+
+    asyncio.run(scenario())
+
+
+def test_reconcile_accepts_binding_that_already_has_a_mode_record(tmp_path):
+    """A Run that ran before complete_dispatch must still be reconcilable."""
+    import asyncio
+
+    from langgraph.store.memory import InMemoryStore
+
+    from src.middlewares.execution.security_policy import (
+        EnforcementCapability,
+        EnforcementFact,
+    )
+    from src.middlewares.project_state.folders import ProjectFolders
+    from src.middlewares.project_state.models import ProjectSnapshot, Task, TaskStatus
+    from src.middlewares.project_state.persistence import ProjectStore
+    from src.middlewares.project_state.workflow import ProjectWorkflow
+
+    async def scenario():
+        store = InMemoryStore()
+        await ProjectFolders(store).bind("project", str(tmp_path))
+        workflow = ProjectWorkflow(store)
+        brief = await workflow.artifacts.create("project", "task", "task_brief", "# Goal\nDeliver")
+        await ProjectStore(store).save(ProjectSnapshot(
+            "project", "Goal", (),
+            (Task("task", "Feature", TaskStatus.READY, "developer", frozenset(),
+                  frozenset(), ("Works",), artifact_refs=(brief["reference"],)),),
+        ))
+        enforcement = EnforcementFact("native_acp_permission_mode", EnforcementCapability.PARTIAL,
+                                      frozenset(), mechanism="native",
+                                      gap="mode can modify the project")
+        mode = {"requested_mode": "acceptEdits", "reported_mode": "acceptEdits",
+                "reported_mode_source": "config_option_snapshot", "confirmed_at": "now"}
+        # worker 图已写入回报，但 complete_dispatch 未执行：恢复路径不带来回报。
+        await workflow.record_start("project", "task", "parent", "worker", "run",
+                                    phase="discussion", readonly_enforcement=enforcement,
+                                    mode_record=mode)
+        await workflow.record_start("project", "task", "parent", "worker", "run",
+                                    phase="discussion", readonly_enforcement=enforcement,
+                                    mode_record=None)
+        binding = await store.aget(("deep_loopminder", "project_execution_refs", "project"), "run")
+        assert binding.value["mode_record"] == mode, "恢复时不得丢掉已有的模式回报"
+
+        # 恢复路径带来的是只有 requested_mode 的意图记录，已存的是完整回报：
+        # 这不是冲突，且完整回报必须保留。
+        requested_only = {"requested_mode": "acceptEdits", "reported_mode": None,
+                          "reported_mode_source": None, "confirmed_at": None}
+        await workflow.record_start("project", "task", "parent", "worker", "run",
+                                    phase="discussion", readonly_enforcement=enforcement,
+                                    mode_record=requested_only)
+        binding = await store.aget(("deep_loopminder", "project_execution_refs", "project"), "run")
+        assert binding.value["mode_record"]["reported_mode"] == "acceptEdits"
+
+        # 两个都给出但值不同，仍然必须拒绝。
+        conflicting = {**mode, "reported_mode": "read-only"}
+        with pytest.raises(ValueError, match="另一任务或另一版输入"):
+            await workflow.record_start("project", "task", "parent", "worker", "run",
+                                        phase="discussion", readonly_enforcement=enforcement,
+                                        mode_record=conflicting)
 
     asyncio.run(scenario())

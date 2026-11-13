@@ -8,6 +8,29 @@ owned by their official runtimes and are referenced, never mirrored, here.
 from dataclasses import dataclass
 from enum import StrEnum
 
+# ``Task.owner_role`` is a routing key, not a label for humans: discussion,
+# dispatch and review dispatch all match a worker by this value. A free-text
+# role (for example the Chinese display name "开发负责人") is accepted by the
+# state machine and then routes to no worker, leaving the task permanently
+# blocked. Keep the accepted identifiers in one place so creation and later
+# correction cannot drift apart.
+TASK_ROLES = frozenset({"developer", "reviewer", "tester", "researcher"})
+
+# ``Task.required_capabilities`` is matched by exact set inclusion against what
+# a worker reports, so a free-text requirement ("calculator implementation")
+# matches no worker and blocks routing forever. The worker providers declare
+# capabilities from this fixed vocabulary; the task field must draw on the same
+# one, otherwise the requirement is unanswerable by construction.
+TASK_CAPABILITIES = frozenset({
+    "repo.read",
+    "repo.write",
+    "files.read",
+    "files.write",
+    "shell.execute",
+    "test.execute",
+    "web.search",
+})
+
 
 class TaskStatus(StrEnum):
     """Business status; it is not a provider or LangGraph run status."""

@@ -145,6 +145,12 @@ async def configured_pm_model(catalog: ModelCatalog, selected: dict, *, expected
     kwargs = {"model": selected["model_id"], "base_url": base_url, "api_key": token or "not-set"}
     if effort:
         kwargs["reasoning_effort"] = effort
+    # Some OpenAI-compatible gateways reject tool-carrying calls unless the
+    # request streams and also asks for usage. stream_usage is ChatOpenAI's
+    # documented field for include_usage; without it every PM tool call fails
+    # at such an endpoint.
+    kwargs["streaming"] = True
+    kwargs["stream_usage"] = True
     return ChatOpenAI(**kwargs)
 
 

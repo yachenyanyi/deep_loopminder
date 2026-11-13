@@ -9,7 +9,7 @@ from src.workbench import app as workbench
 
 def test_local_project_creation_duplicate_and_origin(tmp_path, monkeypatch):
     store = InMemoryStore()
-    monkeypatch.setattr(workbench, "get_store", lambda: store)
+    monkeypatch.setattr(workbench, "_injected_store", store)
     app = Starlette(routes=workbench.routes)
     with TestClient(app, base_url="http://127.0.0.1:2024", client=("127.0.0.1", 50000)) as client:
         assert client.get("/workbench").status_code == 200
@@ -28,7 +28,7 @@ def test_local_project_creation_duplicate_and_origin(tmp_path, monkeypatch):
 
 def test_bind_legacy_project_and_set_default_model(tmp_path, monkeypatch):
     store = InMemoryStore()
-    monkeypatch.setattr(workbench, "get_store", lambda: store)
+    monkeypatch.setattr(workbench, "_injected_store", store)
     store.put(("deep_loopminder", "projects"), "old", {
         "schema_version": 1, "project_id": "old", "goal": "Old", "constraints": [], "tasks": []
     })
@@ -50,7 +50,7 @@ def test_bind_legacy_project_and_set_default_model(tmp_path, monkeypatch):
 
 def test_failed_folder_binding_leaves_visible_recoverable_project(tmp_path, monkeypatch):
     store = InMemoryStore()
-    monkeypatch.setattr(workbench, "get_store", lambda: store)
+    monkeypatch.setattr(workbench, "_injected_store", store)
     original = workbench.ProjectFolders.bind
 
     async def failed_binding(self, project_id, directory):

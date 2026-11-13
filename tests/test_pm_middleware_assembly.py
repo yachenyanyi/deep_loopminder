@@ -6,16 +6,21 @@ from src.deep_agents.agents.pm_agent.agent import assemble_pm_user_middleware
 from src.middlewares.memory.pm_agent_memory import PMAgentMemoryMiddleware
 from src.middlewares.project_state import ProjectStateMiddleware
 from src.middlewares.approval import HumanDecisionRequestMiddleware
+from src.middlewares.agent.user_configurable import PMModelSelectionMiddleware
+from src.deep_agents.agents.pm_agent.discussion import PMDiscussionMiddleware
 
 
 def test_pm_assembly_resolves_reviewed_owner_middleware() -> None:
     middleware = assemble_pm_user_middleware(default_pm_profile())
 
-    assert len(middleware) == 5
-    assert isinstance(middleware[1], HumanDecisionRequestMiddleware)
-    assert isinstance(middleware[2], HumanInTheLoopMiddleware)
-    assert isinstance(middleware[3], ProjectStateMiddleware)
-    assert isinstance(middleware[4], PMAgentMemoryMiddleware)
+    # 固定提示词投影后依次是模型选择、商讨门禁、人工审批、项目状态与记忆。
+    assert len(middleware) == 7
+    assert isinstance(middleware[1], PMModelSelectionMiddleware)
+    assert isinstance(middleware[2], PMDiscussionMiddleware)
+    assert isinstance(middleware[3], HumanDecisionRequestMiddleware)
+    assert isinstance(middleware[4], HumanInTheLoopMiddleware)
+    assert isinstance(middleware[5], ProjectStateMiddleware)
+    assert isinstance(middleware[6], PMAgentMemoryMiddleware)
 
 
 def test_pm_profile_declares_pm_memory_policy_without_execution_capability() -> None:

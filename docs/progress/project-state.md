@@ -356,3 +356,97 @@ PM 专用 ACP 提示与固定提示中删除了“满足依赖即可直接派工
 记忆提交新增 pending 记录，工作台可核对并仅在全部目标文件及索引可证明保持原样时恢复；已写入、部分结果和旧格式不自动解除阻断。PM 的主要记忆读取和写入使用同一本机项目锁，调查 Agent 使用当前会话模型及相同读取保护。底层 `project_memory_filesystem_middleware` 是独立的低级装配接口，不应与 PM 记忆写入共用 Store；上述恢复及锁行为尚待独立统一测试，不代表跨系统原子事务。
 
 独立静态复审确认，项目内硬链接还可能让只读商讨读取项目外的同卷文件；执行前扫描不能消除扫描后目录或链接变化。等待 bwrap 主进程退出也不能直接证明全部 WSL 后代进程和异步 I/O 已结束。当前保持真实 Worker 开关关闭，真实目录模式与隔离副本的选择仍待用户决定。此前的 Clef 真实接口检查使用虚构材料，并不替代端到端测试。
+
+## 商讨模式设置（本轮实现）
+
+工作台新增“商讨模式”设置：按项目、按 Worker 提供方保存目标模式，存储在 `("deep_loopminder", "project_worker_modes")`，键为 `project_id/provider_id`。接口为 `/workbench/api/worker-modes`（GET 读取已保存值与适配器发现结果，POST 保存目标值）。
+
+模式列表只来自适配器回报：`ACPWorker.mode_state()` 读取会话 `config_options` 中 `id == "mode"` 的 select 项，未提供时返回 `available: False` 与原因，不推测任何模式。工作台在适配器未连接或未提供列表时显示状态并保留已保存值，不自动替换。
+
+切换走 `set_config("mode", …)`：`ACPWorker.apply_mode()` 在同一会话的模式锁内调用适配器，以响应中的 `config_options` 快照作为唯一确认来源，返回 `requested_mode`、`reported_mode`、`reported_mode_source`（`config_option_snapshot`）与 `confirmed_at`。快照中的实际模式与目标不一致时返回不匹配，商讨不开始。
+
+`set_mode` 的空响应不再写入本地模式状态；`current_mode_update` 事件单独记录到 `mode_events`，不参与切换确认，也不覆盖已确认的快照。这与适配器行为一致：Claude 0.94.0 在配置切换、权限回调与进入 plan 模式三处都会发出该事件，事件本身不含请求标识。
+
+商讨记录新增 `mode_record`，写入派工意图与执行关联，并随 Clef 判断记录一起保存；判断材料中剔除该字段，只判断商讨内容。项目默认值的后续修改不改写既有记录。
+
+已验证：`tests/test_worker_modes.py` 五项（快照确认、适配器回退、未提供模式拒绝、事件不覆盖快照、无模式项时报告不可用）通过；受影响套件 310 项通过。既有 3 项失败（`test_pm_middleware_assembly`、`test_pm_profile`、`test_pm_prompt`）在本轮改动前即存在，与模式功能无关，尚未处理。
+
+未完成：真实 Worker 仍受只读边界开关限制，商讨链路尚不能真实端到端运行；上下文压缩事件仍报告 `unknown`。
+
+## Windows 原生 Worker 与项目指纹（本轮）
+
+**运行方式改为 Windows 原生。** 新增 `src/middlewares/acp/pool.py`，`ProjectWorkerPool` 直接用本机 Node 启动 ACP 适配器，不再经过 `wsl_readonly.py` 的 WSL + bubblewrap 监督器。真实 Worker 因此不再被 `_WSL_BOUNDARY_AUDITED` 阻塞，`server.py` 中该开关与其启动分支已移除。
+
+**边界语义如实降级。** 商讨与审查阶段不再声称操作系统级只读，边界是"适配器自身的权限模式 + 宿主 grants 与审批回调"。`EnforcementFact` 的 surface 记为 `native_acp_permission_mode`，`WorkerRef.isolation` 由 `wsl-readonly` 改为 `native-readonly`。
+
+**可写商讨模式不再硬性拒绝。** 用户可以选适配器提供的任何模式，包括会写项目的模式。`READONLY_MODES` 不再当作准入闸门，只用于判断是否需要警示：`mode_can_write()` 对未知模式一律按可写处理。选择可写模式时，`_readonly_fact()` 把能力记为 `PARTIAL` 并在 `gap` 写明"该模式可以修改项目，商讨安全依赖确认与 Clef 门禁而非此边界"；记录同时保存 `readonly_capability` 与 `readonly_gap`。工作台在保存值与下拉选择两处都显示明确警示，说明商讨不会因此获得写入授权。派工与记录只要求存在已声明的边界机制，不再要求 `ENFORCEABLE`。
+
+**Clef 开发门禁保持独立。** 模式选择、边界能力、`mode_record` 都不参与门禁判断：`assess_discussion` 仍把 `mode_record` 从判断材料中剔除，`require_pass` 仍要求 decision 为 pass、输入版本一致、商讨轮次与水位一致。模式检查不构成开发授权。
+
+**模式应用时机。** 模式在 Worker 图 `execute` 节点内、调用 `worker.control(..., "ask", …)` 之前完成切换与核对，也就是在商讨内容离开宿主之前。放在这里而不是 `prepare`，是因为 `prepare` 有一个执行阶段分支会提前返回，且 `execute` 每个 Run 都会重新解析连接与 `ref`；放在发送前一个位置，新会话、续接会话和恢复的旧排队 Run 三种情况都被覆盖。适配器回报与目标不符时抛错，Run 不会进入发送阶段，因此 Worker 不会先按默认模式处理商讨内容。宿主在派工意图里先保存目标模式，实际回报由 `complete_dispatch` 补写到意图与执行关联；目标值不会被后续读取覆盖。`mode_record` 只保存适配器快照回报的值，模式检查仍不能替代双方确认与 Clef 门禁。
+
+**设置字段。** Worker 设置不再有 WSL 发行版字段，改为可选的 Node 可执行文件路径（`node`），运行环境目录要求存在 `node_modules/@agentclientprotocol/<adapter>/dist/index.js`。工作台对应输入框已替换。
+
+**商讨结论绑定项目指纹。** `DiscussionGate.evaluate` 在写入结论时计算 `project_content_digest` 并存入决策记录；Clef 返回后若项目内容已变化，结论降级为 `unknown`（`discussion_input_changed`）。`require_pass` 在开发前重新计算指纹并比较，不一致时以"项目内容在商讨后已变化，需重新商讨"拒绝，因此开发不会从与结论不同的项目内容开始。该指纹是变更检测，不是访问控制。
+
+**项目内容指纹。** `_directory_digest` 现在跳过 `.git`、`.venv`、`node_modules`、`__pycache__`、`dist`、`build` 等依赖与生成目录；硬链接按内容哈希并标记 `H`，不再直接报错；符号链接只记录目标字符串、不跟随；设备、管道等特殊文件只记录类型而不打开。该指纹是变更检测，不是访问控制。在本工作区实测通过，耗时约 0.1 秒且重复计算结果稳定（此前在 0.01 秒内即因 `.venv` 的 17955 个硬链接失败）。
+
+**测试契约修正。** 三项既有失败确认是断言落后于实际装配，已更新：`test_pm_profile` 与 `test_pm_middleware_assembly` 反映 `PMModelSelectionMiddleware`、`PMDiscussionMiddleware` 已在审查过的中间件列表中（装配后共 7 项）；`test_pm_prompt` 保留"不得出现具体提供方名称"的原意，提示词中两处 `Codex` 字样已删除，`begin_codex_review` 作为工具契约名豁免。
+
+**新增测试。** `test_worker_modes.py` 增加 3 项（按项目与提供方分别保存且只存目标值、非法提供方与空模式拒绝、只读模式白名单排除可写模式）；`test_project_folders.py` 增加 2 项（依赖目录变化不影响指纹且容忍其硬链接、符号链接不被跟随）。
+
+**验证范围。**（`--ignore=tests/test_pm_memory_integration.py`，该文件此前已确认是测试替身签名过时）。本轮未做真实 Worker 端到端运行：没有真实 ACP 适配器连接、没有真实模型调用、没有真实商讨到开发的切换验证。本轮未在本机执行完整套件；最终测试结果以子代理统一执行为准，不能用任何一次局部运行推断端到端闭环可用。
+
+**关于沙箱探索的结论（记录，不再继续）。** 已实测 `codex exec -s read-only` 在本机可拦截对工作目录与项目外路径的写入，`-s workspace-write` 允许工作目录写入并拒绝项目外写入，`codex doctor` 报告当前配置为 filesystem unrestricted / network enabled。这些只说明 Codex 自身模式在本机的局部表现，不能据此推断可以安全包装 Claude ACP 进程，也未被采用为项目方案。按用户决定，商讨阶段使用 `plan` 与权限规则，不再追求额外的操作系统级只读隔离。
+
+## 首轮复审后的修复
+
+**适配器回报落入业务记录。** 之前 `mode_record` 只写进 worker 线程自己的 checkpoint，工具的 `Command.update` 不含该字段，派工意图、执行关联与 Clef 记录里 `reported_mode` 永远是 None。现在 worker 图在发送后把回报写入 `("deep_loopminder", "project_run_modes", project_id)`，以 Run 编号为键；PM 侧按该 Run 读回，且只覆盖回报字段，目标值仍取本派工已保存的值，修改项目默认值不会改写历史。新增测试 `test_graph_persists_reported_mode_for_the_run` 会真正跑图并断言 Store 中的记录；已用变异验证（移除持久化代码后该测试失败）。
+
+**恢复核对不再伪造只读。** `/workbench/api/attach-reconciled-dispatch` 之前把边界能力硬编码为 ENFORCEABLE 且传 `mode_record=None`，既把可写商讨升级成只读保证，又会与已写入的执行关联冲突。现在按意图里记录的 `readonly_capability`/`readonly_gap` 原样重建，并带回原 `mode_record`。
+
+**边界事实不再冒充已确认模式。** `_readonly_fact` 之前永远收到 "adapter default"，导致每次都记为 PARTIAL。现在 `prepare` 启动连接时传入保存的模式；仍拿不到时记为 "unconfirmed"，此时不声明 `worker.readonly` 已强制。派工与记录改为只要求存在已声明的边界（ENFORCEABLE 或 PARTIAL），不再要求只读能力。
+
+**审批不再对编辑与执行自动放行。** `acp.edit`/`acp.execute` 之前落到通用分支判为 LOW 并被自动批准。现在归为中危，需要人工确认；`acp.read`/`acp.search` 仍为低危。Claude 的 `default` 模式会请求编辑，已从只读集合理移除，只有 `plan` 视为只读。
+
+**关闭核对恢复 fail-closed。** `release_execution` 在找不到连接时不再当作"已停止"，适配器进程退出码未知时同样报错，项目保持隔离等待核对。
+
+**项目指纹修正。** Windows junction 现在也读取并记录目标，改指目标会改变指纹；`.venv`、`node_modules`、`.git` 等在任何深度跳过，`dist`/`build` 等仅在嵌套层跳过，顶层保留，避免误跳过真实源码。
+
+**清理。** 删除无引用的 `wsl_readonly.py`；`server.py` 去掉重复常量与未用导入；`project_state/README.md` 中"WSL 只读未验证、Worker 不可用"的过时说明已更正。
+
+**已知限制（未修复，需后续决定）。** 商讨期间的写入会成为指纹基线，`require_pass` 只能发现商讨之后的改动。宿主流转重启后，先前拉起的适配器子进程是否存在无法证明，关闭路径现为 fail-closed（报无法确认），但进程本身的孤儿化风险仍未消除。Codex 的项目默认模式只作用于商讨，不作用于 `begin_codex_review`。连接缓存中已退出的连接对象不会被移除。
+
+## 第二轮复审后的修复
+
+**连接缓存不再串模式（阻断）。** 只读连接原先按 (provider, cwd, version) 缓存，边界事实在建连时算死，切换模式后复用的仍是旧事实——实测可把可写商讨记成 `ENFORCEABLE mode=plan`。现在缓存键包含模式，同模式复用、换模式必然新建连接；`observe_live` 与 `get_execution` 改为按前缀查找，切换开发时会清理该会话的全部模式连接。新增 `test_readonly_connection_is_not_reused_across_modes`，已用变异验证（去掉键里的模式后该测试失败）。
+
+**ACP 审批改为默认拒绝（阻断）。** 上一轮只把 `edit`/`execute` 判为中危，`delete`、`move`、`fetch`、`switch_mode`、`other` 仍落到通用低危并被自动放行，其中删除和移动可直接改项目，`switch_mode` 可绕过快照确认。现在按类别判断：只有 `read`、`search`、`think` 为低危，其余 ACP 种类（含未来新增种类）一律中危需人工确认。测试同时覆盖风险等级与 `YamlPolicyProvider` 的实际结果，不只测分析器返回值。
+
+**恢复核对不再因回报字段冲突。** `record_start` 的逐字段比对遇 `mode_record` 一侧为空时不视为冲突，并保留已有的更完整记录；两个都有值且不同仍然拒绝。新增测试覆盖"Run 已写入回报但 `complete_dispatch` 未执行"的恢复场景。
+
+**释放失败不再掩盖原错误。** `execute` 的 `finally` 现在吞掉释放异常，且只在释放成功时清除隔离；`release_execution` 关闭失败会保留连接条目以便重试关闭，不再先删后关。
+
+**审批分支去歧义。** 托管 Worker 恒有 approval 配置，只读阶段的 `AllowlistProvider` 分支实为不可达；保留但注明，避免被误读为"低危自动放行"或"静默拒绝"。
+
+**未修复（记录在案）。** 只读阶段若 `review` 回调为空，中危请求会被拒绝而不是"等待人工确认"——方向是保守的，但记录里不应写成"已要求人工确认"。恢复路径的 `surface` 仍硬编码为原生边界，仅在同版本记录内成立。`ephemeral_home` 参数在原生方案下已无作用。
+
+## 第三轮复审后的修复
+
+**执行连接键被循环变量覆盖（阻断，本轮引入的回归）。** `get_execution` 用 `for key in readonly_keys` 复用了执行键的变量名，循环后 `key` 变成只读键，执行连接被登记到错误位置；`release_execution` 与 `reconcile_shutdown` 都查不到它，项目会永久停在 `shutdown_unconfirmed`，人工核对同样失败。现已改用独立变量 `execution_key`。新增 `test_execution_is_registered_and_released_after_readonly_connections`，已变异验证（把键改回被污染的值后测试失败）。
+
+**切换开发时只关闭第一个只读连接。** 其余连接仅从字典移除，适配器进程和已加载会话继续存在。现在逐一检查在途请求并关闭全部，有在途请求时拒绝切换。
+
+**恢复核对的模式记录按字段比较。** 意图里只有 `requested_mode`，关联里是完整回报，原逻辑把两者都"有值且不同"视为冲突，恢复永久 409。现在逐字段比较，任一侧为空视为"尚未知"，两个都有值且不同仍拒绝；已有更完整的回报会被保留而不是丢弃。原先"保留更完整记录"的两行实际是死代码，已改成真正合并。
+
+**工作台模式列表为空。** `_live_mode_state` 只查模块级 bootstrap 连接，而该连接从不建会话，所以永远返回 `worker_has_no_session`，用户无法选择模式。现在同时检查项目连接池里的只读与执行连接，取第一个适配器真正报告了模式选项的会话。
+
+**商讨预检传入保存模式。** `begin_discussion` 建只读连接时不传模式，导致派工意图与执行关联的边界永远写 `mode=unconfirmed`。现在按项目保存值建立连接。
+
+**释放失败留下原因。** 隔离记录新增 `reason` 字段，工作台可据此排障；仍不覆盖原始异常。
+
+**配置不能绕过默认拒绝。** `tool_config` 把某个 `acp.*` 工具设为 disabled 时，原先会判低危自动放行。现在 ACP 工具不受该开关影响。
+
+**模式切换后关闭旧连接。** 保存模式变化时关闭同项目其他模式的空闲只读连接，避免每次换模式多一个常驻适配器进程；有在途请求的保留。
+
+**未修复（记录在案）。** 只读阶段无人审回调时中危请求被直接拒绝而非等待确认；`ephemeral_home` 参数已无作用；`write_file`/`shell` 的通用低危判定属既有策略，未在本轮评估。

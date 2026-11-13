@@ -1,5 +1,15 @@
 # 项目进度索引
 
+- [PM 协作开发链路](../../../re_build-pm-continue/docs/progress/PM协作开发链路.md)：商讨模式、Windows 原生 Worker、项目指纹与 Clef 门禁的实施状态、验证证据与已知限制。
+
+- [踩坑记录](踩坑记录.md)：2026-11-13，PM 端到端实测撞上的全部坑（代理轮询、worker 池死锁、dev 重启失配、路由键校验、审查报告解析等）及排查方法论。
+
+- [人工决策恢复闭环](PM协作开发链路.md)：2026-11-14，官方 interrupt/resume 接通工作台（pending-decision/submit-decision），真实端到端验证通过；dev 重启后检查点丢失有明确 409 反馈，绝不伪装恢复。
+
+- [官方文档对照审计](官方文档对照审计-20261113.md)：2026-11-13，以 docs.langchain.com 为准逐项对照 PM 实现；10 项做对、3 项官方更优（HITL resume 链路、子代理通知/webhook、join_stream）、1 项 checkpointer 字段疑似无效待实测。
+
+- [代码审查](代码审查-20261114.md)：2026-11-14，只读审查：execution-binding 扫描重复 8 处、middleware→UI 反向依赖、死代码清单、复杂度热点与 Top 5 修复排序。
+
 - [ACP 子代理工具优化](acp-tools.md)：2026-10-13，工具优化完成；18 项测试与真实排队对话专项通过。
 - [Claude ACP 审查实战](claude-review-20261013.md)：2026-10-13，两个真实会话、多种协作操作通过；审查误报已核对，留下一条可复现的状态查询边界。
 

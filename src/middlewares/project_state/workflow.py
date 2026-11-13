@@ -32,6 +32,28 @@ from .tools import TransitionFacts
 from .transitions import DependencyReadiness, ProjectStateError, dependency_readiness
 
 
+def parse_review_report(text):
+    """Read a reviewer's structured verdict even when it is wrapped in prose.
+
+    Reviewers reliably emit the required JSON object but often prefix it with a
+    sentence ("I will only inspect ..."). Rejecting that on ``json.loads`` threw
+    away a real verdict and downgraded the whole review to ``unknown``, so a
+    completed fail became indistinguishable from no review at all. Only the
+    object is parsed; nothing is inferred from the surrounding prose, and every
+    field is still checked by the caller.
+    """
+    if not isinstance(text, str):
+        raise TypeError("review result must be text")
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("no JSON object in review result")
+    return json.loads(text[start : end + 1])
+
+
 class ProjectWorkflow:
     """只保存业务关联与不可变证据，不维护另一份Run状态或调度队列。"""
 
@@ -113,6 +135,14 @@ class ProjectWorkflow:
         if task.status in {TaskStatus.REVIEW, TaskStatus.TESTING}:
             allowed_roles.update({"reviewer", "tester"})
         if not task.owner_role or (role is not None and role not in allowed_roles):
+            if role in {"reviewer", "tester"} and task.status not in {TaskStatus.REVIEW, TaskStatus.TESTING}:
+                # The live run hit exactly this: the rejection named the role
+                # rule, the agent could not tell that the missing step was a
+                # status transition, and the review silently never happened.
+                raise ValueError(
+                    f"reviewer/tester 只能在 review 或 testing 状态派出，"
+                    f"当前 {task.status.value}；请先用 transition_task 推进状态"
+                )
             raise ValueError("Worker角色必须与任务owner_role一致")
         await self.input_version(snapshot, task)
         brief = await self.artifacts.get(
@@ -152,15 +182,19 @@ class ProjectWorkflow:
 
     async def begin_dispatch(self, project_id, task_id, *, owner_thread, operation, decision_id=None,
                              worker_agent_id=None, phase="execution", readonly_enforcement=None,
-                             message_digest=None, discussion_question=None, expected_review_subject=None):
+                             message_digest=None, discussion_question=None, expected_review_subject=None,
+                             mode_record=None):
         """Persist a dispatch intent before contacting Agent Server.
 
         The caller must serialize project writers. A pending intent is deliberately
         not retried: the remote run may exist even when its response was lost.
         """
+        # A discussion may run under a writable mode the user chose. What is
+        # still required is a declared boundary: the phase must be bounded by
+        # the adapter's mode and host checks, not left undefined.
         readonly_authorized = (readonly_enforcement is not None
-                               and readonly_enforcement.capability is EnforcementCapability.ENFORCEABLE
-                               and "worker.readonly" in readonly_enforcement.enforced_capabilities)
+                               and readonly_enforcement.capability
+                               in {EnforcementCapability.ENFORCEABLE, EnforcementCapability.PARTIAL})
         if (operation not in {"spawn_agent", "followup_task"} or not owner_thread
                 or phase not in {"execution", "discussion", "review"}
                 or not message_digest
@@ -198,9 +232,13 @@ class ProjectWorkflow:
             "message_digest": message_digest,
             "phase": phase,
             "readonly_mechanism": readonly_enforcement.mechanism if readonly_enforcement else None,
+            "readonly_capability": (readonly_enforcement.capability.value
+                                    if readonly_enforcement else None),
+            "readonly_gap": readonly_enforcement.gap if readonly_enforcement else None,
             "discussion_question": discussion_question,
             "expected_review_subject": expected_review_subject,
             "worker_agent_id": worker_agent_id,
+            "mode_record": dict(mode_record) if mode_record else None,
             "input_version": await self.input_version(snapshot, task), "status": "pending",
             "intent_id": uuid.uuid4().hex,
         }
@@ -208,8 +246,13 @@ class ProjectWorkflow:
         await self.store.aput(namespace, task_id, value, index=False)
         return value
 
-    async def complete_dispatch(self, project_id, task_id, *, agent_id, run_id):
-        """Record the official Run only after its project association succeeds."""
+    async def complete_dispatch(self, project_id, task_id, *, agent_id, run_id, mode_record=None):
+        """Record the official Run only after its project association succeeds.
+
+        The adapter-reported mode is known only after the worker graph ran, so
+        it is filled in here; the requested target was already persisted with
+        the dispatch intent and is never rewritten.
+        """
         namespace = ("deep_loopminder", "project_dispatch_intents", project_id)
         item = await self.store.aget(namespace, task_id)
         if not item or item.value.get("status") != "pending" or not agent_id or not run_id:
@@ -230,6 +273,16 @@ class ProjectWorkflow:
         confirmed = {**item.value, "status": "confirmed", "agent_id": agent_id, "run_id": run_id}
         if claimed:
             confirmed["claimed_run_id"] = claimed
+        if mode_record is not None:
+            confirmed["mode_record"] = dict(mode_record)
+            binding_item = await self.store.aget(
+                ("deep_loopminder", "project_execution_refs", project_id), run_id
+            )
+            if binding_item is not None:
+                await self.store.aput(
+                    ("deep_loopminder", "project_execution_refs", project_id), run_id,
+                    {**binding_item.value, "mode_record": dict(mode_record)}, index=False,
+                )
         await self.store.aput((*namespace, "history"), item.value["intent_id"], confirmed, index=False)
         await self.store.aput(namespace, task_id, confirmed, index=False)
 
@@ -250,16 +303,17 @@ class ProjectWorkflow:
         dispatch_id: str | None = None,
         expected_review_subject: str | None = None,
         discussion_question: str | None = None,
+        mode_record: dict | None = None,
     ):
         """关联官方工具创建的Run；重复相同关联不增加任务引用。"""
         if phase not in {"execution", "discussion", "review"}:
             raise ValueError("未知的Worker阶段")
         if phase in {"discussion", "review"} and (
             readonly_enforcement is None
-            or readonly_enforcement.capability is not EnforcementCapability.ENFORCEABLE
-            or "worker.readonly" not in readonly_enforcement.enforced_capabilities
+            or readonly_enforcement.capability
+            not in {EnforcementCapability.ENFORCEABLE, EnforcementCapability.PARTIAL}
         ):
-            raise ValueError("商讨和审查需要可信的只读执行能力")
+            raise ValueError("商讨和审查需要已声明的执行边界")
         snapshot, task = await self.task(project_id, task_id)
         review_subject = None
         if phase == "review":
@@ -285,15 +339,51 @@ class ProjectWorkflow:
             "phase": phase,
             "dispatch_id": dispatch_id,
             "readonly_mechanism": readonly_enforcement.mechanism if readonly_enforcement else None,
+            "readonly_capability": (readonly_enforcement.capability.value
+                                    if readonly_enforcement else None),
+            "readonly_gap": readonly_enforcement.gap if readonly_enforcement else None,
             "review_subject": review_subject,
             "discussion_question": discussion_question,
+            "mode_record": dict(mode_record) if mode_record else None,
         }
+        def conflicts(key):
+            """Report a real disagreement between the two records.
+
+            The mode record grows over the Run's life: the dispatch intent only
+            knows the requested target, while the binding later gains what the
+            adapter reported. Per-field, an absent value on either side is
+            "not yet known", not a disagreement; two different present values
+            still conflict.
+            """
+            stored = previous.value.get(key, "execution" if key == "phase" else None)
+            incoming = value[key]
+            if key == "mode_record":
+                if stored is None or incoming is None:
+                    return False
+                for field in ("requested_mode", "reported_mode",
+                              "reported_mode_source", "confirmed_at"):
+                    left, right = stored.get(field), incoming.get(field)
+                    if left is not None and right is not None and left != right:
+                        return True
+                return False
+            return stored != incoming
+
         if previous and any(
-            previous.value.get(key, "execution" if key == "phase" else None) != value[key]
-            for key in value
-            if key != "worker_context_version"
+            conflicts(key) for key in value if key != "worker_context_version"
         ):
             raise ValueError("该Run已经关联另一任务或另一版输入")
+        if previous:
+            # The existing binding may already carry fields this record lacks
+            # (the adapter's report is written after the dispatch). Keep them
+            # rather than dropping them with the discarded value.
+            stored_mode = previous.value.get("mode_record")
+            if stored_mode:
+                merged = {**(stored_mode or {})}
+                merged.update({key: item for key, item in (value.get("mode_record") or {}).items()
+                               if item is not None})
+                if merged != stored_mode:
+                    await self.store.aput(namespace, run_id,
+                                          {**previous.value, "mode_record": merged}, index=False)
         if not previous:
             await self.store.aput(namespace, run_id, value, index=False)
         # 派工本身就是分配动作；只在官方Run确认创建后推进，避免假进行中。
@@ -437,7 +527,7 @@ class ProjectWorkflow:
         if result.get("status") != "success" or result.get("run_id") != review_run_id:
             raise ValueError("Codex 审查 Run 未成功完成")
         try:
-            report = json.loads(result["result"])
+            report = parse_review_report(result["result"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Codex 审查未返回有效的结构化结论") from exc
         if (not isinstance(report, dict) or report.get("decision") not in {"pass", "fail", "unknown"}
@@ -497,7 +587,7 @@ class ProjectWorkflow:
             report_result = json.loads(artifact["content"])
             if not isinstance(report_result, dict):
                 raise ValueError("invalid review result")
-            report = json.loads(report_result["result"])
+            report = parse_review_report(report_result["result"])
             if (not isinstance(report, dict) or report_result.get("status") != "success" or report.get("decision") != value.get("decision")
                     or report.get("subject") != value.get("subject")):
                 raise ValueError("invalid review result")

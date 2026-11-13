@@ -12,7 +12,9 @@ from .commands import (
     CreateTaskCommand,
     ReplaceTaskBriefCommand,
     TransitionTaskCommand,
+    UpdateTaskCapabilitiesCommand,
     UpdateTaskDependenciesCommand,
+    UpdateTaskOwnerRoleCommand,
 )
 from .context import render_project_context
 from .models import ProjectSnapshot, Task, TaskStatus
@@ -41,8 +43,22 @@ class TaskDraft(BaseModel):
     title: str = Field(min_length=1)
     task_brief_ref: str = Field(min_length=1)
     acceptance_criteria: list[str] = Field(min_length=1)
-    owner_role: str | None = None
-    required_capabilities: list[str] = Field(default_factory=list)
+    # Routing identifier only; a display name such as "开发负责人" routes to no
+    # worker and would leave the task permanently blocked.
+    owner_role: Literal["developer", "reviewer", "tester", "researcher"] | None = None
+    # Exact-match routing requirements drawn from the provider capability
+    # vocabulary; free text here makes the task unroutable.
+    required_capabilities: list[
+        Literal[
+            "repo.read",
+            "repo.write",
+            "files.read",
+            "files.write",
+            "shell.execute",
+            "test.execute",
+            "web.search",
+        ]
+    ] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
     priority: int = 0
 
@@ -117,6 +133,8 @@ def make_project_command(
             "update_task_brief",
             "transition_task",
             "update_task_dependencies",
+            "update_task_owner_role",
+            "update_task_capabilities",
         ],
         runtime: ToolRuntime,
         goal: str | None = None,
@@ -126,6 +144,18 @@ def make_project_command(
         target_status: TaskStatus | None = None,
         task_brief_ref: str | None = None,
         dependencies: list[str] | None = None,
+        owner_role: Literal["developer", "reviewer", "tester", "researcher"] | None = None,
+        required_capabilities: list[
+            Literal[
+                "repo.read",
+                "repo.write",
+                "files.read",
+                "files.write",
+                "shell.execute",
+                "test.execute",
+                "web.search",
+            ]
+        ] | None = None,
     ) -> dict:
         """Mutate the current project using deterministic rules.
 
@@ -135,8 +165,14 @@ def make_project_command(
         transition_task requires task_id/target_status. passed/approved require
         trusted host evidence, never self-reported approval. Runtime binds scope.
         update_task_dependencies requires task_id/dependencies and only edits unexecuted backlog/ready tasks,
-        resetting them to backlog. dependencies always wait for DONE; do not make a review depend on its
-        已执行但尚未done的前置依赖不能删除，不能用删边绕过验收；protected_dependencies列出受保护的边。
+        resetting them to backlog. Cannot drop an active dependency of an executed, unfinished task.
+        create_task's owner_role and update_task_owner_role take routing identifiers only
+        (developer/reviewer/tester/researcher), never display names; update_task_owner_role
+        corrects an unexecuted task whose role is wrong.
+        required_capabilities draws only on the provider vocabulary
+        (repo.read/repo.write/files.read/files.write/shell.execute/test.execute/web.search);
+        update_task_capabilities corrects an unexecuted task whose capabilities are unanswerable.
+        dependencies always wait for DONE; do not make a review depend on its
         own subject being DONE. Use spawn_agent with same task_id/new task_name for review/testing.
         On rejection read controls; missing trusted evidence requires host/human action, not status guessing.
         """
@@ -200,6 +236,26 @@ def make_project_command(
                 candidate = apply_project_command(
                     snapshot,
                     ReplaceTaskBriefCommand(project_id, task_id, task_brief_ref),
+                )
+            elif action == "update_task_owner_role":
+                if task_id is None or owner_role is None:
+                    raise ValueError(
+                        "update_task_owner_role需要task_id和owner_role（developer/reviewer/tester/researcher）"
+                    )
+                candidate = apply_project_command(
+                    snapshot,
+                    UpdateTaskOwnerRoleCommand(project_id, task_id, owner_role),
+                )
+            elif action == "update_task_capabilities":
+                if task_id is None or required_capabilities is None:
+                    raise ValueError(
+                        "update_task_capabilities需要task_id和required_capabilities（可用repo.read/repo.write/files.read/files.write/shell.execute/test.execute/web.search）"
+                    )
+                candidate = apply_project_command(
+                    snapshot,
+                    UpdateTaskCapabilitiesCommand(
+                        project_id, task_id, frozenset(required_capabilities)
+                    ),
                 )
             elif action == "update_task_dependencies":
                 if task_id is None or dependencies is None:

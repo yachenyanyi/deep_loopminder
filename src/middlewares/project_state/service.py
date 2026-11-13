@@ -14,9 +14,17 @@ from src.middlewares.project_state.commands import (
     ReplaceTaskBriefCommand,
     RestoreTaskDependenciesCommand,
     TransitionTaskCommand,
+    UpdateTaskCapabilitiesCommand,
     UpdateTaskDependenciesCommand,
+    UpdateTaskOwnerRoleCommand,
 )
-from src.middlewares.project_state.models import ProjectSnapshot, Task, TaskStatus
+from src.middlewares.project_state.models import (
+    TASK_CAPABILITIES,
+    TASK_ROLES,
+    ProjectSnapshot,
+    Task,
+    TaskStatus,
+)
 from src.middlewares.project_state.transitions import (
     ProjectStateError,
     TransitionDecision,
@@ -31,6 +39,8 @@ ProjectCommand = (
     | AttachTaskEvidenceCommand
     | ReplaceTaskBriefCommand
     | UpdateTaskDependenciesCommand
+    | UpdateTaskCapabilitiesCommand
+    | UpdateTaskOwnerRoleCommand
     | RestoreTaskDependenciesCommand
 )
 
@@ -107,6 +117,39 @@ def apply_project_command(
         )
         validate_dependency_graph(candidate)
         return candidate
+    if isinstance(command, UpdateTaskCapabilitiesCommand):
+        task = _task(snapshot, command.task_id)
+        unknown = sorted(command.required_capabilities - TASK_CAPABILITIES)
+        if unknown:
+            raise ValueError(
+                "能力要求必须是负责人可报告的能力标识：" + ", ".join(sorted(TASK_CAPABILITIES))
+            )
+        if task.status not in {TaskStatus.BACKLOG, TaskStatus.READY} or task.execution_refs:
+            raise ProjectStateError(
+                "capabilities_edit_locked",
+                "只能更正尚未执行任务的能力要求；执行历史归属实际运行的负责人",
+                "request_human_decision",
+            )
+        return _replace_task(
+            snapshot,
+            task.task_id,
+            replace(task, required_capabilities=command.required_capabilities),
+        )
+    if isinstance(command, UpdateTaskOwnerRoleCommand):
+        task = _task(snapshot, command.task_id)
+        if command.owner_role not in TASK_ROLES:
+            raise ValueError(
+                "负责人角色必须是路由标识之一：" + ", ".join(sorted(TASK_ROLES))
+            )
+        if task.status not in {TaskStatus.BACKLOG, TaskStatus.READY} or task.execution_refs:
+            raise ProjectStateError(
+                "owner_role_edit_locked",
+                "只能更正尚未执行任务的负责人角色；执行历史归属实际运行的负责人",
+                "request_human_decision",
+            )
+        return _replace_task(
+            snapshot, task.task_id, replace(task, owner_role=command.owner_role)
+        )
     if isinstance(command, ReplaceTaskBriefCommand):
         task = _task(snapshot, command.task_id)
         if task.status.value in {"done", "approved"}:

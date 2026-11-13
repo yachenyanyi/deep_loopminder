@@ -23,6 +23,7 @@ from src.middlewares.agent.model_catalog import WindowsCredentials
 from src.middlewares.project_state.artifacts import content_hash
 from src.middlewares.project_state.folders import ProjectFolders
 from src.middlewares.project_state.tools import project_scope, require_writer
+from src.middlewares.project_state.worker_modes import ProjectWorkerModes
 from src.middlewares.project_state.workflow import ProjectWorkflow
 from src.middlewares.trajectory.middleware import TrajectoryRecorder
 from src.runtime.routing import RoleRequirement, route_worker
@@ -73,6 +74,9 @@ class DiscussionGate:
         folder = await ProjectFolders(self.store).verified_binding(project_id)
         version = await self.workflow.input_version(snapshot, task)
         watermark = await self._discussion_watermark(project_id, task, version)
+        # Bind the conclusion to the project content it was reached against.
+        # The digest is a change detector; it is not an access control.
+        content_digest = await ProjectFolders(self.store).content_digest(project_id)
         artifact = await self.workflow.artifacts.get(
             project_id, worker_result_ref, task_id=task_id, kind="worker_result"
         )
@@ -128,10 +132,15 @@ class DiscussionGate:
                     or turn_result.get("run_id") != execution_id):
                 raise ValueError("商讨结果的 Run 来源不一致")
             turns.append({"run_id": execution_id, "result_ref": reference,
-                          "question": entry.get("discussion_question"), "result": turn_result.get("result")})
+                          "question": entry.get("discussion_question"), "result": turn_result.get("result"),
+                          "mode_record": entry.get("mode_record")})
         if (not turns or turns[-1]["result_ref"] != worker_result_ref
                 or turns[-1]["run_id"] != last_discussion_run_id):
             raise ValueError("必须使用负责人当前输入下最新的商讨结果")
+        # The recorded mode is what the adapter reported for this very turn;
+        # the saved project default may have changed since, which must not
+        # rewrite what this discussion actually ran under.
+        mode_record = turns[-1]["mode_record"]
         pm_confirmation = TrajectoryRecorder.clean_for_judgment(pm_confirmation)
         try:
             materials = await self.workflow.artifacts.worker_materials(project_id, brief, require_complete=True)
@@ -144,7 +153,10 @@ class DiscussionGate:
                      "brief": brief["content"],
                      "materials": materials},
             "pm_confirmation": pm_confirmation,
-            "worker_discussion": turns,
+            # Only the discussion content is judged; host mode bookkeeping is
+            # recorded separately and must not influence the decision.
+            "worker_discussion": [{key: value for key, value in turn.items() if key != "mode_record"}
+                                  for turn in turns],
         })
         decision = (await judge_discussion(state, account_id=account_id, token=token, client=client)
                     if materials is not None else ClefDecision("unknown", error="task_materials_incomplete"))
@@ -159,6 +171,7 @@ class DiscussionGate:
             or await self._discussion_watermark(project_id, current, version) != watermark
             or current_source is None
             or current_source.value.get("result_ref") != worker_result_ref
+            or await ProjectFolders(self.store).content_digest(project_id) != content_digest
         ):
             decision = ClefDecision("unknown", error="discussion_input_changed")
         for turn in turns:
@@ -179,7 +192,9 @@ class DiscussionGate:
             "worker_result_ref": worker_result_ref,
             "discussion_turn_refs": [turn["result_ref"] for turn in turns],
             "discussion_watermark": watermark,
+            "project_content_digest": content_digest,
             "pm_confirmation": pm_confirmation,
+            "mode_record": mode_record,
             "decision": decision.outcome,
             "answer": decision.answer,
             "error": decision.error,
@@ -218,6 +233,10 @@ class DiscussionGate:
                     and binding.get("input_version") == value.get("input_version")
                     and binding.get("phase") == "discussion"):
                 discussion_refs.append(binding.get("result_ref"))
+        # Development must start from the project content the conclusion was
+        # reached against. A changed project invalidates the pass.
+        if value.get("project_content_digest") != await ProjectFolders(self.store).content_digest(project_id):
+            raise ValueError("项目内容在商讨后已变化，需重新商讨")
         if (
             value.get("decision") != "pass"
             or value.get("worker_agent_id") != worker_agent_id
@@ -281,7 +300,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
                         and binding.get("phase") == "discussion" and binding.get("readonly_mechanism")
                         and agent_id in tracked and tracked[agent_id].get("agent_name") == "developer"):
                     worker_ref = binding.get("worker_ref") or {}
-                    if worker_ref.get("isolation") != "wsl-readonly" or not worker_ref.get("provider_id"):
+                    if worker_ref.get("isolation") != "native-readonly" or not worker_ref.get("provider_id"):
                         return {"ok": False, "error": {"code": "discussion_session_not_ready",
                                                         "message": "负责人会话尚未完成来源确认，请先领取结果。",
                                                         "next_action": "wait_agent"}}
@@ -293,16 +312,28 @@ class PMDiscussionMiddleware(AgentMiddleware):
             decision = route_worker(RoleRequirement("developer", task.required_capabilities), candidates)
             if decision.provider_id is None or acp_server._project_workers is None:
                 return {"ok": False, "error": {"code": "developer_unavailable", "message": "没有满足任务要求的负责人。"}}
+            # Open the connection under the mode this project saved, so the
+            # boundary fact names the real mode instead of "unconfirmed".
+            saved_mode = await ProjectWorkerModes(runtime.store).get(project_id, decision.provider_id)
+            saved_mode_id = (saved_mode or {}).get("mode_id")
             try:
-                worker = await acp_server._project_workers.get_readonly(decision.provider_id, folder["directory"])
+                worker = await acp_server._project_workers.get_readonly(
+                    decision.provider_id, folder["directory"], mode_id=saved_mode_id
+                )
                 if os.path.normcase(worker.cwd) != os.path.normcase(folder["directory"]):
                     raise ValueError("项目目录身份已变化")
                 enforcement = worker.readonly_enforcement
                 if enforcement is None:
-                    raise ValueError("只读能力未得到宿主验证")
+                    raise ValueError("只读边界未得到宿主声明")
             except (ValueError, OSError, RuntimeError) as exc:
                 return {"ok": False, "error": {"code": "readonly_enforcement_unavailable", "message": str(exc),
                                                 "next_action": "configure_verified_readonly_worker"}}
+            # The mode itself is applied by the worker graph before the first
+            # discussion prompt is sent; the host only records what the
+            # adapter reported. Record the saved target so the record can show
+            # a requested mode even when the adapter offered none.
+            mode_record = {"requested_mode": saved_mode_id,
+                           "reported_mode": None, "reported_mode_source": None, "confirmed_at": None}
             operation = "followup_task" if target else "spawn_agent"
             message = ("请作为开发负责人，与 PM 平等商讨目标、范围、可行方案、约束和风险。"
                        "本轮只讨论和调查，不实施或改变项目；有不确定之处请明确提出。\n"
@@ -317,6 +348,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
                 project_id, task_id, owner_thread=owner, operation=operation,
                 worker_agent_id=target, phase="discussion", readonly_enforcement=enforcement,
                 discussion_question=question, message_digest=content_hash(message),
+                mode_record=mode_record,
             )
             configurable = {**runtime.config.get("configurable", {}), "project_id": project_id,
                             "task_id": task_id, "required_capabilities": sorted(task.required_capabilities),
@@ -338,10 +370,28 @@ class PMDiscussionMiddleware(AgentMiddleware):
             if len(agents) != 1:
                 raise RuntimeError("商讨 Run 返回了无法核对的会话信息")
             agent_id, run = next(iter(agents.items()))
+            # Read back what the worker graph persisted under this Run. The
+            # tool result carries only async task state, so the adapter's
+            # reported mode is fetched from the store the graph wrote to.
+            item = await runtime.store.aget(
+                ("deep_loopminder", "project_run_modes", project_id), run["run_id"]
+            )
+            if item is not None:
+                stored = item.value
+                # The requested value stays the one persisted with this
+                # dispatch; only the reported fields come from the adapter.
+                mode_record = {
+                    "requested_mode": mode_record["requested_mode"],
+                    "reported_mode": stored.get("reported_mode"),
+                    "reported_mode_source": stored.get("reported_mode_source"),
+                    "confirmed_at": stored.get("confirmed_at"),
+                }
             await workflow.record_start(project_id, task_id, owner, agent_id, run["run_id"],
                                         phase="discussion", readonly_enforcement=enforcement,
-                                        dispatch_id=intent["intent_id"], discussion_question=question)
-            await workflow.complete_dispatch(project_id, task_id, agent_id=agent_id, run_id=run["run_id"])
+                                        dispatch_id=intent["intent_id"], discussion_question=question,
+                                        mode_record=mode_record)
+            await workflow.complete_dispatch(project_id, task_id, agent_id=agent_id, run_id=run["run_id"],
+                                             mode_record=mode_record)
             return result
 
         @tool
@@ -443,6 +493,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
             await workflow.complete_dispatch(project_id, task_id, agent_id=agent_id, run_id=run["run_id"])
             return result
 
+
         @tool
         async def recover_dispatched_session(task_id: str, runtime: ToolRuntime) -> dict | Command:
             """Restore a verified existing Run to this PM thread without creating a new Run."""
@@ -483,7 +534,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
                     or ref.get("role") not in acp._specs
                     or (intent.get("phase") == "review" and ref.get("role") != "reviewer")
                     or (intent.get("phase") in {"discussion", "execution"} and ref.get("role") != "developer")
-                    or ref.get("isolation") != "wsl-readonly"
+                    or ref.get("isolation") != "native-readonly"
                     or not isinstance(ref.get("cwd"), str)
                     or os.path.normcase(ref["cwd"]) != os.path.normcase(folder["directory"])
                     or not ref.get("session_id") or not isinstance(run.get("status"), str)

@@ -18,6 +18,8 @@ def test_pm_profile_declares_reviewed_owner_requirements() -> None:
     assert profile.approval_policy == "human_boundary"
     assert profile.memory_policy == "pm_project_orientation_and_recall"
     assert profile.middleware_profile == (
+        "PMModelSelectionMiddleware",
+        "PMDiscussionMiddleware",
         "HumanDecisionRequestMiddleware",
         "human_decision_hitl_middleware",
         "ProjectStateMiddleware",

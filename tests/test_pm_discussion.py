@@ -47,10 +47,51 @@ def test_decision_uses_registered_result_and_expires_on_input_change(tmp_path):
     asyncio.run(scenario())
 
 
+def test_pass_is_invalidated_when_project_content_changed(tmp_path):
+    """The conclusion is bound to project content; editing it after the fact invalidates the pass."""
+    async def scenario():
+        store = InMemoryStore()
+        gate = DiscussionGate(store)
+        await ProjectFolders(store).bind("project", str(tmp_path))
+        (tmp_path / "main.py").write_text("print('before')\n", encoding="utf-8")
+        brief = await gate.workflow.artifacts.create("project", "task", "task_brief", "# Goal\nDeliver")
+        task = Task("task", "Feature", TaskStatus.READY, "developer", frozenset(), frozenset(),
+                    ("Feature works",), artifact_refs=(brief["reference"],))
+        await ProjectStore(store).save(ProjectSnapshot("project", "Goal", (), (task,)))
+        enforcement = EnforcementFact("test_sandbox", EnforcementCapability.ENFORCEABLE,
+                                      frozenset({"worker.readonly"}), mechanism="test fixture")
+        await gate.workflow.record_start("project", "task", "parent", "worker", "run",
+                                         phase="discussion", readonly_enforcement=enforcement)
+        result_ref = await gate.workflow.record_result(
+            "project", "parent",
+            {"agent_id": "worker", "run_id": "run", "status": "success", "result": "Agreed."},
+        )
+
+        async def handler(request):
+            return httpx.Response(200, json={"success": True,
+                                             "result": {"answers": {"development_readiness": {"choice": "pass"}}}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            decision = await gate.evaluate("project", "task", owner_thread="parent",
+                                           worker_result_ref=result_ref, pm_confirmation="Agreed",
+                                           account_id="abc123", token="secret", client=client)
+        assert decision["decision"] == "pass"
+        assert decision["project_content_digest"]
+        passed = await gate.require_pass("project", "task", worker_agent_id="worker")
+        assert passed["decision_id"] == decision["decision_id"]
+
+        # 商讨之后改动项目内容：通过结论必须失效，且原因明确。
+        (tmp_path / "main.py").write_text("print('after')\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="项目内容在商讨后已变化"):
+            await gate.require_pass("project", "task", worker_agent_id="worker")
+
+    asyncio.run(scenario())
+
+
 def test_pending_dispatch_blocks_retry_until_run_is_bound():
     async def scenario():
-        from unittest.mock import patch
         from types import SimpleNamespace
+        from unittest.mock import patch
 
         store = InMemoryStore()
         workflow = ProjectWorkflow(store)
@@ -112,7 +153,7 @@ def test_readonly_intent_binds_message_run_and_current_input(tmp_path, monkeypat
             readonly_enforcement = enforcement
 
             async def new(self, **identity):
-                return WorkerRef("developer", "native", identity["project_id"], identity["task_id"], identity["thread_id"], identity["role"], self.cwd, isolation="wsl-readonly")
+                return WorkerRef("developer", "native", identity["project_id"], identity["task_id"], identity["thread_id"], identity["role"], self.cwd, isolation="native-readonly")
 
             async def control(self, ref, action, payload, *, on_update):
                 calls.append(payload["text"])
@@ -123,7 +164,7 @@ def test_readonly_intent_binds_message_run_and_current_input(tmp_path, monkeypat
         class Pool:
             count = 0
 
-            async def get_readonly(self, *args):
+            async def get_readonly(self, *args, **kwargs):
                 self.count += 1
                 if change_during_connect and self.count == 2:
                     await ProjectStore(store).save(ProjectSnapshot("p", "changed", (), (task,)))

@@ -30,7 +30,9 @@ def test_stable_prompt_excludes_volatile_runtime_and_provider_mapping() -> None:
         "thread_id",
         "checkpoint_id",
         "provider_id",
-        "claude",
-        "codex",
     ):
         assert volatile_fact not in prompt
+    # 工具名 begin_codex_review 属于固定契约，不是提供方映射；剔除后
+    # 提示词不应再出现具体提供方名称或选择规则。
+    for provider in ("claude", "codex"):
+        assert provider not in prompt.replace("begin_codex_review", "")

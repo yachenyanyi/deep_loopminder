@@ -49,6 +49,8 @@ async def generate_pm_store():
     """通过官方自定义 Store 生命周期，为 Server 和所有图提供同一个存储。"""
     uri = os.getenv("LANGGRAPH_POSTGRES_URI")
     if not uri:
+        # 检查点工厂（persistence/checkpointer.py）在同样条件下回退内存并打印
+        # 同一条警告；这里保持静默，避免启动日志出现两条重复提示。
         yield InMemoryStore()
         return
     # 官方同步 PostgresStore 也实现异步 BaseStore 接口，通过其线程执行器兼容

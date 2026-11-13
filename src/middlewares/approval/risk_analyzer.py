@@ -6,6 +6,12 @@
 from src.middlewares.approval.decision import RiskLevel
 
 
+# ACP tool kinds that only observe. Every other kind (edit, delete, move,
+# execute, fetch, switch_mode, other, and any future kind) needs approval:
+# an unknown kind is treated as able to change something.
+ACP_READ_ONLY_KINDS = frozenset({"read", "search", "think"})
+
+
 class ApprovalConfig:
     """审批配置（简化版本，用于 RiskAnalyzer）
 
@@ -131,10 +137,19 @@ class RiskAnalyzer:
         Returns:
             RiskLevel: 风险等级
         """
-        # 检查工具级配置是否禁用审批
-        if not self.config.is_tool_enabled(tool_name):
+        # 检查工具级配置是否禁用审批。ACP 工具不适用：把"禁用某工具的审批"
+        # 解释成自动放行，等于允许配置绕过默认拒绝。
+        if not tool_name.startswith("acp.") and not self.config.is_tool_enabled(tool_name):
             return RiskLevel.LOW
 
+        # ACP adapters ask for permission as acp.<kind>. Deny by default:
+        # anything that can change the project or the session must not fall
+        # through to the generic LOW branch that allows it automatically.
+        if tool_name.startswith("acp."):
+            kind = tool_name[len("acp."):]
+            if kind in ACP_READ_ONLY_KINDS:
+                return RiskLevel.LOW
+            return RiskLevel.MEDIUM
         # 根据工具类型分析
         if tool_name in ["run_shell_command", "shell", "execute"]:
             return self._analyze_shell_command(args.get("command", ""))

@@ -294,3 +294,51 @@ def test_native_protocol_nested_exit_code_is_still_a_real_failure(tmp_path):
     )
     recorder.native("codex", notification, stop_on_error=True)
     assert (tmp_path / "first-error.json").exists()
+
+
+def test_worker_notifications_join_the_project_trajectory(tmp_path, monkeypatch):
+    """Worker output must reach the same trajectory the PM writes to.
+
+    Before this, ``TrajectoryRecorder.native`` was only used by tests and a demo
+    script: the worker bridge pushed notifications to its own run stream and
+    nothing else, so the workbench could show what the PM did and nothing about
+    the worker it delegated to.
+    """
+    import src.middlewares.acp.graph as graph_module
+    import src.workbench.paths as paths_module
+
+    monkeypatch.setattr(paths_module, "trajectory_directory", lambda project_id: tmp_path)
+    recorder = graph_module.project_recorder("project-1")
+    assert isinstance(recorder, TrajectoryRecorder)
+
+    def notification(session_update, **fields):
+        return SimpleNamespace(
+            model_dump=lambda **kwargs: {
+                "sessionId": "session-1",
+                "update": {"sessionUpdate": session_update, **fields},
+            }
+        )
+
+    recorder.native("claude", notification(
+        "agent_message_chunk", content={"type": "text", "text": "我来实现计算器"},
+    ), run_id="run-1", thread_id="session-1")
+    recorder.native("claude", notification(
+        "tool_call", toolCallId="call-1", title="Write calculator.py",
+        rawInput={"path": "calculator.py"},
+    ), run_id="run-1", thread_id="session-1")
+
+    rows = [json.loads(line) for line in (tmp_path / "trajectory.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["agent"] for row in rows] == ["claude", "claude"]
+    assert [row["kind"] for row in rows] == ["native", "native"]
+    assert all(row["run_id"] == "run-1" for row in rows)
+    # 与轮次标记同口径，否则网页会把同一个负责人的事件拆成两个作用域。
+    assert all(row["thread_id"] == "session-1" for row in rows)
+    assert rows[1]["name"] == "Write calculator.py"
+    assert rows[1]["data"]["rawInput"] == {"path": "calculator.py"}
+
+    # Tracing is an observation channel: an unusable directory yields no
+    # recorder instead of failing the worker run that is trying to execute.
+    monkeypatch.setattr(paths_module, "trajectory_directory",
+                        lambda project_id: (_ for _ in ()).throw(ValueError("未配置")))
+    assert graph_module.project_recorder("project-1") is None
+    assert graph_module.project_recorder("") is None

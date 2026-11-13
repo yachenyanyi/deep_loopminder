@@ -44,6 +44,7 @@ class FixtureAgent:
         )
         self.cancelled = {}
         self.model = "small"
+        self.mode = "safe"
 
     def on_connect(self, client):
         self.client = client
@@ -51,13 +52,23 @@ class FixtureAgent:
     def metadata(self):
         return {
             "modes": SessionModeState(
-                current_mode_id="safe",
+                current_mode_id=self.mode,
                 available_modes=[
                     SessionMode(id="safe", name="Safe"),
                     SessionMode(id="edit", name="Edit"),
                 ],
             ),
             "config_options": [
+                SessionConfigOptionSelect(
+                    id="mode",
+                    name="Mode",
+                    type="select",
+                    current_value=self.mode,
+                    options=[
+                        SessionConfigSelectOption(value="safe", name="Safe"),
+                        SessionConfigSelectOption(value="edit", name="Edit"),
+                    ],
+                ),
                 SessionConfigOptionSelect(
                     id="model",
                     name="Model",
@@ -167,10 +178,16 @@ class FixtureAgent:
         )
 
     async def set_session_mode(self, session_id, mode_id, **kwargs):
+        self.mode = mode_id
         return SetSessionModeResponse()
 
     async def set_config_option(self, config_id, session_id, value, **kwargs):
-        self.model = value
+        if config_id == "mode":
+            if value not in {"safe", "edit"}:
+                raise ValueError("unknown mode")
+            self.mode = value
+        else:
+            self.model = value
         return SetSessionConfigOptionResponse(
             config_options=self.metadata()["config_options"]
         )

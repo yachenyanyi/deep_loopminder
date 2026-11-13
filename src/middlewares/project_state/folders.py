@@ -30,38 +30,70 @@ def _resolve_directory(directory: str) -> tuple[str, str]:
     return str(path), hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _directory_digest(directory: str) -> str:
-    """Hash actual regular files and directory names, failing on unstable input.
+# Hidden VCS/tooling directories and installed dependency trees are never
+# project content, at any depth: hashing them makes an ordinary repository
+# fail on hardlinks or take minutes.
+_IGNORED_ANYWHERE = frozenset({
+    ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
+})
+# Plain build-output names are skipped only below the project root. A real
+# source tree may live in "build/", and a committed "dist/" is content; at the
+# top level they must still be hashed or changes there would go unnoticed.
+_IGNORED_NESTED = frozenset({"dist", "build", ".next", ".nuxt", ".gradle", ".idea", ".vs"})
 
-    Links and special files are rejected rather than following paths outside the
-    project. This is a change detector, not an operating-system read-only lock.
+
+def _directory_digest(directory: str) -> str:
+    """Hash project content as a change detector, not an access control.
+
+    Dependency and build directories are skipped. Links are recorded by target
+    without following them, and hardlinked files are hashed by content instead
+    of being rejected: read-only phases are bounded by the adapter's permission
+    mode, so a link is not an escape hatch that must invalidate the project.
     """
     root = Path(directory)
     digest = hashlib.sha256()
 
     def visit(path: Path, relative: str) -> None:
         before = path.stat(follow_symlinks=False)
-        if (stat.S_ISLNK(before.st_mode)
-                or getattr(before, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
-            raise ValueError("项目含链接或重解析点，无法确认审查目录")
         encoded = os.fsencode(relative.replace(os.sep, "/"))
         digest.update(len(encoded).to_bytes(8, "big"))
         digest.update(encoded)
+        attributes = getattr(before, "st_file_attributes", 0)
+        if stat.S_ISLNK(before.st_mode) or attributes & getattr(
+            stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+        ):
+            # Record the link itself; never follow it outside the project.
+            # Windows junctions are reparse points but not symlinks, so the
+            # target must be read for them too: retargeting a junction would
+            # otherwise leave the digest unchanged while the adapter follows
+            # the new location.
+            digest.update(b"L")
+            target = ""
+            try:
+                target = os.readlink(path)
+            except OSError:
+                target = ""
+            digest.update(os.fsencode(str(target)))
+            return
         if stat.S_ISDIR(before.st_mode):
             digest.update(b"D")
             with os.scandir(path) as iterator:
                 names = sorted((entry.name for entry in iterator), key=os.fsencode)
             for name in names:
+                if name in _IGNORED_ANYWHERE or (relative and name in _IGNORED_NESTED):
+                    continue
                 visit(path / name, os.path.join(relative, name))
-        elif stat.S_ISREG(before.st_mode):
-            if before.st_nlink > 1:
-                raise ValueError("项目含硬链接，无法确认文件不与其他目录共享")
-            digest.update(b"F")
+            return
+        if stat.S_ISREG(before.st_mode):
+            digest.update(b"H" if before.st_nlink > 1 else b"F")
             file_digest = hashlib.sha256()
             descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(descriptor, "rb") as file:
                 opened = os.fstat(file.fileno())
-                if (opened.st_ino, opened.st_dev, opened.st_size, opened.st_mtime_ns) != (before.st_ino, before.st_dev, before.st_size, before.st_mtime_ns):
+                if (opened.st_ino, opened.st_dev, opened.st_size, opened.st_mtime_ns) != (
+                    before.st_ino, before.st_dev, before.st_size, before.st_mtime_ns
+                ):
                     raise ValueError("计算审查版本时项目文件发生变化")
                 while chunk := file.read(1024 * 1024):
                     file_digest.update(chunk)
@@ -69,11 +101,9 @@ def _directory_digest(directory: str) -> str:
                 if (after_open.st_size, after_open.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns):
                     raise ValueError("计算审查版本时项目文件发生变化")
             digest.update(file_digest.digest())
-        else:
-            raise ValueError("项目含无法核验的特殊文件")
-        after = path.stat(follow_symlinks=False)
-        if (after.st_ino, after.st_dev, after.st_size, after.st_mtime_ns) != (before.st_ino, before.st_dev, before.st_size, before.st_mtime_ns):
-            raise ValueError("计算审查版本时项目目录发生变化")
+            return
+        # Devices, sockets and pipes are recorded by type only, never opened.
+        digest.update(b"S")
 
     try:
         visit(root, "")

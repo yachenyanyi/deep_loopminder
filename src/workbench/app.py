@@ -9,7 +9,6 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import httpx
-from langgraph.config import get_store
 from langgraph_sdk import get_client
 from starlette.requests import Request
 from starlette.responses import (
@@ -22,19 +21,42 @@ from starlette.responses import (
 from starlette.routing import Route
 
 from src.middlewares.agent.model_catalog import ModelCatalog, WindowsCredentials
-from src.middlewares.project_state.folders import ProjectFolders
 from src.middlewares.project_state.artifacts import content_hash
+from src.middlewares.project_state.folders import ProjectFolders
 from src.middlewares.project_state.models import ProjectSnapshot
 from src.middlewares.project_state.persistence import ProjectStore
 from src.middlewares.project_state.scope import directory_write_lock, project_write_lock
-from src.middlewares.trajectory.web import read_events
 from src.middlewares.trajectory.middleware import TrajectoryRecorder
+from src.middlewares.trajectory.web import read_events
 
 from .paths import trajectory_directory
 
 _ROOT = Path(__file__).parent
 _THREADS = ("deep_loopminder", "workbench_threads")
 _write_lock = asyncio.Lock()
+# Tests and embedders may inject the Store they want the routes to use.
+_injected_store = None
+
+
+async def get_store():
+    """Return the same custom Store the graphs run against.
+
+    ``langgraph.config.get_store()`` resolves through a runnable contextvar.
+    A Starlette route has no runnable context, so it silently resolved to the
+    dev runtime's separate in-process Store: settings and projects written
+    from the workbench were invisible to PM, and PM's own Store was invisible
+    here. Ask the runtime for the same custom Store it hands to graph runs.
+    """
+    if _injected_store is not None:
+        return _injected_store
+    try:
+        from langgraph_api.store import get_store as runtime_store
+
+        return await runtime_store()
+    except Exception:
+        from langgraph.config import get_store as context_store
+
+        return context_store()
 _PROJECT_THREAD_NAMESPACE = uuid.UUID("55483b1a-700f-41b2-9f18-c75a557e224c")
 _MODEL_CONFIGURATION_ERRORS = frozenset({
     "尚未配置默认模型，请在设置中选择已启用的模型",
@@ -100,7 +122,7 @@ async def projects(request):
     """List projects and their bound directories."""
     if not _local(request):
         return _forbidden()
-    store = get_store()
+    store = await get_store()
     projects, offset = [], 0
     while True:
         page = await ProjectStore(store).list(limit=100, offset=offset)
@@ -126,7 +148,7 @@ async def create_project(request):
         directory, goal = data.get("directory"), data.get("goal")
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError("请输入项目目标")
-        store = get_store()
+        store = await get_store()
         folders = ProjectFolders(store)
         _, directory_identity = await folders.canonical_directory(directory)
         async with _write_lock, directory_write_lock("project-folder-registry"):
@@ -166,7 +188,7 @@ async def bind_project(request):
         project_id = data.get("project_id")
         if not isinstance(project_id, str) or not project_id.strip():
             raise ValueError("项目编号无效")
-        store = get_store()
+        store = await get_store()
         folders = ProjectFolders(store)
         _, directory_identity = await folders.canonical_directory(data.get("directory"))
         async with _write_lock, project_write_lock(project_id), directory_write_lock("project-folder-registry"):
@@ -221,7 +243,7 @@ async def providers(request):
     """List or update model endpoints; credentials never appear in responses."""
     if not _local(request):
         return _forbidden()
-    catalog = ModelCatalog(get_store())
+    catalog = ModelCatalog(await get_store())
     if request.method == "GET":
         return JSONResponse(await catalog.list())
     try:
@@ -241,7 +263,7 @@ async def discover(request):
         return _forbidden()
     try:
         data = await request.json()
-        return JSONResponse({"models": await ModelCatalog(get_store()).discover(data.get("provider_id"))})
+        return JSONResponse({"models": await ModelCatalog(await get_store()).discover(data.get("provider_id"))})
     except (ValueError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -250,7 +272,7 @@ async def default_model(request):
     """Read or update the configured default model."""
     if not _local(request):
         return _forbidden()
-    catalog = ModelCatalog(get_store())
+    catalog = ModelCatalog(await get_store())
     if request.method == "GET":
         return JSONResponse(await catalog.get_default())
     try:
@@ -264,7 +286,7 @@ async def clef_settings(request):
     """Configure the Clef account without returning the stored token."""
     if not _local(request):
         return _forbidden()
-    store = get_store()
+    store = await get_store()
     if request.method == "GET":
         item = await store.aget(("deep_loopminder", "pm_settings"), "clef")
         return JSONResponse({"account_id": (item.value.get("account_id") if item else None)
@@ -301,7 +323,8 @@ async def worker_settings(request):
             return JSONResponse({"error": "负责人设置无法读取，请检查本机配置。"}, status_code=503)
         if settings is None:
             runtime = Path(__file__).resolve().parents[2] / "workspace" / "tmp" / "pm-readonly-runtime"
-            settings = {"enabled": False, "distro": "Ubuntu", "endpoint": "https://api.openai.com/v1" if provider == "codex" else "",
+            settings = {"enabled": False, "node": "",
+                        "endpoint": "https://api.openai.com/v1" if provider == "codex" else "",
                         "model": "gpt-6-luna" if provider == "codex" else "",
                         "runtime_dir": str(runtime) if runtime.is_dir() else "", "revision": None}
         return JSONResponse({"settings": settings,
@@ -322,11 +345,97 @@ async def worker_settings(request):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 
+async def worker_modes(request):
+    """Read or save the project default mode and the adapter-reported modes."""
+    if not _local(request):
+        return _forbidden()
+    from src.middlewares.acp import server as acp_server
+    from src.middlewares.project_state.worker_modes import ProjectWorkerModes
+
+    store = await get_store()
+    provider = request.query_params.get("provider_id") or "claude"
+    if provider not in {"claude", "codex"}:
+        return JSONResponse({"error": "未知的 Worker 提供方"}, status_code=400)
+    project_id = request.query_params.get("project_id", "")
+    modes = ProjectWorkerModes(store)
+
+    if request.method == "GET":
+        saved = await modes.get(project_id, provider) if project_id else None
+        directory = None
+        if project_id:
+            from src.middlewares.project_state.folders import ProjectFolders
+
+            binding = await ProjectFolders(store).get(project_id)
+            directory = (binding or {}).get("directory")
+        live = await _live_mode_state(acp_server, provider, directory)
+        from src.middlewares.acp.pool import mode_can_write
+
+        saved_mode = (saved or {}).get("mode_id")
+        # Tell the UI which advertised modes can modify the project so it can
+        # warn on selection. Unknown modes count as writable.
+        live = {**live,
+                "writable": [item["id"] for item in live.get("modes", [])
+                             if mode_can_write(provider, item["id"])]}
+        return JSONResponse({"provider_id": provider, "saved_mode": saved_mode,
+                             "saved_mode_can_write": bool(saved_mode) and mode_can_write(provider, saved_mode),
+                             "discovery": live})
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("模式设置无效")
+        project_id = data.get("project_id")
+        if not isinstance(project_id, str) or not project_id:
+            raise ValueError("项目编号无效")
+        if await ProjectStore(store).load(project_id) is None:
+            return JSONResponse({"error": "项目不存在"}, status_code=404)
+        value = await modes.save(project_id, provider, data.get("mode_id"))
+        return JSONResponse({"saved_mode": value["mode_id"], "provider_id": provider})
+    except (ValueError, TypeError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+async def _live_mode_state(acp_server, provider, directory=None):
+    """Read the adapter-advertised mode option from a live session.
+
+    Project workers keep their sessions in ProjectWorkerPool, not in the
+    module-level bootstrap connection, so both are inspected. When a project
+    directory is known, only that project's connections are considered: the
+    advertised list is adapter-wide, but a session from another project must
+    never be presented as this project's state. Without a session the caller
+    is told modes are unknown rather than being given a guessed list.
+    """
+    candidates = []
+    bootstrap = acp_server._workers.get(provider)
+    if bootstrap is not None and getattr(bootstrap, "provider_id", provider) == provider:
+        candidates.append(bootstrap)
+    pool = acp_server._project_workers
+    if pool is not None:
+        for worker in list(getattr(pool, "_readonly_connections", {}).values()) +                 list(getattr(pool, "_execution_connections", {}).values()) +                 list(getattr(pool, "_connections", {}).values()):
+            if worker is None or worker in candidates:
+                continue
+            # Only this provider's connection may describe this provider's
+            # modes: a Codex session must never be shown as Claude's state.
+            if getattr(worker, "provider_id", None) != provider:
+                continue
+            if directory is not None and os.path.normcase(worker.cwd) != os.path.normcase(directory):
+                continue
+            candidates.append(worker)
+    if not candidates:
+        return {"available": False, "reason": "worker_not_connected", "modes": [], "current": None}
+    for worker in candidates:
+        sessions = list(getattr(worker, "_metadata", {}) or {})
+        for session_id in reversed(sessions):
+            state = worker.mode_state(session_id)
+            if state.get("available"):
+                return state
+    return {"available": False, "reason": "worker_has_no_session", "modes": [], "current": None}
+
+
 async def workspace_settings(request):
     """Configure local trace capture; human approval remains mandatory."""
     if not _local(request):
         return _forbidden()
-    store = get_store()
+    store = await get_store()
     from langgraph.store.memory import InMemoryStore
 
     durability = "ephemeral" if isinstance(store, InMemoryStore) else "configured_store"
@@ -412,7 +521,7 @@ async def history(request):
     if not _local(request):
         return _forbidden()
     project_id = request.query_params.get("project_id", "")
-    store = get_store()
+    store = await get_store()
     if not project_id or await ProjectStore(store).load(project_id) is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     item = await store.aget(_THREADS, project_id)
@@ -468,7 +577,7 @@ async def dispatch_status(request):
     task_id = request.query_params.get("task_id", "")
     if not project_id or not task_id:
         return JSONResponse({"error": "项目和任务不能为空"}, status_code=400)
-    store = get_store()
+    store = await get_store()
     if await ProjectStore(store).load(project_id) is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     item = await store.aget(("deep_loopminder", "project_dispatch_intents", project_id), task_id)
@@ -480,7 +589,7 @@ async def project_status(request):
     if not _local(request):
         return _forbidden()
     project_id = request.query_params.get("project_id", "")
-    store = get_store()
+    store = await get_store()
     snapshot = await ProjectStore(store).load(project_id) if project_id else None
     if snapshot is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
@@ -536,6 +645,7 @@ async def project_status(request):
                             "created_at": decision.get("created_at") if decision else None,
                             "current_pass": current,
                             "pm_confirmation": decision.get("pm_confirmation") if decision else None,
+                            "mode_record": decision.get("mode_record") if decision else None,
                             "turns": turns} if decision or turns else None),
             "dispatch": dict(intent.value) if intent else None,
             "validation": validation.get(task.task_id),
@@ -556,7 +666,7 @@ async def stop_unconfirmed_worker(request):
     project_id, agent_id = data.get("project_id"), data.get("agent_id")
     if not isinstance(project_id, str) or not project_id or not isinstance(agent_id, str) or not agent_id:
         return JSONResponse({"error": "项目和负责人不能为空"}, status_code=400)
-    store = get_store()
+    store = await get_store()
     namespace = ("deep_loopminder", "project_worker_quarantine", project_id)
     item = await store.aget(namespace, agent_id)
     if item is None:
@@ -594,7 +704,7 @@ async def human_validation(request):
         return JSONResponse({"error": "项目、任务和验收结果不能为空"}, status_code=400)
     from src.middlewares.project_state.workflow import ProjectWorkflow
 
-    store = get_store()
+    store = await get_store()
     workflow = ProjectWorkflow(store)
     try:
         _, task = await workflow.task(project_id, task_id)
@@ -648,7 +758,7 @@ async def human_approval(request):
         return JSONResponse({"error": "项目、任务和明确决定不能为空"}, status_code=400)
     from src.middlewares.project_state.workflow import ProjectWorkflow
 
-    store = get_store()
+    store = await get_store()
     workflow = ProjectWorkflow(store)
     try:
         _, task = await workflow.task(project_id, task_id)
@@ -683,7 +793,7 @@ async def worker_usage(request):
     if not _local(request):
         return _forbidden()
     project_id = request.query_params.get("project_id", "")
-    store = get_store()
+    store = await get_store()
     if not project_id or await ProjectStore(store).load(project_id) is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     parent = await store.aget(_THREADS, project_id)
@@ -734,7 +844,7 @@ async def _matching_dispatches(project_id, task_id, intent, candidate_agent_id=N
         raise ValueError("候选会话与派工意图不一致")
     if not worker_id or not intent.get("intent_id"):
         return []
-    history = await get_store().aget(
+    history = (await get_store()).aget(
         ("deep_loopminder", "project_dispatch_intents", project_id, "history"), intent["intent_id"]
     )
     claimed_run_id = history.value.get("claimed_run_id") if history else None
@@ -758,7 +868,7 @@ async def _matching_dispatches(project_id, task_id, intent, candidate_agent_id=N
                     and values.get("owner_thread_id") == intent.get("owner_thread")
                     and ref.get("project_id") == project_id and ref.get("task_id") == task_id
                     and ref.get("thread_id") == worker_id
-                    and (intent.get("phase") == "execution" or ref.get("isolation") == "wsl-readonly")):
+                    and (intent.get("phase") == "execution" or ref.get("isolation") == "native-readonly")):
                 matches.append({"agent_id": worker_id, "run_id": run["run_id"], "status": run["status"]})
         if len(runs) < 100:
             break
@@ -774,7 +884,7 @@ async def reconcile_dispatch(request):
     project_id, task_id = data.get("project_id"), data.get("task_id")
     if not isinstance(project_id, str) or not project_id or not isinstance(task_id, str) or not task_id:
         return JSONResponse({"error": "项目和任务不能为空"}, status_code=400)
-    store = get_store()
+    store = await get_store()
     if await ProjectStore(store).load(project_id) is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     item = await store.aget(("deep_loopminder", "project_dispatch_intents", project_id), task_id)
@@ -800,7 +910,7 @@ async def attach_reconciled_dispatch(request):
         return JSONResponse({"error": "项目、任务和 Run 编号不能为空"}, status_code=400)
     from src.middlewares.project_state.workflow import ProjectWorkflow
 
-    store = get_store()
+    store = await get_store()
     namespace = ("deep_loopminder", "project_dispatch_intents", project_id)
     item = await store.aget(namespace, task_id)
     intent = item.value if item else None
@@ -827,18 +937,37 @@ async def attach_reconciled_dispatch(request):
             phase = intent.get("phase")
             enforcement = None
             if phase in {"discussion", "review"}:
-                from src.middlewares.execution.security_policy import EnforcementCapability, EnforcementFact
+                from src.middlewares.execution.security_policy import (
+                    EnforcementCapability,
+                    EnforcementFact,
+                )
 
                 if not intent.get("readonly_mechanism"):
-                    raise ValueError("缺少只读执行来源，不能恢复")
-                enforcement = EnforcementFact(surface="wsl_acp_process", capability=EnforcementCapability.ENFORCEABLE,
-                                              enforced_capabilities=frozenset({"worker.readonly"}),
-                                              mechanism=intent["readonly_mechanism"])
+                    raise ValueError("缺少执行边界来源，不能恢复")
+                # Rebuild the boundary exactly as it was recorded. Upgrading a
+                # writable-mode discussion to ENFORCEABLE here would fabricate
+                # a read-only guarantee the original dispatch never had.
+                recorded = intent.get("readonly_capability")
+                capability = (EnforcementCapability(recorded)
+                              if recorded in {item.value for item in EnforcementCapability}
+                              else EnforcementCapability.PARTIAL)
+                enforcement = EnforcementFact(
+                    surface="native_acp_permission_mode",
+                    capability=capability,
+                    enforced_capabilities=(frozenset({"worker.readonly"})
+                                           if capability is EnforcementCapability.ENFORCEABLE
+                                           else frozenset()),
+                    mechanism=intent["readonly_mechanism"],
+                    gap=intent.get("readonly_gap"),
+                )
             agent_id = matches[0]["agent_id"]
+            # Carry the mode record the original dispatch persisted so the
+            # existing execution binding is not seen as conflicting.
             await workflow.record_start(project_id, task_id, intent["owner_thread"], agent_id, run_id,
                                         phase=phase, readonly_enforcement=enforcement, dispatch_id=intent["intent_id"],
                                         discussion_question=intent.get("discussion_question"),
-                                        expected_review_subject=intent.get("expected_review_subject"))
+                                        expected_review_subject=intent.get("expected_review_subject"),
+                                        mode_record=intent.get("mode_record"))
             await workflow.complete_dispatch(project_id, task_id, agent_id=agent_id, run_id=run_id)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
@@ -854,7 +983,7 @@ async def chat(request):
         project_id, text = data.get("project_id"), data.get("message")
         if not isinstance(project_id, str) or not isinstance(text, str) or not text.strip():
             raise ValueError("请选择项目并输入消息")
-        store = get_store()
+        store = await get_store()
         if await ProjectStore(store).load(project_id) is None:
             raise ValueError("项目不存在")
         client = get_client(url=None)
@@ -887,9 +1016,245 @@ async def chat(request):
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
 
+class CheckpointLostError(Exception):
+    """The PM thread exists but its checkpoints are gone, so the run cannot resume."""
+
+
+_CHECKPOINT_LOST_MESSAGE = "该 PM 会话的检查点已不存在（开发服务重启会丢失检查点），无法读取或恢复原 Run。"
+
+
+def _decisions_fingerprint(actions):
+    """Hash the answerable decisions exactly as they were shown to the user.
+
+    submit-decision accepts the fingerprint the page displayed; a mismatch
+    means the pending set changed between render and submit (answered
+    elsewhere, a new run replaced the interrupt, ...). Deciding on a stale
+    view would send answers to the wrong questions, so the submit is refused
+    with an explicit message instead.
+    """
+    import hashlib
+
+    payload = json.dumps(actions, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def _thread_interrupts(client, thread_id):
+    """Read the pending human-in-the-loop interrupt from the official thread state.
+
+    The batched HumanInTheLoopMiddleware raises one interrupt whose value is
+    {action_requests, review_configs}; the official thread-state schema exposes
+    it at tasks[].interrupts[] (falling back to the top-level interrupts[]).
+    Interrupts of any other shape are counted but not interpreted: they are
+    reported as pending yet not answerable, never guessed into decisions.
+
+    Raises CheckpointLostError when the thread's checkpoints are gone. After a
+    dev-server restart the state endpoint returns 200 with an empty snapshot
+    (checkpoint: null) rather than 404, so both shapes must be recognized or a
+    lost session would be reported as merely "no pending decision".
+
+    The third return value binds the interrupt to its occurrence:
+    {"interrupt_id", "checkpoint_id"}. Note the official interrupt id is a
+    slot identity derived from the task namespace (langgraph types.py:
+    _interrupt_id), so the same node position re-asking yields the same id —
+    the checkpoint_id is what distinguishes one occurrence from the next.
+    """
+    async with asyncio.timeout(15):
+        state = await client.threads.get_state(thread_id)
+    checkpoint = state.get("checkpoint")
+    if checkpoint is None and not (state.get("values") or {}):
+        raise CheckpointLostError()
+    interrupts = []
+    for task in state.get("tasks") or []:
+        if isinstance(task, dict):
+            interrupts.extend(item for item in (task.get("interrupts") or []) if isinstance(item, dict))
+    if not interrupts:
+        interrupts = [item for item in (state.get("interrupts") or []) if isinstance(item, dict)]
+    actions = []
+    for item in interrupts:
+        value = item.get("value")
+        if not isinstance(value, dict):
+            continue
+        requests, configs = value.get("action_requests"), value.get("review_configs")
+        if not isinstance(requests, list) or not isinstance(configs, list):
+            continue
+        by_name = {c.get("action_name"): c for c in configs if isinstance(c, dict)}
+        for req in requests:
+            if not isinstance(req, dict):
+                continue
+            config = by_name.get(req.get("name")) or {}
+            allowed = config.get("allowed_decisions")
+            actions.append({
+                "name": req.get("name"),
+                "args": req.get("args") if isinstance(req.get("args"), dict) else {},
+                "description": req.get("description") if isinstance(req.get("description"), str) else "",
+                "allowed_decisions": list(allowed) if isinstance(allowed, list) else [],
+            })
+    # Bind to the occurrence: the interrupt's official id plus the checkpoint
+    # it is parked on. Older SDK shapes may omit the id; then only the
+    # checkpoint anchors the binding and the report must say so.
+    interrupt_ids = [item.get("id") for item in interrupts if isinstance(item.get("id"), str) and item.get("id")]
+    checkpoint_id = (checkpoint or {}).get("checkpoint_id") if isinstance(checkpoint, dict) else None
+    occurrence = {"interrupt_id": interrupt_ids[0] if interrupt_ids else None,
+                  "checkpoint_id": checkpoint_id}
+    return actions, len(interrupts), occurrence
+
+
+async def pending_decision(request):
+    """Show the human decision this project's PM thread is officially waiting on."""
+    if not _local(request):
+        return _forbidden()
+    project_id = request.query_params.get("project_id", "")
+    store = await get_store()
+    if not project_id or await ProjectStore(store).load(project_id) is None:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    client = get_client(url=None)
+    try:
+        thread_id = await project_thread(store, client, project_id, create_if_missing=False)
+        actions, interrupt_count, occurrence = await _thread_interrupts(client, thread_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except CheckpointLostError:
+        return JSONResponse({"error": _CHECKPOINT_LOST_MESSAGE}, status_code=409)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return JSONResponse({"error": _CHECKPOINT_LOST_MESSAGE}, status_code=409)
+        return JSONResponse({"error": "无法读取会话状态，请检查官方服务。"}, status_code=503)
+    except (httpx.HTTPError, TimeoutError):
+        return JSONResponse({"error": "无法读取会话状态，请检查官方服务。"}, status_code=503)
+    return JSONResponse({
+        "pending": interrupt_count > 0,
+        "answerable": bool(actions),
+        "decisions": actions,
+        "fingerprint": _decisions_fingerprint(actions) if actions else None,
+        "interrupt_id": occurrence["interrupt_id"] if actions else None,
+        "checkpoint_id": occurrence["checkpoint_id"] if actions else None,
+        "binding_available": bool(actions and occurrence["checkpoint_id"]),
+    })
+
+
+async def submit_decision(request):
+    """Resume the interrupted PM run with the human's answers via official Command(resume).
+
+    Resume is a separate endpoint from chat and answers the exact interrupt read
+    back from the thread state. When no interrupt is pending — including after a
+    dev-server restart wiped the checkpoints — the request is refused rather
+    than treated as, or turned into, a resume of a run that no longer exists.
+    """
+    if not _local(request):
+        return _forbidden()
+    try:
+        data = await request.json()
+        project_id, answers = data.get("project_id"), data.get("answers")
+        if not isinstance(project_id, str) or not project_id:
+            raise ValueError("请选择项目")
+        if not isinstance(answers, list) or not answers or not all(
+            isinstance(answer, str) and answer.strip() for answer in answers
+        ):
+            raise ValueError("请提供每个待决策问题的文字答复")
+    except (ValueError, TypeError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    store = await get_store()
+    if await ProjectStore(store).load(project_id) is None:
+        return JSONResponse({"error": "项目不存在"}, status_code=404)
+    client = get_client(url=None)
+    # No outer project_write_lock here: project_thread already takes it and
+    # the asyncio.Lock is not reentrant. The check-then-resume gap is closed by
+    # the official server itself — a resume without a pending interrupt is
+    # rejected there and surfaced as an error, never silently lost.
+    try:
+        thread_id = await project_thread(store, client, project_id, create_if_missing=False)
+        actions, interrupt_count, occurrence = await _thread_interrupts(client, thread_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except CheckpointLostError:
+        return JSONResponse({"error": _CHECKPOINT_LOST_MESSAGE}, status_code=409)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return JSONResponse({"error": _CHECKPOINT_LOST_MESSAGE}, status_code=409)
+        return JSONResponse({"error": "无法读取会话状态，请检查官方服务。"}, status_code=503)
+    except (httpx.HTTPError, TimeoutError):
+        return JSONResponse({"error": "无法读取会话状态，请检查官方服务。"}, status_code=503)
+    if not actions:
+        if interrupt_count:
+            return JSONResponse(
+                {"error": "存在待处理的中断，但不是可在本界面答复的决策形式。"}, status_code=409
+            )
+        return JSONResponse(
+            {"error": "当前没有待处理的人工决策；普通消息请通过对话发送，不会被当作决策恢复。"},
+            status_code=409,
+        )
+    if len(answers) != len(actions):
+        return JSONResponse(
+            {"error": f"当前有 {len(actions)} 项待决策，需要 {len(actions)} 项答复。"}, status_code=400
+        )
+    fingerprint = data.get("fingerprint")
+    current = _decisions_fingerprint(actions)
+    if fingerprint is None or not isinstance(fingerprint, str) or not fingerprint:
+        return JSONResponse(
+            {"error": "提交必须绑定页面展示的待决策：请重新打开项目获取最新决策后提交。"}, status_code=400
+        )
+    if fingerprint != current:
+        return JSONResponse(
+            {"error": "待决策内容与页面展示的不一致（可能已被处理或发生变化）；请重新打开项目查看最新决策再提交。"},
+            status_code=409,
+        )
+    # Content alone cannot tell one occurrence from another: the official
+    # interrupt id is a slot identity that repeats across occurrences, so the
+    # checkpoint it is parked on is part of the binding. An answer shown for
+    # one occurrence must be refused when the thread now holds a different one.
+    shown_interrupt = data.get("interrupt_id")
+    shown_checkpoint = data.get("checkpoint_id")
+    if (shown_interrupt or None) != (occurrence["interrupt_id"] or None) or (
+        (shown_checkpoint or None) != (occurrence["checkpoint_id"] or None)
+    ):
+        return JSONResponse(
+            {"error": "该答复所属的中断或检查点已变化（问题可能已被重新提出）；请重新打开项目查看最新决策再提交。"},
+            status_code=409,
+        )
+    if occurrence["checkpoint_id"] is None:
+        return JSONResponse(
+            {"error": "官方服务未提供可核对的中断或检查点标识，无法确认答复针对当前中断；请重新打开项目后重试。"},
+            status_code=409,
+        )
+    for action in actions:
+        if action["allowed_decisions"] and "respond" not in action["allowed_decisions"]:
+            return JSONResponse(
+                {"error": f"决策 {action['name']} 不接受文字答复（允许：{'/'.join(action['allowed_decisions'])}）。"},
+                status_code=400,
+            )
+    command = {"resume": {"decisions": [
+        {"type": "respond", "message": answer.strip()} for answer in answers
+    ]}}
+    # Same project binding and trace flags as chat, so the resumed run stays
+    # isolated to this project and keeps recording its trajectory. Model
+    # options live inside "configurable", exactly where chat puts them.
+    configurable = {
+        "project_id": project_id, "project_state_single_writer": True, "workbench_trace": True,
+    }
+    if data.get("model_use_default") is True:
+        configurable["model_use_default"] = True
+    if data.get("model_use_legacy") is True:
+        configurable["model_use_legacy"] = True
+    for key in ("model_provider", "model_name", "reasoning_effort"):
+        if data.get(key):
+            configurable[key] = data[key]
+    config = {"configurable": configurable}
+    try:
+        run = await client.runs.create(
+            thread_id, "pm_agent", command=command, config=config, multitask_strategy="enqueue",
+        )
+    except (httpx.HTTPError, TimeoutError):
+        return JSONResponse({"error": "无法启动恢复运行，请检查官方服务。"}, status_code=503)
+    return JSONResponse({
+        "resumed": True,
+        "run_id": run.get("run_id") if isinstance(run, dict) else None,
+        "thread_id": thread_id,
+    })
+
+
 async def _trace_project(request):
     project_id = request.query_params.get("project_id", "")
-    if not project_id or await ProjectStore(get_store()).load(project_id) is None:
+    if not project_id or await ProjectStore(await get_store()).load(project_id) is None:
         raise ValueError("项目不存在")
     return project_id
 
@@ -931,7 +1296,7 @@ async def trajectory_status(request):
         return _forbidden()
     try:
         project_id = await _trace_project(request)
-        item = await get_store().aget(_THREADS, project_id)
+        item = (await get_store()).aget(_THREADS, project_id)
         runs = await get_client(url=None).runs.list(item.value["thread_id"], limit=1) if item else []
         return JSONResponse({"run": {"status": runs[0]["status"]} if runs else None, "first_error": None, "stop_requested": False})
     except ValueError as exc:
@@ -958,7 +1323,7 @@ async def memory_recovery(request):
         return _forbidden()
     try:
         project_id = request.query_params.get("project_id", "")
-        store = get_store()
+        store = await get_store()
         if not project_id or await ProjectStore(store).load(project_id) is None:
             raise ValueError("项目不存在")
         from src.middlewares.memory.pm_agent_memory.jobs import PMMemory
@@ -990,6 +1355,7 @@ routes = [
     Route("/workbench/api/default-model", default_model, methods=["GET", "POST"]),
     Route("/workbench/api/clef", clef_settings, methods=["GET", "POST"]),
     Route("/workbench/api/worker-settings", worker_settings, methods=["GET", "POST"]),
+    Route("/workbench/api/worker-modes", worker_modes, methods=["GET", "POST"]),
     Route("/workbench/api/workspace-settings", workspace_settings, methods=["GET", "POST"]),
     Route("/workbench/api/history", history, methods=["GET"]),
     Route("/workbench/api/dispatch-status", dispatch_status, methods=["GET"]),
@@ -1002,6 +1368,8 @@ routes = [
     Route("/workbench/api/reconcile-dispatch", reconcile_dispatch, methods=["POST"]),
     Route("/workbench/api/attach-reconciled-dispatch", attach_reconciled_dispatch, methods=["POST"]),
     Route("/workbench/api/chat", chat, methods=["POST"]),
+    Route("/workbench/api/pending-decision", pending_decision, methods=["GET"]),
+    Route("/workbench/api/submit-decision", submit_decision, methods=["POST"]),
     Route("/workbench/trajectory", trajectory),
     Route("/workbench/api/trace/events", trajectory_events),
     Route("/workbench/api/trace/status", trajectory_status),

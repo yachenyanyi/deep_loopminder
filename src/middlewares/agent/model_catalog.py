@@ -44,9 +44,11 @@ class WindowsCredentials:
     def _put(self, identity, secret):
         import win32cred
 
+        # Some pywin32 builds reject a bytes CredentialBlob outright; passing the
+        # text lets win32cred encode it. Reads may return either form.
         win32cred.CredWrite(
             {"Type": win32cred.CRED_TYPE_GENERIC, "TargetName": self._target(identity),
-             "CredentialBlob": secret.encode("utf-16-le"), "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
+             "CredentialBlob": secret, "Persist": win32cred.CRED_PERSIST_LOCAL_MACHINE,
              "UserName": "DeepLoopMinder"}, 0
         )
 
@@ -64,9 +66,13 @@ class WindowsCredentials:
         return blob.decode("utf-16-le") if isinstance(blob, bytes) else blob
 
     async def put(self, identity, secret):
-        """Write one credential without placing it in the project Store."""
-        if not isinstance(secret, str) or len(secret) < 8:
-            raise ValueError("凭据至少需要 8 个字符")
+        """Write one credential without placing it in the project Store.
+
+        No minimum length: local gateways commonly use short keys, and the
+        host must not reject a credential the user's own endpoint accepts.
+        """
+        if not isinstance(secret, str) or not secret.strip():
+            raise ValueError("凭据不能为空")
         await asyncio.to_thread(self._put, identity, secret)
         from src.middlewares.trajectory.middleware import register_secret
 

@@ -259,8 +259,14 @@ class TrajectoryRecorder:
             self._rounds[key] = self._rounds.get(key, 0) + 1
             return self._rounds[key]
 
-    def native(self, provider, notification, *, stop_on_error=False):
-        """ACP公开通知桥接；增量通知用原生toolCallId关联同一工具。"""
+    def native(self, provider, notification, *, stop_on_error=False, run_id="", thread_id=""):
+        """ACP公开通知桥接；增量通知用原生toolCallId关联同一工具。
+
+        ``run_id`` and ``thread_id`` let a caller join these native rows to the
+        official run that produced them. They must match the values used for the
+        worker's turn markers, otherwise the workbench files the same worker's
+        events under two different scopes and the panel splits in two.
+        """
         value = notification.model_dump(mode="json", by_alias=True, exclude_none=True)
         update = value.get("update", {})
         category = update.get("sessionUpdate", "notification")
@@ -273,9 +279,10 @@ class TrajectoryRecorder:
             phase,
             update.get("title") or category,
             agent=provider,
-            thread_id=value.get("sessionId", ""),
+            thread_id=thread_id or value.get("sessionId", ""),
             span_id=update.get("toolCallId"),
             data=update,
+            run_id=run_id,
         )
         if stop_on_error and phase == "error":
             self.fail(row)

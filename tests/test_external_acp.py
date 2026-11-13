@@ -280,17 +280,20 @@ def test_native_modes_config_fork_and_close(tmp_path):
     async def scenario():
         async with worker(tmp_path) as instance:
             ref = await new(instance)
+            # A bare set_mode response carries no mode, so local state must not
+            # claim the switch happened.
             await instance.control(ref, "set_mode", {"mode_id": "edit"})
-            assert instance.observe(ref)["session"]["modes"]["currentModeId"] == "edit"
+            assert instance.observe(ref)["session"]["configOptions"][0]["currentValue"] == "safe"
+            applied = await instance.apply_mode(ref, "edit")
+            assert applied["reported_mode"] == "edit" and applied["matched"] is True
+            assert instance.observe(ref)["session"]["configOptions"][0]["currentValue"] == "edit"
             with pytest.raises(UnsupportedControl):
-                await instance.control(ref, "set_mode", {"mode_id": "invented"})
+                await instance.apply_mode(ref, "invented")
             await instance.control(
                 ref, "set_config", {"config_id": "model", "value": "large"}
             )
-            assert (
-                instance.observe(ref)["session"]["configOptions"][0]["currentValue"]
-                == "large"
-            )
+            options = instance.observe(ref)["session"]["configOptions"]
+            assert next(o for o in options if o["id"] == "model")["currentValue"] == "large"
             child = await instance.control(ref, "fork", {"task_id": "child-task"})
             assert child.session_id != ref.session_id and child.task_id == "child-task"
             await instance.control(child, "close")

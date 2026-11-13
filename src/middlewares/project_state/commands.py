@@ -72,6 +72,53 @@ class UpdateTaskDependenciesCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class UpdateTaskCapabilitiesCommand:
+    """更正尚未执行任务的能力要求。
+
+    Capabilities are matched by exact set inclusion against what a provider
+    reports, so a requirement outside the provider vocabulary is unanswerable.
+    Correcting one before execution does not rewrite run history.
+    """
+
+    project_id: str
+    task_id: str
+    required_capabilities: frozenset[str]
+
+    def __post_init__(self) -> None:
+        """Reject empty identities here; the reducer checks the vocabulary."""
+        if not self.project_id.strip():
+            raise ValueError("project_id must be non-empty")
+        if not self.task_id.strip():
+            raise ValueError("task_id must be non-empty")
+        if any(not capability.strip() for capability in self.required_capabilities):
+            raise ValueError("required_capabilities must be non-empty strings")
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateTaskOwnerRoleCommand:
+    """更正尚未执行任务的负责人角色。
+
+    ``owner_role`` is a routing key, so a display name in that field makes the
+    task unroutable and permanently blocked. Correcting it before execution does
+    not rewrite run history; after execution starts the record belongs to the
+    attempt that actually ran, so the command refuses.
+    """
+
+    project_id: str
+    task_id: str
+    owner_role: str
+
+    def __post_init__(self) -> None:
+        """Reject empty identities here; the reducer checks the role set."""
+        if not self.project_id.strip():
+            raise ValueError("project_id must be non-empty")
+        if not self.task_id.strip():
+            raise ValueError("task_id must be non-empty")
+        if not self.owner_role.strip():
+            raise ValueError("owner_role must be non-empty")
+
+
+@dataclass(frozen=True, slots=True)
 class RestoreTaskDependenciesCommand:
     """宿主依据历史证据恢复误删边，不删除依赖、不重写运行历史，不向模型暴露。"""
 

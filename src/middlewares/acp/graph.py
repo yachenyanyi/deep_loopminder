@@ -12,8 +12,8 @@ from langgraph.config import get_store, get_stream_writer
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph_sdk import get_client
 
-from src.middlewares.project_state.folders import ProjectFolders
 from src.middlewares.project_state.artifacts import content_hash
+from src.middlewares.project_state.folders import ProjectFolders
 from src.middlewares.project_state.persistence import ProjectStore
 from src.middlewares.project_state.scope import project_write_lock
 from src.middlewares.trajectory.middleware import TrajectoryRecorder
@@ -21,6 +21,27 @@ from src.runtime.routing import RoleRequirement, WorkerCandidate, route_worker
 
 from .control import ACPWorker, UnsupportedControl
 from .correlation import WorkerRef
+from .pool import READONLY_ISOLATION
+
+
+def project_recorder(project_id):
+    """Open the project's trajectory recorder, or None when tracing is off.
+
+    Worker notifications used to be published only to the run's own stream, so
+    the workbench showed the PM side and nothing else: no worker tool calls, no
+    worker messages, no worker usage. ``TrajectoryRecorder.native`` already
+    normalizes exactly these notifications and the dashboard already renders the
+    ``native`` kind, so the missing piece was a recorder bound to the project.
+    """
+    if not isinstance(project_id, str) or not project_id.strip():
+        return None
+    try:
+        from src.workbench.paths import trajectory_directory
+
+        return TrajectoryRecorder(trajectory_directory(project_id))
+    except (ValueError, OSError):
+        # Tracing is an observation channel; losing it must not fail a run.
+        return None
 
 
 class ACPRunState(MessagesState):
@@ -30,6 +51,7 @@ class ACPRunState(MessagesState):
     owner_thread_id: NotRequired[str]
     request: NotRequired[dict]
     pm_governed: NotRequired[bool]
+    mode_record: NotRequired[dict | None]
 
 
 def create_worker_graph(
@@ -39,6 +61,16 @@ def create_worker_graph(
     project_workers=None,
 ):
     """Compile a worker bridge; execution and persistence belong to Agent Server."""
+
+    async def readonly_mode(project_id, provider_id):
+        """Read the saved target so the boundary fact names a real mode."""
+        from src.middlewares.project_state.worker_modes import ProjectWorkerModes
+
+        try:
+            saved = await ProjectWorkerModes(get_store()).get(project_id, provider_id)
+        except ValueError:
+            return None
+        return (saved or {}).get("mode_id")
 
     async def authorize_execution(request, ref, config):
         from src.deep_agents.agents.pm_agent.discussion import DiscussionGate
@@ -144,18 +176,24 @@ def create_worker_graph(
                 # Never start a writable process in prepare: checkpoint failure
                 # between graph nodes must not leave one running unattended.
                 return {"worker_ref": ref.to_dict(), "owner_thread_id": request["owner_thread_id"],
-                        "request": request, "pm_governed": True}
-            worker = workers[ref.provider_id]
+                        "request": request, "pm_governed": True, "mode_record": None}
             if project_workers is not None:
+                # 进程必须先于会话恢复启动：原生连接按提供方和目录持有，
+                # 不能用未启动的连接对象去 load_session。
                 binding = await ProjectFolders(get_store()).verified_binding(ref.project_id)
                 if binding is None or binding["directory"] != ref.cwd:
                     raise ValueError("项目目录未绑定或与现有会话不一致")
                 if governed and request["pm_phase"] in {"discussion", "review"}:
-                    if ref.isolation != "wsl-readonly":
-                        raise PermissionError("现有会话没有可验证的只读边界")
-                    worker = await project_workers.get_readonly(ref.provider_id, ref.cwd)
+                    if ref.isolation != READONLY_ISOLATION:
+                        raise PermissionError("现有会话没有已声明的执行边界")
+                    worker = await project_workers.get_readonly(
+                        ref.provider_id, ref.cwd,
+                        mode_id=await readonly_mode(ref.project_id, ref.provider_id),
+                    )
                 else:
                     worker = await project_workers.get(ref.provider_id, ref.cwd)
+            else:
+                worker = workers[ref.provider_id]
             await worker.resume(ref)
         else:
             if request["operation"] != "spawn":
@@ -182,27 +220,63 @@ def create_worker_graph(
                 )
             if governed and request.get("pm_provider_id") != decision.provider_id:
                 raise PermissionError("实际 Worker 提供方与只读授权不一致")
-            worker = workers[decision.provider_id]
             if project_workers is not None:
                 binding = await ProjectFolders(get_store()).verified_binding(request["project_id"])
                 if binding is None:
                     raise ValueError("项目尚未绑定文件夹")
                 if governed and request["pm_phase"] in {"discussion", "review"}:
-                    worker = await project_workers.get_readonly(decision.provider_id, binding["directory"])
+                    worker = await project_workers.get_readonly(
+                        decision.provider_id, binding["directory"],
+                        mode_id=await readonly_mode(request["project_id"], decision.provider_id),
+                    )
                 else:
                     worker = await project_workers.get(decision.provider_id, binding["directory"])
+            else:
+                worker = workers[decision.provider_id]
             ref = await worker.new(
                 project_id=request["project_id"],
                 task_id=request["task_id"],
                 thread_id=config["configurable"]["thread_id"],
                 role=request["agent_type"],
             )
+        # The mode is applied and confirmed in execute, immediately before the
+        # prompt is sent. Doing it here would miss Runs that restore an
+        # already-created session, and the session may be shared with a turn
+        # that has not been asked yet.
+        mode_record = None if request.get("pm_phase") != "discussion" else state.get("mode_record")
         return {
             "worker_ref": ref.to_dict(),
             "owner_thread_id": request["owner_thread_id"],
             "request": request,
             "pm_governed": governed,
+            "mode_record": mode_record,
         }
+
+    async def _apply_discussion_mode(worker, ref, request):
+        """Switch to the saved mode and return only what the adapter reported."""
+        from src.middlewares.project_state.worker_modes import ProjectWorkerModes
+
+        if not request.get("pm_governed") or request.get("pm_phase") != "discussion":
+            return None
+        # Only the two managed providers have saved preferences; any other
+        # adapter simply runs with its own default mode.
+        try:
+            saved = await ProjectWorkerModes(get_store()).get(ref.project_id, ref.provider_id)
+        except ValueError:
+            saved = None
+        requested = (saved or {}).get("mode_id")
+        if not requested:
+            return {"requested_mode": None, "reported_mode": None,
+                    "reported_mode_source": None, "confirmed_at": None}
+        applied = await worker.apply_mode(ref, requested)
+        record = {"requested_mode": requested, "reported_mode": applied["reported_mode"],
+                  "reported_mode_source": applied["reported_mode_source"],
+                  "confirmed_at": applied["confirmed_at"]}
+        if not applied["matched"]:
+            raise PermissionError(
+                f"目标模式 {requested}，适配器报告 {applied['reported_mode']}；未发送商讨内容。"
+            )
+        return record
 
     async def execute(state: ACPRunState, config: RunnableConfig):
         ref = WorkerRef(**state["worker_ref"])
@@ -210,7 +284,7 @@ def create_worker_graph(
         if request.get("pm_governed"):
             if request.get("pm_phase") == "execution":
                 await authorize_execution(request, ref, config)
-            elif request.get("pm_phase") not in {"discussion", "review"} or ref.isolation != "wsl-readonly":
+            elif request.get("pm_phase") not in {"discussion", "review"} or ref.isolation != READONLY_ISOLATION:
                 raise PermissionError("当前会话没有可信的只读边界")
             else:
                 async with project_write_lock(ref.project_id):
@@ -228,6 +302,8 @@ def create_worker_graph(
         chunks = []
         usage = None
         writer = get_stream_writer()
+        recorder = project_recorder(ref.project_id)
+        run_id = str(config.get("metadata", {}).get("run_id", ""))
 
         async def notification(event):
             nonlocal usage
@@ -244,11 +320,21 @@ def create_worker_graph(
                 and update.content.type == "text"
             ):
                 chunks.append(update.content.text)
+            # Record the native notification for the project trajectory. The
+            # agent column is the provider, so the workbench separates Claude
+            # and Codex instead of attributing their work to the PM.
+            if recorder is not None:
+                try:
+                    recorder.native(ref.provider_id, event, run_id=run_id, thread_id=ref.session_id)
+                except Exception:
+                    # A tracing failure must never break the worker run itself.
+                    pass
             # Publish the native notification as-is through the official stream.
             writer(TrajectoryRecorder.clean_public(event.model_dump(mode="json", by_alias=True, exclude_none=True)))
 
         execution_phase = bool(request.get("pm_governed") and request.get("pm_phase") == "execution")
         quarantine = ("deep_loopminder", "project_worker_quarantine", ref.project_id)
+        ticket = None
         if execution_phase:
             ticket = project_workers.execution_ticket(ref, request["pm_dispatch_id"])
             async with project_write_lock(ref.project_id):
@@ -274,6 +360,7 @@ def create_worker_graph(
                     "intent_id": request["pm_dispatch_id"], "status": "shutdown_unconfirmed",
                     "ticket": ticket,
                 }, index=False)
+        trace_error = None
         try:
             worker = workers[ref.provider_id]
             if project_workers is not None:
@@ -281,7 +368,10 @@ def create_worker_graph(
                 if binding is None or binding["directory"] != ref.cwd:
                     raise ValueError("项目目录未绑定或与现有会话不一致")
                 if request.get("pm_governed") and request.get("pm_phase") in {"discussion", "review"}:
-                    worker = await project_workers.get_readonly(ref.provider_id, ref.cwd)
+                    worker = await project_workers.get_readonly(
+                        ref.provider_id, ref.cwd,
+                        mode_id=await readonly_mode(ref.project_id, ref.provider_id),
+                    )
                     if worker.readonly_enforcement is None:
                         raise PermissionError("只读执行能力不可验证")
                 elif execution_phase:
@@ -295,17 +385,78 @@ def create_worker_graph(
                 # This is not an atomic send against unrelated filesystem or
                 # Store writers; stale results must still fail subsequent checks.
                 await authorize_readonly(request, ref.project_id, ref.task_id, ref.thread_id, config)
+            # The mode is set and confirmed here, immediately before the prompt
+            # leaves the host. A mismatch raises and no discussion content is
+            # ever processed by the adapter under the wrong mode.
+            mode_record = await _apply_discussion_mode(worker, ref, request)
+            # Persist the adapter-reported mode under this Run so the PM side
+            # can read it back after dispatch. The worker checkpoint is not
+            # visible to the dispatching tool result.
+            if mode_record is not None and request.get("pm_governed"):
+                run_id = str(config.get("metadata", {}).get("run_id", ""))
+                if run_id:
+                    await get_store().aput(
+                        ("deep_loopminder", "project_run_modes", ref.project_id), run_id,
+                        {**mode_record, "run_id": run_id, "provider_id": ref.provider_id,
+                         "session_id": ref.session_id, "recorded_at": datetime.now(UTC).isoformat()},
+                        index=False,
+                    )
+            # Bracket the ask so the workbench can group this worker's native
+            # notifications into one turn instead of a flat stream.
+            if recorder is not None:
+                try:
+                    recorder.emit(
+                        "turn", "start", "负责人轮次开始",
+                        agent=ref.provider_id, thread_id=ref.session_id, run_id=run_id,
+                        data={"task_id": ref.task_id, "phase": request.get("pm_phase")},
+                    )
+                except Exception:
+                    pass
             result = await worker.control(
                 ref,
                 "ask",
                 {"text": state["request"]["message"]},
                 on_update=notification,
             )
+        except Exception as exc:
+            trace_error = exc
+            raise
         finally:
+            if recorder is not None:
+                try:
+                    recorder.emit(
+                        "turn", "error" if trace_error is not None else "end",
+                        "负责人轮次结束" if trace_error is None else "负责人轮次失败",
+                        agent=ref.provider_id, thread_id=ref.session_id, run_id=run_id,
+                        data={"task_id": ref.task_id,
+                              "error": str(trace_error)[:500] if trace_error is not None else None},
+                    )
+                except Exception:
+                    pass
             if execution_phase:
-                await asyncio.shield(project_workers.release_execution(ref))
-                async with project_write_lock(ref.project_id):
-                    await get_store().adelete(quarantine, ref.thread_id)
+                # A failed release must not replace the real failure. It also
+                # must not clear the quarantine: an unconfirmed shutdown keeps
+                # the project blocked until a human reconciles it.
+                try:
+                    await asyncio.shield(project_workers.release_execution(ref))
+                except Exception as exc:
+                    # Keep the quarantine and record why, without replacing the
+                    # original failure. Merge into the existing entry: dropping
+                    # intent_id/ticket would make human reconciliation
+                    # impossible.
+                    async with project_write_lock(ref.project_id):
+                        existing = await get_store().aget(quarantine, ref.thread_id)
+                        entry = dict(existing.value) if existing else {
+                            "project_id": ref.project_id, "task_id": ref.task_id,
+                            "worker_ref": ref.to_dict(), "status": "shutdown_unconfirmed",
+                            "ticket": ticket,
+                        }
+                        entry.update({"status": "shutdown_unconfirmed",
+                                      "reason": str(exc)[:500]})
+                        await get_store().aput(quarantine, ref.thread_id, entry, index=False)
+                else:
+                    async with project_write_lock(ref.project_id):
+                        await get_store().adelete(quarantine, ref.thread_id)
         return {
             "messages": [
                 AIMessage(
@@ -317,7 +468,8 @@ def create_worker_graph(
                         "compaction_visibility": "unknown",
                     },
                 )
-            ]
+            ],
+            "mode_record": mode_record,
         }
 
     return (

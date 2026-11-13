@@ -136,12 +136,12 @@ class ACPWorker:
             raise ValueError("cwd must be a directory")
         if native_cwd is not None and (not isinstance(native_cwd, str) or not native_cwd.strip()):
             raise ValueError("native_cwd must be a nonempty path when supplied")
-        # The ACP process may run in a different OS namespace (e.g. WSL).
-        # Keep the host path in WorkerRef for isolation checks while sending
-        # the corresponding native path to the adapter's session methods.
+        # The adapter may be launched through a wrapper that maps the host
+        # directory to another location. Keep the host path in WorkerRef for
+        # isolation checks while sending the mapped path to the session API.
         self.native_cwd = native_cwd or self.cwd
         self.readonly_enforcement = readonly_enforcement
-        self.session_isolation = session_isolation or ("wsl-readonly" if readonly_enforcement is not None else None)
+        self.session_isolation = session_isolation or ("native-readonly" if readonly_enforcement is not None else None)
         self.config_version = config_version
         self.suppress_stderr = suppress_stderr
         self.grants, self.approval, self.review = grants, approval, review
@@ -156,6 +156,10 @@ class ACPWorker:
         self._usage: dict[str, dict] = {}
         self._prompt_locks: dict[str, asyncio.Lock] = {}
         self._turn_sinks: dict[str, UpdateSink] = {}
+        # Serialize mode changes per session; adapter events are recorded but
+        # never treated as confirmation of a specific request.
+        self._mode_locks: dict[str, asyncio.Lock] = {}
+        self._mode_events: list[dict] = []
 
     def _authorize(self, capability: str, ref: WorkerRef | None = None) -> None:
         result = authorize(
@@ -239,13 +243,17 @@ class ACPWorker:
                 update={"config_options": update.config_options}
             )
         elif update.session_update == "current_mode_update" and response.modes:
-            self._metadata[session_id] = response.model_copy(
-                update={
-                    "modes": response.modes.model_copy(
-                        update={"current_mode_id": update.current_mode_id}
-                    )
-                }
-            )
+            # Adapter-driven event. It carries no request identifier, so it can
+            # arrive from an unrelated source (permission callbacks, plan-mode
+            # hooks). Record it with its arrival time and never let it confirm
+            # or overwrite a mode change verified by a config snapshot.
+            self._mode_events.append({
+                "session_id": session_id,
+                "mode": update.current_mode_id,
+                "source": "acp.session_update.current_mode_update",
+                "observed_at": datetime.now(UTC).isoformat(),
+            })
+            del self._mode_events[:-50]
 
     async def new(
         self,
@@ -341,8 +349,69 @@ class ACPWorker:
             "supported_controls": sorted(self._controls(ref)),
             "context_usage": self._usage.get(ref.session_id),
             "compaction_visibility": "unknown",
+            "mode_state": self.mode_state(ref.session_id),
             "connection_process_returncode": self.process.returncode,
         }
+
+    @staticmethod
+    def _mode_option(response) -> object | None:
+        """Find the adapter-advertised mode config option, if any."""
+        for option in getattr(response, "config_options", None) or ():
+            if getattr(option, "id", None) == "mode" and getattr(option, "type", None) == "select":
+                return option
+        return None
+
+    def mode_state(self, session_id: str) -> dict:
+        """Report only what the adapter advertised; never guess missing values."""
+        response = self._metadata.get(session_id)
+        option = self._mode_option(response) if response is not None else None
+        if option is None:
+            return {"available": False, "reason": "adapter_did_not_advertise_mode_option",
+                    "modes": [], "current": None}
+        modes = [
+            {"id": item.value, "name": item.name, "description": item.description}
+            for item in (getattr(option, "options", None) or ())
+            if getattr(item, "value", None)
+        ]
+        return {"available": True, "reason": None, "modes": modes,
+                "current": getattr(option, "current_value", None)}
+
+    async def apply_mode(self, ref: WorkerRef, mode_id: str) -> dict:
+        """Switch mode through the config interface and verify from its snapshot.
+
+        Returns the adapter-reported mode. Raises when the adapter did not
+        advertise the option, when the value is not offered, or when the
+        post-switch snapshot does not match the request.
+        """
+        self._bound(ref)
+        lock = self._mode_locks.setdefault(ref.session_id, asyncio.Lock())
+        async with lock:
+            response = self._metadata[ref.session_id]
+            option = self._mode_option(response)
+            if option is None:
+                raise UnsupportedControl("adapter did not advertise a mode config option")
+            offered = {item.value for item in (getattr(option, "options", None) or ())
+                       if getattr(item, "value", None)}
+            if mode_id not in offered:
+                raise UnsupportedControl("requested mode was not advertised by the adapter")
+            self._authorize("worker.set_config", ref)
+            changed = await self._call(
+                self.connection.set_config_option(session_id=ref.session_id, config_id="mode", value=mode_id)
+            )
+            current = self._metadata[ref.session_id]
+            self._metadata[ref.session_id] = current.model_copy(
+                update={"config_options": changed.config_options}
+            )
+            confirmed = self._mode_option(changed)
+            reported = getattr(confirmed, "current_value", None) if confirmed is not None else None
+            return {"requested_mode": mode_id, "reported_mode": reported,
+                    "reported_mode_source": "config_option_snapshot" if reported else None,
+                    "confirmed_at": datetime.now(UTC).isoformat(),
+                    "matched": reported == mode_id}
+
+    def mode_events(self, session_id: str) -> list[dict]:
+        """Adapter mode events, recorded without claiming they confirm a request."""
+        return [event for event in self._mode_events if event["session_id"] == session_id]
 
     async def control(
         self,
@@ -408,20 +477,14 @@ class ACPWorker:
                 mode.id for mode in modes.available_modes
             }:
                 raise UnsupportedControl("mode_id was not advertised by the session")
-            response = await self._call(
+            # The response carries no mode, so a successful call only means the
+            # request was accepted. Local state is left untouched; the
+            # post-switch value comes from apply_mode's config snapshot.
+            return await self._call(
                 self.connection.set_session_mode(
                     session_id=ref.session_id, mode_id=payload["mode_id"]
                 )
             )
-            current = self._metadata[ref.session_id]
-            self._metadata[ref.session_id] = current.model_copy(
-                update={
-                    "modes": current.modes.model_copy(
-                        update={"current_mode_id": payload["mode_id"]}
-                    )
-                }
-            )
-            return response
         if action == "set_config":
             ids = {
                 option.id for option in self._metadata[ref.session_id].config_options

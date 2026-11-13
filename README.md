@@ -370,12 +370,41 @@ LANGGRAPH_POSTGRES_URI=postgresql://user:pass@localhost:5432/db
 
 ### 启动
 
-```bash
-langgraph dev
+**必须用项目自带的启动脚本，不要直接用 `langgraph dev`。**
+原因：本机安装的 langgraph-cli 在 `dev` 命令里构造 `run_server(...)` 调用时
+不转发 langgraph.json 的 `checkpointer` 键（只转发 store/http/auth/ui/
+webhooks），PM 会话检查点会静默退回内存——重启后人工决策中断、派工意图等
+全部丢失，工作台只会给出"检查点已不存在"的提示而不是恢复原 Run。
+`scripts/run_dev_server.py` 直接调用官方 `run_server(checkpointer=…)`，
+其余行为与 `langgraph dev` 一致：
 
-# API: http://localhost:2024
-# Studio: https://smith.langchain.com/studio/?baseUrl=http://localhost:2024
+```bash
+# PM 会阻塞在 wait_agent 上等待开发负责人子代理，同一条链上的子代理 run
+# 必须能在父 run 等待期间被调度。dev 服务每个 worker 进程默认只跑
+# 1 个 job（cli.py 把 N_JOBS_PER_WORKER 设为 1，与 --help 文案不符），
+# 父 run 占满唯一的槽，子代理 run 就永远停在 pending，直到父 run 的等待
+# 超时结束才被调度。必须提高并发，否则商讨/开发/审查链路全部走不通。
+# --no-reload 同理必须保留：reload 会让 uvicorn 在 Windows 退回
+# SelectorEventLoop，create_subprocess_exec 抛 NotImplementedError，
+# ACP 适配器无法启动。
+python scripts/run_dev_server.py --port 2030 --n-jobs-per-worker 10
+# （脚本固定 reload=False；Windows 下无需再加 --no-reload）
+
+# API: http://localhost:2030
+# Studio: https://smith.langchain.com/studio/?baseUrl=http://localhost:2030
 ```
+
+**数据库回退提示**：`LANGGRAPH_POSTGRES_URI` 未配置时服务仍能启动，但
+Store 与检查点都退回进程内存——数据在重启后全部丢失，且启动日志会打印
+`[warning] LANGGRAPH_POSTGRES_URI is not set; PM Store and session
+checkpoints fall back to in-memory storage ... (ephemeral)` 明确告知。
+看到该警告仍继续使用，等于接受数据不持久；需要持久化时先在 `.env` 配好
+URI 再启动。
+
+已实测的持久化范围：**本机 dev 服务的单次重启恢复**（中断→重启→读回原
+中断→提交答复→原 Run 恢复成功，checkpoint 落 PostgreSQL）。`langgraph up`
+/ 生产部署（Docker + 持久 checkpointer、ops 元数据落库）**尚未验证**；生产
+环境请另行验证后再依赖。
 
 ---
 

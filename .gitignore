@@ -242,12 +242,16 @@ skills_repo/
 !/tests/test_pm_discussion.py
 !/tests/test_model_catalog.py
 !/tests/test_workbench.py
+!/tests/test_workbench_hitl.py
+!/tests/test_pm_checkpointer.py
+!/tests/test_worker_modes.py
 !/tests/test_acp_middleware.py
 .local-acp/
 test.jsonl
 大赛大大.zip
 
 !/docs/progress/project-state.md
+!/docs/progress/PM协作开发链路.md
 !/tests/test_project_state_middleware.py
 
 !/tests/run_pm_memory_live.py
