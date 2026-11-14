@@ -13,6 +13,7 @@ from src.middlewares.persistence.checkpointer import ThreadOffloadedPostgresSave
 _LOGGER = logging.getLogger(__name__)
 _store_ready = False
 _checkpoint_ready = None
+_pm_checkpointer = None
 
 
 def database_uri() -> str | None:
@@ -30,6 +31,15 @@ def require_ready():
     """Do not permit real PM runs with a temporary setup-only store."""
     if not _store_ready or _checkpoint_ready is False:
         raise RuntimeError("PM 数据库未连接；请在工作台设置数据库并重启服务")
+
+
+async def get_pm_checkpoint(thread_id):
+    """Read a persisted PM checkpoint without relying on the Run registry."""
+    if _checkpoint_ready is not True or _pm_checkpointer is None:
+        raise RuntimeError("PM 检查点数据库不可用，无法恢复会话")
+    return await _pm_checkpointer.aget_tuple(
+        {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+    )
 
 
 @asynccontextmanager
@@ -64,7 +74,7 @@ async def generate_pm_store():
 @asynccontextmanager
 async def generate_pm_checkpointer():
     """Use the official saver with the existing Windows event-loop bridge."""
-    global _checkpoint_ready
+    global _checkpoint_ready, _pm_checkpointer
     uri = database_uri()
     _checkpoint_ready = False
     if uri:
@@ -79,10 +89,12 @@ async def generate_pm_checkpointer():
             _LOGGER.warning("PM 检查点数据库无法连接；工作台只开放设置。")
         else:
             _checkpoint_ready = True
+            _pm_checkpointer = ThreadOffloadedPostgresSaver(saver)
             try:
-                yield ThreadOffloadedPostgresSaver(saver)
+                yield _pm_checkpointer
             finally:
                 _checkpoint_ready = False
+                _pm_checkpointer = None
                 stack.close()
             return
     yield InMemorySaver()

@@ -250,8 +250,24 @@ async def history(request):
                     and not isinstance(selected.get("reasoning_effort"), str))):
             return JSONResponse({"error": "会话模型选择记录无效，请检查会话状态。"}, status_code=409)
         selected = {key: selected.get(key) for key in ("provider_id", "model_id", "reasoning_effort")}
+        # Model identifiers published by the settings catalog are public even
+        # when an unrelated Worker environment value happens to match one.
+        # Redacting them here causes the browser to submit the placeholder as
+        # the next model selection, corrupting the conversation checkpoint.
+        from src.middlewares.agent.user_configurable import pm_model_catalog
+
+        public = await pm_model_catalog(store).list()
+        known = next((model for provider in public if provider.get("provider_id") == selected["provider_id"]
+                      for model in provider.get("models", []) if model.get("id") == selected["model_id"]), None)
+        cleaned = TrajectoryRecorder.clean_public(selected)
+        if known is not None:
+            cleaned["provider_id"] = selected["provider_id"]
+            cleaned["model_id"] = selected["model_id"]
+            if selected["reasoning_effort"] in (known.get("reasoning_levels") or []):
+                cleaned["reasoning_effort"] = selected["reasoning_effort"]
+        selected = cleaned
     return JSONResponse({"messages": [TrajectoryRecorder.clean_public(message) for message in messages],
-                         "model_selection": TrajectoryRecorder.clean_public(selected),
+                         "model_selection": selected,
                          "memory_model_error": TrajectoryRecorder.clean_public(values.get("pm_memory_model_error"))})
 
 
@@ -295,7 +311,7 @@ async def project_status(request):
     if snapshot is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     from src.deep_agents.agents.pm_agent.collaboration import (
-        observed_job_state,
+        job_observation,
         reconcile_verified_jobs,
     )
     from src.deep_agents.agents.pm_agent.discussion import DiscussionGate
@@ -360,13 +376,16 @@ async def project_status(request):
         })
     await reconcile_verified_jobs(store, project_id)
     quarantines = await store.asearch(("deep_loopminder", "project_worker_quarantine", project_id), limit=100)
+    unconfirmed = []
+    for item in quarantines:
+        observation = job_observation(item.value)
+        unconfirmed.append({"agent_id": item.key, "task_id": item.value.get("task_id"),
+                            "last_job_state": observation["state"], "last_job_reason": observation["reason"],
+                            "owner_thread_id": item.value.get("owner_thread_id"),
+                            "run_id": item.value.get("official_run_id")})
     return JSONResponse({"project_id": project_id, "goal": TrajectoryRecorder.clean_public(snapshot.goal),
                          "tasks": [TrajectoryRecorder.clean_public(task) for task in tasks],
-                         "unconfirmed_workers": [{"agent_id": item.key, "task_id": item.value.get("task_id"),
-                                                  "last_job_state": observed_job_state(item.value),
-                                                  "owner_thread_id": item.value.get("owner_thread_id"),
-                                                  "run_id": item.value.get("official_run_id")}
-                                                 for item in quarantines]})
+                         "unconfirmed_workers": unconfirmed})
 
 
 async def stop_unconfirmed_worker(request):
@@ -383,7 +402,10 @@ async def stop_unconfirmed_worker(request):
     if item is None:
         return JSONResponse({"error": "没有待核对的 Worker"}, status_code=404)
     value = dict(item.value)
-    from src.deep_agents.agents.pm_agent.collaboration import verified_job_stop
+    from src.deep_agents.agents.pm_agent.collaboration import (
+        job_observation,
+        verified_job_stop,
+    )
     from src.middlewares.acp import server as acp_server
     from src.middlewares.acp.correlation import WorkerRef
 
@@ -399,7 +421,8 @@ async def stop_unconfirmed_worker(request):
         if not verified_job_stop(value):
             raise ValueError("未取得进程树停止证明")
     except (ValueError, KeyError, TypeError, OSError):
-        return JSONResponse({"error": "无法确认进程已停止；项目仍保持阻断。"}, status_code=409)
+        reason = job_observation(value)["reason"]
+        return JSONResponse({"error": "无法确认进程已停止；项目仍保持阻断。" + reason}, status_code=409)
     async with project_write_lock(project_id):
         current = await store.aget(namespace, agent_id)
         if current is None:

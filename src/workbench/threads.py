@@ -2,13 +2,15 @@
 
 import asyncio
 import uuid
+from datetime import UTC
 
 import httpx
 from langgraph_sdk import get_client
 from starlette.responses import JSONResponse
 
 from src.middlewares.project_state.persistence import ProjectStore
-from .context import THREADS, get_store, local, forbidden
+
+from .context import THREADS, forbidden, get_store, local
 
 
 async def list_conversations(store, project_id):
@@ -24,7 +26,7 @@ async def list_conversations(store, project_id):
 
 async def create_conversation(store, client, project_id, title=None):
     """Create an official thread and bind it to one project."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     if title is not None and (not isinstance(title, str) or len(title.strip()) > 120):
         raise ValueError("会话名称无效")
@@ -36,7 +38,7 @@ async def create_conversation(store, client, project_id, title=None):
     if thread.get("thread_id") != thread_id or any(returned_metadata.get(k) != v for k, v in metadata.items()):
         raise ValueError("官方会话身份不匹配")
     record = {"thread_id": thread_id, "project_id": project_id, "title": (title or "").strip() or "新会话",
-              "created_at": datetime.now(timezone.utc).isoformat()}
+              "created_at": datetime.now(UTC).isoformat()}
     await store.aput(THREADS, thread_id, record, index=False)
     return record
 
@@ -53,7 +55,7 @@ async def project_thread(store, client, project_id, thread_id):
             thread = await client.threads.get(thread_id)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
-            raise ValueError("官方服务中找不到该会话，请检查当前服务。") from exc
+            return await _restore_registered_thread(client, project_id, thread_id)
         raise ValueError("无法核对会话，请检查官方服务。") from exc
     except (httpx.HTTPError, TimeoutError) as exc:
         raise ValueError("无法核对会话，请检查官方服务。") from exc
@@ -61,6 +63,40 @@ async def project_thread(store, client, project_id, thread_id):
     if (thread.get("thread_id") != thread_id or metadata.get("loopminder_project_id") != project_id
             or metadata.get("loopminder_purpose") != "pm_workbench"):
         raise ValueError("官方会话与项目不匹配")
+    return thread_id
+
+
+async def _restore_registered_thread(client, project_id, thread_id):
+    """Restore only a bound PM thread with an independently verified checkpoint."""
+    from src.middlewares.persistence.pm_runtime import get_pm_checkpoint
+
+    try:
+        async with asyncio.timeout(15):
+            checkpoint = await get_pm_checkpoint(thread_id)
+    except Exception as exc:
+        raise ValueError("无法读取 PM 检查点，未恢复会话。") from exc
+    expected = {"thread_id": thread_id, "graph_id": "pm_agent",
+                "loopminder_project_id": project_id, "loopminder_purpose": "pm_workbench"}
+    metadata = checkpoint.metadata if checkpoint is not None else None
+    config = checkpoint.config if checkpoint is not None else None
+    configurable = config.get("configurable") if isinstance(config, dict) else None
+    if (not isinstance(metadata, dict) or not isinstance(config, dict)
+            or any(metadata.get(key) != value for key, value in expected.items())
+            or not isinstance(configurable, dict) or configurable.get("thread_id") != thread_id):
+        raise ValueError("找不到与项目匹配的 PM 检查点，未恢复会话。")
+    try:
+        async with asyncio.timeout(15):
+            thread = await client.threads.create(
+                thread_id=thread_id, if_exists="do_nothing", graph_id="pm_agent",
+                metadata={"loopminder_project_id": project_id, "loopminder_purpose": "pm_workbench"},
+            )
+    except (httpx.HTTPError, TimeoutError) as exc:
+        raise ValueError("无法恢复官方会话，请检查服务；没有重试旧 Run。") from exc
+    actual = thread.get("metadata") if isinstance(thread, dict) else None
+    if (not isinstance(actual, dict) or thread.get("thread_id") != thread_id or actual.get("graph_id") != "pm_agent"
+            or actual.get("loopminder_project_id") != project_id
+            or actual.get("loopminder_purpose") != "pm_workbench"):
+        raise ValueError("恢复时官方会话身份不匹配，未接管该会话。")
     return thread_id
 
 

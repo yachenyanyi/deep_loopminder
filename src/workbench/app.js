@@ -846,10 +846,16 @@ taskStatusButton.onclick = async () => {
           button.disabled = true;
         } catch (e) {
           if (state.viewVersion === view)
-            taskStatusResult.textContent = e.message + ' 服务重启后可能无法确认原进程树；重复核对不一定能恢复，请先检查原 Worker 进程。';
+            taskStatusResult.textContent = e.message;
         }
       };
       workerRecovery.append(button);
+      if (w.last_job_reason) {
+        const detail = document.createElement('div');
+        detail.className = 'notice';
+        detail.textContent = w.last_job_reason;
+        workerRecovery.append(detail);
+      }
     });
   } catch (e) {
     if (state.viewVersion === view) taskStatusResult.textContent = e.message;

@@ -56,6 +56,60 @@ def test_conversations_are_independent_and_bound_to_project(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_missing_registered_thread_restores_only_verified_checkpoint(monkeypatch):
+    """A missing registry entry cannot create an empty or foreign PM session."""
+    import pytest
+
+    from src.middlewares.persistence import pm_runtime
+
+    async def scenario():
+        store = InMemoryStore()
+        await store.aput(THREADS, "thread", {"project_id": "project", "thread_id": "thread"})
+        metadata = {"thread_id": "thread", "graph_id": "pm_agent", "loopminder_project_id": "project",
+                    "loopminder_purpose": "pm_workbench"}
+        checkpoint = SimpleNamespace(metadata=metadata, config={"configurable": {"thread_id": "thread"}})
+        observed = []
+
+        class OfficialThreads:
+            other_owner = False
+            async def get(self, _thread_id):
+                request = httpx.Request("GET", "http://localhost/threads/thread")
+                raise httpx.HTTPStatusError("missing", request=request,
+                                            response=httpx.Response(404, request=request))
+            async def create(self, **kwargs):
+                observed.append(kwargs)
+                returned = {**kwargs["metadata"], "graph_id": kwargs["graph_id"]}
+                if self.other_owner:
+                    returned["loopminder_project_id"] = "other"
+                return {"thread_id": kwargs["thread_id"], "metadata": returned}
+        official = OfficialThreads()
+        client = SimpleNamespace(threads=official)
+
+        async def load(_thread_id):
+            return checkpoint
+        monkeypatch.setattr(pm_runtime, "get_pm_checkpoint", load)
+        assert await threads.project_thread(store, client, "project", "thread") == "thread"
+        assert observed[0]["if_exists"] == "do_nothing" and observed[0]["graph_id"] == "pm_agent"
+        official.other_owner = True
+        with pytest.raises(ValueError, match="身份不匹配"):
+            await threads.project_thread(store, client, "project", "thread")
+        official.other_owner = False
+        before = len(observed)
+        for bad in (None, {**metadata, "graph_id": "foreign"},
+                    {**metadata, "loopminder_project_id": "other"},
+                    {**metadata, "loopminder_purpose": "other"}, {**metadata, "thread_id": "other"}):
+            checkpoint.metadata = bad
+            with pytest.raises(ValueError, match="检查点"):
+                await threads.project_thread(store, client, "project", "thread")
+        assert len(observed) == before
+        checkpoint.metadata = metadata
+        with pytest.raises(ValueError, match="不属于"):
+            await threads.project_thread(store, client, "other", "thread")
+        assert len(observed) == before
+
+    asyncio.run(scenario())
+
+
 def test_claim_watcher_uses_each_conversations_owner():
     async def scenario():
         store = InMemoryStore()
@@ -201,6 +255,41 @@ def test_history_chat_and_decision_follow_selected_thread(monkeypatch):
             missing = await http.post("/workbench/api/chat", json={"project_id": "p", "thread_id": "other", "message": "hello"})
             assert missing.status_code == 400
         assert calls == [(first["thread_id"], "pm_agent", "p"), (second["thread_id"], "pm_agent", "p")]
+
+    asyncio.run(scenario())
+
+
+def test_history_preserves_catalog_model_names_despite_redaction(monkeypatch):
+    """A public catalog identifier must not become a redaction placeholder."""
+    from src.middlewares.agent import user_configurable
+    from src.workbench import app as workbench
+    from src.workbench import context
+
+    async def scenario():
+        store = InMemoryStore()
+        await ProjectStore(store).save(ProjectSnapshot("p", "goal", (), ()))
+        await store.aput(THREADS, "thread", {"project_id": "p", "thread_id": "thread"})
+        class Threads:
+            async def get(self, thread_id):
+                return {"thread_id": thread_id, "metadata": {"loopminder_project_id": "p",
+                         "loopminder_purpose": "pm_workbench"}}
+            async def get_state(self, _thread_id):
+                return {"values": {"messages": [], "pm_model_selection": {"provider_id": "local",
+                        "model_id": "public-model", "reasoning_effort": "medium"}}}
+        class Catalog:
+            async def list(self):
+                return [{"provider_id": "local", "models": [{"id": "public-model", "reasoning_levels": ["medium"]}]}]
+        monkeypatch.setattr(context, "_injected_store", store)
+        monkeypatch.setattr(workbench, "get_client", lambda **_: SimpleNamespace(threads=Threads()))
+        monkeypatch.setattr(user_configurable, "pm_model_catalog", lambda _store: Catalog())
+        monkeypatch.setattr(workbench.TrajectoryRecorder, "clean_public",
+                            lambda value: {**value, "model_id": "[redacted]"} if isinstance(value, dict) and "model_id" in value else value)
+        app = Starlette(routes=workbench.routes)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 3000)),
+                                     base_url="http://127.0.0.1") as client:
+            response = await client.get("/workbench/api/history", params={"project_id": "p", "thread_id": "thread"})
+            assert response.status_code == 200
+            assert response.json()["model_selection"]["model_id"] == "public-model"
 
     asyncio.run(scenario())
 

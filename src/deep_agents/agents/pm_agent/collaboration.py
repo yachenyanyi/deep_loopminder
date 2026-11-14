@@ -22,8 +22,8 @@ def _job_directory():
     return (Path(base) / "DeepLoopMinder" / "worker-jobs").resolve()
 
 
-def observed_job_state(record):
-    """Read this execution's last observation; it is not a live process query."""
+def job_observation(record):
+    """Describe the last trusted Job observation without inferring live state."""
     try:
         path = Path(record["job_status"])
         execution_id = record["execution_id"]
@@ -31,15 +31,38 @@ def observed_job_state(record):
                 or path.name != execution_id + ".json"
                 or len(execution_id) != 32
                 or any(char not in "0123456789abcdef" for char in execution_id)):
-            return "unknown"
+            return {"state": "unknown", "reason": "监管记录路径或执行身份无效。"}
         with path.open(encoding="utf-8") as stream:
             status = json.load(stream)
-        if (not isinstance(status, dict) or status.get("execution_id") != execution_id
-                or status.get("state") not in {"starting", "assigned", "running", "stopped_verified", "stop_unknown"}):
-            return "unknown"
-        return status["state"]
+        if not isinstance(status, dict) or status.get("execution_id") != execution_id:
+            return {"state": "unknown", "reason": "监管记录与当前执行身份不匹配。"}
+        state = status.get("state")
+        reasons = {
+            "starting": "启动记录尚未确认进程已分配到 Job，不能推断是否已经停止。",
+            "assigned": "进程已分配到 Job，但尚无整个进程组已退出的证明。",
+            "running": "最后记录为运行中；此记录不能证明监管进程当前仍在运行。",
+            "stop_unknown": "监管过程失败，尚未确认整个进程组已退出。",
+            "stopped_verified": "监管进程已确认 Job 内活动进程数为零。",
+        }
+        if state not in reasons:
+            return {"state": "unknown", "reason": "监管记录包含无法识别的状态。"}
+        if state == "stop_unknown":
+            phases = {"job_setup": "创建进程组", "witness_start": "启动核验进程", "adapter_start": "启动适配器",
+                      "job_assignment": "分配进程组", "status_write": "保存监管状态", "adapter_resume": "恢复适配器",
+                      "adapter_wait": "等待适配器", "job_termination": "终止进程组", "job_drain": "确认进程组退出"}
+            phase = phases.get(status.get("stage"))
+            if phase:
+                reasons[state] = f"{phase}时监管失败，尚未确认整个进程组已退出。"
+        return {"state": state, "reason": reasons[state]}
+    except FileNotFoundError:
+        return {"state": "unknown", "reason": "监管状态文件不存在，无法证明进程组已停止。"}
     except (OSError, ValueError, TypeError, KeyError):
-        return "unknown"
+        return {"state": "unknown", "reason": "监管状态文件无法读取或格式无效。"}
+
+
+def observed_job_state(record):
+    """Read this execution's last observation; it is not a live process query."""
+    return job_observation(record)["state"]
 
 
 def verified_job_stop(record):
