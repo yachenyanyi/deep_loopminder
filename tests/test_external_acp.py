@@ -466,3 +466,118 @@ def test_cli_json_stream_and_native_resume_using_saved_domain_ref(tmp_path):
             "text"
         ]
     )
+
+
+def test_pm_execution_reconciles_only_matching_verified_job(tmp_path, monkeypatch):
+    """Persist ownership before spawn and retain unproven shutdowns after restart."""
+    from langgraph.store.memory import InMemoryStore
+
+    from src.deep_agents.agents.pm_agent.collaboration import (
+        PMWorkerGovernance,
+        reconcile_verified_jobs,
+        verified_job_stop,
+    )
+    from src.middlewares.project_state.folders import ProjectFolders
+
+    async def scenario():
+        monkeypatch.setenv("LOOPMINDER_DATA_DIR", str(tmp_path))
+        store = InMemoryStore()
+        governance = PMWorkerGovernance(lambda: store)
+        checks = []
+
+        async def authorize(request, ref, config):
+            checks.append((request["owner_thread_id"], ref.thread_id, config["metadata"]["run_id"]))
+
+        async def claim(project_id, task_id, intent_id, run_id):
+            checks.append((project_id, task_id, intent_id, run_id))
+
+        async def digest(_self, _project_id):
+            return "test"
+
+        monkeypatch.setattr(governance, "authorize_execution", authorize)
+        monkeypatch.setattr(governance, "claim_intent", claim)
+        monkeypatch.setattr(ProjectFolders, "content_digest", digest)
+        ref = WorkerRef("claude", "native", "project", "task", "worker", "developer", str(tmp_path))
+        request = {"owner_thread_id": "conversation", "pm_dispatch_id": "intent"}
+        config = {"metadata": {"run_id": "official-run"}}
+        record = await governance.begin_execution(ref, request, config, {"intent_id": "intent"})
+        namespace = ("deep_loopminder", "project_worker_quarantine", "project")
+        assert checks == [("conversation", "worker", "official-run"), ("project", "task", "intent", "official-run")]
+        assert (await store.aget(namespace, "worker")).value == record
+        assert record["owner_thread_id"] == "conversation" and record["official_run_id"] == "official-run"
+        status = Path(record["job_status"])
+        assert not status.exists()
+        await reconcile_verified_jobs(store, "project")
+        assert await store.aget(namespace, "worker") is not None
+        status.write_text(json.dumps({"state": "stopped_verified", "execution_id": "different"}), encoding="utf-8")
+        assert not verified_job_stop(record)
+        await reconcile_verified_jobs(store, "project")
+        assert await store.aget(namespace, "worker") is not None
+        status.write_text(json.dumps({"state": "stopped_verified", "execution_id": record["execution_id"]}), encoding="utf-8")
+        await reconcile_verified_jobs(store, "project")
+        assert await store.aget(namespace, "worker") is None
+        await store.aput(namespace, "old-worker", {"project_id": "project", "status": "shutdown_unconfirmed"})
+        await reconcile_verified_jobs(store, "project")
+        assert await store.aget(namespace, "old-worker") is not None
+
+    asyncio.run(scenario())
+
+
+def test_discussion_can_coexist_with_other_execution_but_missing_run_is_unknown(tmp_path, monkeypatch):
+    """Allow another task's discussion without assuming a missing Run stopped."""
+    from types import SimpleNamespace
+
+    from langgraph.store.memory import InMemoryStore
+
+    from src.middlewares.execution.security_policy import (
+        EnforcementCapability,
+        EnforcementFact,
+    )
+    from src.middlewares.project_state import workflow as workflow_module
+    from src.middlewares.project_state.transitions import ProjectStateError
+
+    async def scenario():
+        store = InMemoryStore()
+        workflow = workflow_module.ProjectWorkflow(store)
+
+        async def task(_project_id, _task_id):
+            return object(), object()
+
+        async def version(_snapshot, _task):
+            return "version"
+
+        monkeypatch.setattr(workflow, "task", task)
+        monkeypatch.setattr(workflow, "input_version", version)
+        fact = EnforcementFact(surface="test", capability=EnforcementCapability.PARTIAL,
+                               enforced_capabilities=frozenset(), mechanism="test declaration", gap="test")
+        await store.aput(("deep_loopminder", "project_worker_quarantine", "project"), "worker-a",
+                         {"project_id": "project", "task_id": "task-a"})
+        common = dict(owner_thread="conversation-b", operation="spawn_agent", phase="discussion",
+                      readonly_enforcement=fact, discussion_question="question", message_digest="digest")
+        result = await workflow.begin_dispatch("project", "task-b", **common)
+        assert result["owner_thread"] == "conversation-b" and result["input_version"] == "version"
+        with pytest.raises(ProjectStateError) as error:
+            await workflow.begin_dispatch("project", "task-a", **common)
+        assert error.value.details["code"] == "worker_shutdown_unknown"
+        with pytest.raises(ProjectStateError) as error:
+            await workflow.begin_dispatch("project", "task-c", owner_thread="conversation-c",
+                                          operation="spawn_agent", phase="execution", decision_id="decision",
+                                          message_digest="digest")
+        assert error.value.details["code"] == "worker_shutdown_unknown"
+
+        class MissingRun(Exception):
+            response = SimpleNamespace(status_code=404)
+
+        class Runs:
+            async def get(self, *_):
+                raise MissingRun()
+
+        monkeypatch.setattr(workflow_module, "get_client", lambda **_: SimpleNamespace(runs=Runs()))
+        namespace = ("deep_loopminder", "project_dispatch_intents", "project")
+        await store.aput(namespace, "task-d", {"status": "confirmed", "agent_id": "worker-d", "run_id": "run-d"})
+        with pytest.raises(ProjectStateError) as error:
+            await workflow.begin_dispatch("project", "task-d", **common)
+        assert error.value.details["code"] == "dispatch_status_unknown"
+        assert (await store.aget(namespace, "task-d")).value["run_id"] == "run-d"
+
+    asyncio.run(scenario())

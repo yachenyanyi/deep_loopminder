@@ -256,27 +256,10 @@ def create_worker_graph(
             writer(TrajectoryRecorder.clean_public(event.model_dump(mode="json", by_alias=True, exclude_none=True)))
 
         execution_phase = bool(request.get("pm_governed") and request.get("pm_phase") == "execution")
-        quarantine = ("deep_loopminder", "project_worker_quarantine", ref.project_id)
-        ticket = None
+        execution = None
         if execution_phase:
             ticket = project_workers.execution_ticket(ref, request["pm_dispatch_id"])
-            async with project_write_lock(ref.project_id):
-                await governance.authorize_execution(request, ref, config)
-                if await get_store().asearch(quarantine, limit=1):
-                    raise PermissionError("项目中已有运行中或未确认停止的 Worker")
-                # Reject pre-existing links before any writable process is
-                # started. This scan is not an atomic filesystem snapshot and
-                # must not be treated as proof of the OS isolation boundary.
-                await ProjectFolders(get_store()).content_digest(ref.project_id)
-                run_id = str(config.get("metadata", {}).get("run_id", ""))
-                if not run_id:
-                    raise PermissionError("开发请求缺少官方 Run 标识")
-                await governance.claim_intent(ref.project_id, ref.task_id, request["pm_dispatch_id"], run_id)
-                await get_store().aput(quarantine, ref.thread_id, {
-                    "project_id": ref.project_id, "task_id": ref.task_id, "worker_ref": ref.to_dict(),
-                    "intent_id": request["pm_dispatch_id"], "status": "shutdown_unconfirmed",
-                    "ticket": ticket,
-                }, index=False)
+            execution = await governance.begin_execution(ref, request, config, ticket)
         trace_error = None
         try:
             worker = workers[ref.provider_id]
@@ -294,7 +277,9 @@ def create_worker_graph(
                         raise PermissionError("只读执行能力不可验证")
                     await worker.resume(ref)
                 elif execution_phase:
-                    worker = await project_workers.get_execution(ref, request["pm_dispatch_id"])
+                    worker = await project_workers.get_execution(
+                        ref, request["pm_dispatch_id"], job_status=execution["job_status"]
+                    )
                     await worker.resume(ref)
                     await governance.apply_execution_mode(worker, ref)
                     await governance.authorize_execution(request, ref, config)
@@ -342,29 +327,12 @@ def create_worker_graph(
                 except Exception:
                     pass
             if execution_phase:
-                # A failed release must not replace the real failure. It also
-                # must not clear the quarantine: an unconfirmed shutdown keeps
-                # the project blocked until a human reconciles it.
                 try:
                     await asyncio.shield(project_workers.release_execution(ref))
                 except Exception as exc:
-                    # Keep the quarantine and record why, without replacing the
-                    # original failure. Merge into the existing entry: dropping
-                    # intent_id/ticket would make human reconciliation
-                    # impossible.
-                    async with project_write_lock(ref.project_id):
-                        existing = await get_store().aget(quarantine, ref.thread_id)
-                        entry = dict(existing.value) if existing else {
-                            "project_id": ref.project_id, "task_id": ref.task_id,
-                            "worker_ref": ref.to_dict(), "status": "shutdown_unconfirmed",
-                            "ticket": ticket,
-                        }
-                        entry.update({"status": "shutdown_unconfirmed",
-                                      "reason": str(exc)[:500]})
-                        await get_store().aput(quarantine, ref.thread_id, entry, index=False)
+                    await governance.finish_execution(ref, execution, exc)
                 else:
-                    async with project_write_lock(ref.project_id):
-                        await get_store().adelete(quarantine, ref.thread_id)
+                    await governance.finish_execution(ref, execution)
         return {
             "messages": [
                 AIMessage(

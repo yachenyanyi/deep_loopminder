@@ -51,10 +51,12 @@ class ProjectStateMiddleware(AgentMiddleware):
         facts_provider: FactsProvider | None = None,
         workflow: "ProjectWorkflow | None" = None,
         pm_discussion_gate: bool = False,
+        project_recovery=None,
     ):
         """注册项目工具，绑定可选的可信验收与审批查询函数。"""
         self.workflow = workflow
         self.pm_discussion_gate = pm_discussion_gate
+        self.project_recovery = project_recovery
         self.tools = [
             project_context,
             project_read,
@@ -182,6 +184,8 @@ class ProjectStateMiddleware(AgentMiddleware):
             except ValueError:
                 return await self._execute_tool_call(request, handler)
             async with project_write_lock(project_id):
+                if self.project_recovery is not None and self.workflow is not None:
+                    await self.project_recovery(self.workflow.store, project_id, locked=True)
                 return await self._execute_tool_call(request, handler)
         return await self._execute_tool_call(request, handler)
 

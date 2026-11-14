@@ -294,6 +294,10 @@ async def project_status(request):
     snapshot = await ProjectStore(store).load(project_id) if project_id else None
     if snapshot is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
+    from src.deep_agents.agents.pm_agent.collaboration import (
+        observed_job_state,
+        reconcile_verified_jobs,
+    )
     from src.deep_agents.agents.pm_agent.discussion import DiscussionGate
     from src.middlewares.project_state.workflow import ProjectWorkflow
 
@@ -354,10 +358,14 @@ async def project_status(request):
             "validation": validation.get(task.task_id),
             "independent_codex_review": await workflow.codex_review_status(project_id, task.task_id),
         })
+    await reconcile_verified_jobs(store, project_id)
     quarantines = await store.asearch(("deep_loopminder", "project_worker_quarantine", project_id), limit=100)
     return JSONResponse({"project_id": project_id, "goal": TrajectoryRecorder.clean_public(snapshot.goal),
                          "tasks": [TrajectoryRecorder.clean_public(task) for task in tasks],
-                         "unconfirmed_workers": [{"agent_id": item.key, "task_id": item.value.get("task_id")}
+                         "unconfirmed_workers": [{"agent_id": item.key, "task_id": item.value.get("task_id"),
+                                                  "last_job_state": observed_job_state(item.value),
+                                                  "owner_thread_id": item.value.get("owner_thread_id"),
+                                                  "run_id": item.value.get("official_run_id")}
                                                  for item in quarantines]})
 
 
@@ -375,22 +383,31 @@ async def stop_unconfirmed_worker(request):
     if item is None:
         return JSONResponse({"error": "没有待核对的 Worker"}, status_code=404)
     value = dict(item.value)
+    from src.deep_agents.agents.pm_agent.collaboration import verified_job_stop
     from src.middlewares.acp import server as acp_server
     from src.middlewares.acp.correlation import WorkerRef
 
     try:
         ref = WorkerRef(**value["worker_ref"])
         pool = acp_server.project_worker_pool()
-        if ref.project_id != project_id or ref.thread_id != agent_id or pool is None:
+        if ref.project_id != project_id or ref.thread_id != agent_id:
             raise ValueError("Worker 来源不匹配")
-        await pool.reconcile_shutdown(ref, value["intent_id"], value["ticket"])
+        if not verified_job_stop(value):
+            if pool is None:
+                raise ValueError("无法确认 Worker 状态")
+            await pool.reconcile_shutdown(ref, value["intent_id"], value["ticket"])
+        if not verified_job_stop(value):
+            raise ValueError("未取得进程树停止证明")
     except (ValueError, KeyError, TypeError, OSError):
         return JSONResponse({"error": "无法确认进程已停止；项目仍保持阻断。"}, status_code=409)
     async with project_write_lock(project_id):
         current = await store.aget(namespace, agent_id)
         if current is None:
             return JSONResponse({"status": "confirmed_stopped"})
-        if current.value.get("intent_id") != value.get("intent_id"):
+        if (current.value.get("intent_id") != value.get("intent_id")
+                or current.value.get("execution_id") != value.get("execution_id")
+                or current.value.get("job_status") != value.get("job_status")
+                or not verified_job_stop(current.value)):
             return JSONResponse({"error": "Worker 状态已变化，请重新核对。"}, status_code=409)
         await store.adelete(namespace, agent_id)
     return JSONResponse({"status": "confirmed_stopped"})
@@ -549,7 +566,7 @@ async def _matching_dispatches(project_id, task_id, intent, candidate_agent_id=N
         raise ValueError("候选会话与派工意图不一致")
     if not worker_id or not intent.get("intent_id"):
         return []
-    history = (await get_store()).aget(
+    history = await (await get_store()).aget(
         ("deep_loopminder", "project_dispatch_intents", project_id, "history"), intent["intent_id"]
     )
     claimed_run_id = history.value.get("claimed_run_id") if history else None

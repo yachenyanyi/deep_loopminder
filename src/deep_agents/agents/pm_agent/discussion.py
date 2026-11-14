@@ -311,22 +311,16 @@ class PMDiscussionMiddleware(AgentMiddleware):
             if provider:
                 candidates = tuple(candidate for candidate in candidates if candidate.provider_id == provider)
             decision = route_worker(RoleRequirement("developer", task.required_capabilities), candidates)
-            pool = acp_server.project_worker_pool()
-            if decision.provider_id is None or pool is None:
+            if decision.provider_id is None:
                 return {"ok": False, "error": {"code": "developer_unavailable", "message": "没有满足任务要求的负责人。"}}
             # Open the connection under the mode this project saved, so the
             # boundary fact names the real mode instead of "unconfirmed".
             saved_mode = await pm_worker_modes(runtime.store).get(project_id, decision.provider_id)
             saved_mode_id = (saved_mode or {}).get("mode_id")
             try:
-                worker = await pool.get_readonly(
+                enforcement = await acp_server.inspect_worker_workspace(
                     decision.provider_id, folder["directory"], mode_id=saved_mode_id
                 )
-                if os.path.normcase(worker.cwd) != os.path.normcase(folder["directory"]):
-                    raise ValueError("项目目录身份已变化")
-                enforcement = worker.readonly_enforcement
-                if enforcement is None:
-                    raise ValueError("只读边界未得到宿主声明")
             except (ValueError, OSError, RuntimeError) as exc:
                 return {"ok": False, "error": {"code": "readonly_enforcement_unavailable", "message": str(exc),
                                                 "next_action": "configure_verified_readonly_worker"}}
@@ -457,13 +451,10 @@ class PMDiscussionMiddleware(AgentMiddleware):
 
             candidates = tuple(candidate for candidate in acp_server.worker_catalog() if candidate.provider_id == "codex")
             decision = route_worker(RoleRequirement("reviewer", frozenset()), candidates)
-            pool = acp_server.project_worker_pool()
-            if decision.provider_id != "codex" or pool is None:
+            if decision.provider_id != "codex":
                 return {"ok": False, "error": {"code": "codex_unavailable", "message": "独立 Codex 审查者不可用。"}}
             try:
-                worker = await pool.get_readonly("codex", folder["directory"])
-                if worker.readonly_enforcement is None or os.path.normcase(worker.cwd) != os.path.normcase(folder["directory"]):
-                    raise ValueError("审查会话的只读能力或项目目录不可验证")
+                enforcement = await acp_server.inspect_worker_workspace("codex", folder["directory"])
                 subject = await workflow.delivery_subject(project_id, task_id)
                 developer_artifact = await workflow.artifacts.get(
                     project_id, subject["developer_result_ref"], task_id=task_id, kind="worker_result"
@@ -480,7 +471,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
                        "subject（原样填写下方版本）、summary（非空字符串）、findings（问题列表）。\n交付版本："
                        + subject["subject"])
             intent = await workflow.begin_dispatch(project_id, task_id, owner_thread=owner, operation="spawn_agent",
-                                                   phase="review", readonly_enforcement=worker.readonly_enforcement,
+                                                   phase="review", readonly_enforcement=enforcement,
                                                    expected_review_subject=subject["subject"],
                                                    message_digest=content_hash(message))
             configurable = {**runtime.config.get("configurable", {}), "project_id": project_id, "task_id": task_id,
@@ -498,7 +489,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
                 raise RuntimeError("审查 Run 返回了无法核对的会话信息")
             agent_id, run = next(iter(agents.items()))
             await workflow.record_start(project_id, task_id, owner, agent_id, run["run_id"], phase="review",
-                                        readonly_enforcement=worker.readonly_enforcement,
+                                        readonly_enforcement=enforcement,
                                         dispatch_id=intent["intent_id"], expected_review_subject=subject["subject"])
             await workflow.complete_dispatch(project_id, task_id, agent_id=agent_id, run_id=run["run_id"])
             return result

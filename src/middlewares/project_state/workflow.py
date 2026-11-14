@@ -205,8 +205,9 @@ class ProjectWorkflow:
                 or (operation == "followup_task" and not worker_agent_id)):
             raise ValueError("派工意图缺少可信授权信息")
         snapshot, task = await self.task(project_id, task_id)
-        uncertain = await self.store.asearch(("deep_loopminder", "project_worker_quarantine", project_id), limit=1)
-        if uncertain:
+        uncertain = await self.store.asearch(("deep_loopminder", "project_worker_quarantine", project_id), limit=100)
+        if uncertain and (phase != "discussion" or any(
+                not item.value.get("task_id") or item.value["task_id"] == task_id for item in uncertain)):
             raise ProjectStateError("worker_shutdown_unknown", "存在未确认停止的项目 Worker，不能继续派工。", "reconcile_worker_shutdown")
         namespace = ("deep_loopminder", "project_dispatch_intents", project_id)
         previous = await self.store.aget(namespace, task_id)
@@ -223,14 +224,9 @@ class ProjectWorkflow:
                 async with asyncio.timeout(15):
                     run = await get_client(url=None).runs.get(agent_id, run_id)
             except Exception as exc:
-                # 404 是官方注册表的权威"不存在"答复：dev 重启会丢失线程注册表
-                # （真实 E2E 复现），此时上一 Run 已不可达也无法再产出结果，
-                # 必须放行重派；其余错误仍然不能断定状态。
-                status = getattr(getattr(exc, "response", None), "status_code", None)
-                if status == 404:
-                    run = {"status": "cancelled", "_registry_404": True}
-                else:
-                    raise ProjectStateError("dispatch_status_unknown", "无法确认上一 Run 状态，暂不能重复派工。", "wait_agent") from exc
+                # A missing dev registry entry is not evidence that the
+                # original worker stopped or that its result was delivered.
+                raise ProjectStateError("dispatch_status_unknown", "无法确认上一 Run 状态，暂不能重复派工。", "reconcile_dispatch") from exc
             if run.get("status") not in {"success", "error", "cancelled", "interrupted", "timeout"}:
                 raise ProjectStateError("dispatch_still_running", "上一 Run 尚未结束，不能并发派工同一任务。", "wait_agent")
         value = {

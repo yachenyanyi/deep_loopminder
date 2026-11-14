@@ -607,6 +607,7 @@ def test_live_mode_state_filters_by_provider_and_directory(monkeypatch):
     from types import SimpleNamespace
 
     from src.middlewares.acp import server
+    from src.middlewares.acp.pool import ProjectWorkerPool
 
     def worker(provider, cwd, modes):
         w = SimpleNamespace(provider_id=provider, cwd=cwd, _metadata={"s": None})
@@ -617,8 +618,9 @@ def test_live_mode_state_filters_by_provider_and_directory(monkeypatch):
     claude = worker("claude", r"C:\projects\a", [{"id": "plan", "name": "Plan", "description": None}])
     codex = worker("codex", r"C:\projects\a", [{"id": "read-only", "name": "Read-only", "description": None}])
     other_project = worker("claude", r"C:\projects\b", [{"id": "plan", "name": "Plan", "description": None}])
-    pool = SimpleNamespace(_readonly_connections={"x": codex, "y": other_project},
-                           _execution_connections={}, _connections={"z": claude})
+    pool = ProjectWorkerPool(None, [])
+    pool._readonly_connections = {"x": codex, "y": other_project}
+    pool._connections = {"z": claude}
     monkeypatch.setattr(server, "_workers", {})
     monkeypatch.setattr(server, "_project_workers", pool)
 
@@ -627,18 +629,47 @@ def test_live_mode_state_filters_by_provider_and_directory(monkeypatch):
         state = server.discover_live_modes("claude", r"C:\projects\a")
         assert state["modes"][0]["id"] == "plan"
         # 查询 claude 时，不能拿 codex 的会话充当结果。
-        only_codex = SimpleNamespace(_readonly_connections={"x": codex},
-                                     _execution_connections={}, _connections={})
+        only_codex = ProjectWorkerPool(None, [])
+        only_codex._readonly_connections = {"x": codex}
         monkeypatch.setattr(server, "_project_workers", only_codex)
         state = server.discover_live_modes("claude", r"C:\projects\a")
         assert state["available"] is False
         # 只找到其他提供方的连接，等同于本项目没有可用连接。
         assert state["reason"] == "worker_not_connected"
         # 其他项目的会话不得出现在本项目的结果里。
-        monkeypatch.setattr(server, "_project_workers", SimpleNamespace(
-            _readonly_connections={"y": other_project}, _execution_connections={}, _connections={}))
+        other_pool = ProjectWorkerPool(None, [])
+        other_pool._readonly_connections = {"y": other_project}
+        monkeypatch.setattr(server, "_project_workers", other_pool)
         state = server.discover_live_modes("claude", r"C:\projects\a")
         assert state["available"] is False
+
+    asyncio.run(scenario())
+
+
+def test_workspace_inspection_returns_fact_and_checks_directory(tmp_path):
+    """PM sees the capability fact, while the pool keeps the worker object."""
+    from src.middlewares.acp.pool import ProjectWorkerPool
+
+    async def scenario():
+        pool = ProjectWorkerPool(None, [])
+        fact = object()
+        worker = SimpleNamespace(cwd=str(tmp_path), readonly_enforcement=fact)
+        requests = []
+
+        async def get_readonly(provider, directory, *, mode_id):
+            requests.append((provider, directory, mode_id))
+            return worker
+
+        pool.get_readonly = get_readonly
+        assert await pool.inspect_workspace("claude", str(tmp_path), mode_id="plan") is fact
+        assert requests == [("claude", str(tmp_path), "plan")]
+        worker.cwd = str(tmp_path / "different")
+        with pytest.raises(ValueError, match="目录身份"):
+            await pool.inspect_workspace("claude", str(tmp_path))
+        worker.cwd = str(tmp_path)
+        worker.readonly_enforcement = None
+        with pytest.raises(ValueError, match="执行边界"):
+            await pool.inspect_workspace("claude", str(tmp_path))
 
     asyncio.run(scenario())
 

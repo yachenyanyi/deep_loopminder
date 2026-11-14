@@ -1,12 +1,69 @@
 """PM-specific authorization and mode rules for ACP Worker turns."""
 
+import json
+import os
+import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 from langgraph.config import get_store
 
 from src.middlewares.acp.control import UnsupportedControl
 from src.middlewares.acp.pool import mode_can_write
 from src.middlewares.project_state.artifacts import content_hash
+from src.middlewares.project_state.folders import ProjectFolders
+from src.middlewares.project_state.scope import project_write_lock
+
+
+def _job_directory():
+    base = os.getenv("LOOPMINDER_DATA_DIR") or os.getenv("LOCALAPPDATA")
+    if not base:
+        raise ValueError("未配置本机应用数据目录")
+    return (Path(base) / "DeepLoopMinder" / "worker-jobs").resolve()
+
+
+def observed_job_state(record):
+    """Read this execution's last observation; it is not a live process query."""
+    try:
+        path = Path(record["job_status"])
+        execution_id = record["execution_id"]
+        if (not path.is_absolute() or path.parent.resolve() != _job_directory()
+                or path.name != execution_id + ".json"
+                or len(execution_id) != 32
+                or any(char not in "0123456789abcdef" for char in execution_id)):
+            return "unknown"
+        with path.open(encoding="utf-8") as stream:
+            status = json.load(stream)
+        if (not isinstance(status, dict) or status.get("execution_id") != execution_id
+                or status.get("state") not in {"starting", "assigned", "running", "stopped_verified", "stop_unknown"}):
+            return "unknown"
+        return status["state"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return "unknown"
+
+
+def verified_job_stop(record):
+    """Accept only this execution's explicitly verified Job shutdown record."""
+    return observed_job_state(record) == "stopped_verified"
+
+
+async def reconcile_verified_jobs(store, project_id, *, locked=False):
+    """Remove only records backed by their own confirmed Job shutdown."""
+    namespace = ("deep_loopminder", "project_worker_quarantine", project_id)
+    async def reconcile():
+        entries = await store.asearch(namespace, limit=100)
+        for entry in entries:
+            value = entry.value
+            ref = value.get("worker_ref") if isinstance(value, dict) else None
+            if (isinstance(ref, dict) and value.get("project_id") == project_id
+                    and ref.get("project_id") == project_id and ref.get("thread_id") == entry.key
+                    and verified_job_stop(value)):
+                await store.adelete(namespace, entry.key)
+    if locked:
+        await reconcile()
+    else:
+        async with project_write_lock(project_id):
+            await reconcile()
 
 
 class PMWorkerGovernance:
@@ -15,6 +72,49 @@ class PMWorkerGovernance:
     def __init__(self, store_provider=get_store):
         """Use the runtime Store; tests may provide an isolated Store."""
         self.get_store = store_provider
+
+    async def begin_execution(self, ref, request, config, ticket):
+        """Persist the authorized execution identity before starting its process."""
+        project_id = ref.project_id
+        namespace = ("deep_loopminder", "project_worker_quarantine", project_id)
+        directory = _job_directory()
+        directory.mkdir(parents=True, exist_ok=True)
+        execution_id = uuid.uuid4().hex
+        status_path = directory / (execution_id + ".json")
+        if status_path.exists():
+            raise RuntimeError("Worker 状态路径已存在")
+        await reconcile_verified_jobs(self.get_store(), project_id)
+        async with project_write_lock(project_id):
+            await self.authorize_execution(request, ref, config)
+            if await self.get_store().asearch(namespace, limit=1):
+                raise PermissionError("项目中已有运行中或未确认停止的 Worker")
+            await ProjectFolders(self.get_store()).content_digest(project_id)
+            run_id = str(config.get("metadata", {}).get("run_id", ""))
+            if not run_id:
+                raise PermissionError("开发请求缺少官方 Run 标识")
+            await self.claim_intent(project_id, ref.task_id, request["pm_dispatch_id"], run_id)
+            record = {"project_id": project_id, "task_id": ref.task_id,
+                      "owner_thread_id": request["owner_thread_id"], "worker_ref": ref.to_dict(),
+                      "intent_id": request["pm_dispatch_id"], "official_run_id": run_id,
+                      "execution_id": execution_id, "job_status": str(status_path),
+                      "status": "shutdown_unconfirmed", "ticket": ticket}
+            await self.get_store().aput(namespace, ref.thread_id, record, index=False)
+        return record
+
+    async def finish_execution(self, ref, record, error=None):
+        """Clear only the matching execution after verified Job shutdown."""
+        namespace = ("deep_loopminder", "project_worker_quarantine", ref.project_id)
+        async with project_write_lock(ref.project_id):
+            item = await self.get_store().aget(namespace, ref.thread_id)
+            if item is None or item.value.get("execution_id") != record["execution_id"]:
+                return
+            if error is None and verified_job_stop(item.value):
+                await self.get_store().adelete(namespace, ref.thread_id)
+            else:
+                value = {**item.value, "status": "shutdown_unconfirmed"}
+                if error is not None:
+                    value["reason"] = str(error)[:500]
+                await self.get_store().aput(namespace, ref.thread_id, value, index=False)
 
     async def claim_intent(self, project_id: str, task_id: str, dispatch_id: str, run_id: str):
         """把官方 Run 写回派工意图：历史记录写回 + 指针一致时同步 current。
@@ -42,6 +142,7 @@ class PMWorkerGovernance:
         return (saved or {}).get("mode_id")
 
     async def authorize_execution(self, request, ref, config):
+        """Check the current decision and exact authorized dispatch."""
         from .discussion import DiscussionGate
 
         decision = await DiscussionGate(self.get_store()).require_pass(
@@ -69,6 +170,7 @@ class PMWorkerGovernance:
             raise PermissionError("派工意图与当前负责人或门禁版本不匹配")
 
     async def authorize_readonly(self, request, project_id, task_id, worker_id, config):
+        """Check the current task version and authorized dispatch."""
         from src.middlewares.project_state.workflow import ProjectWorkflow
 
         intent_id = request.get("pm_dispatch_id")

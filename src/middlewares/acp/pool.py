@@ -52,6 +52,25 @@ def mode_can_write(provider_id, mode_id):
     return mode_id not in READONLY_MODES.get(provider_id, frozenset())
 
 
+def observed_modes(workers, provider_id, directory=None):
+    """Return modes reported by a matching live connection, without starting one."""
+    candidates = []
+    for worker in workers:
+        if worker is None or worker in candidates or getattr(worker, "provider_id", None) != provider_id:
+            continue
+        if directory is not None and os.path.normcase(worker.cwd) != os.path.normcase(directory):
+            continue
+        candidates.append(worker)
+    if not candidates:
+        return {"available": False, "reason": "worker_not_connected", "modes": [], "current": None}
+    for worker in candidates:
+        for session_id in reversed(list(getattr(worker, "_metadata", {}) or {})):
+            state = worker.mode_state(session_id)
+            if state.get("available"):
+                return state
+    return {"available": False, "reason": "worker_has_no_session", "modes": [], "current": None}
+
+
 class ProjectWorkerPool:
     """Own SDK connections bound to one provider and one project directory."""
 
@@ -83,6 +102,21 @@ class ProjectWorkerPool:
     def configured(self, provider_id):
         """Report whether the provider has any usable settings."""
         return provider_id in self._settings
+
+    def discover_live_modes(self, provider_id, directory=None, *, bootstrap=None):
+        """Return reported modes from the selected provider and workspace."""
+        workers = ((bootstrap,) + tuple(self._readonly_connections.values())
+                   + tuple(self._execution_connections.values()) + tuple(self._connections.values()))
+        return observed_modes(workers, provider_id, directory)
+
+    async def inspect_workspace(self, provider_id, directory, *, mode_id=None):
+        """Check the configured worker and return its enforcement fact, not its connection."""
+        worker = await self.get_readonly(provider_id, directory, mode_id=mode_id)
+        if os.path.normcase(worker.cwd) != os.path.normcase(directory):
+            raise ValueError("项目目录身份已变化")
+        if worker.readonly_enforcement is None:
+            raise ValueError("执行边界未得到宿主声明")
+        return worker.readonly_enforcement
 
     async def get(self, provider_id, directory):
         """Return a plain live connection for unexplored, non-governed use."""
@@ -264,7 +298,7 @@ class ProjectWorkerPool:
         return {"context_usage": observed.get("context_usage"),
                 "compaction_visibility": observed.get("compaction_visibility", "unknown")}
 
-    async def get_execution(self, ref, intent_id):
+    async def get_execution(self, ref, intent_id, *, job_status=None):
         """Continue an idle read-only session as a writable developer session."""
         if ref.isolation != READONLY_ISOLATION:
             raise ValueError("开发必须续接经过商讨的负责人会话")
@@ -282,6 +316,8 @@ class ProjectWorkerPool:
             if existing is not None:
                 if existing.process is None or existing.process.returncode is not None:
                     raise ValueError("上次 Worker 进程的退出尚未确认")
+                if getattr(existing, "job_status", None) != (Path(job_status) if job_status is not None else None):
+                    raise ValueError("Worker 监管记录与当前请求不一致")
                 return existing
             # Only close connections owned by this Worker thread. Other PM
             # conversations may be prompting on their own adapter processes.
@@ -314,6 +350,7 @@ class ProjectWorkerPool:
                     approval=approval, review=self._execution_review, env=self._worker_env(settings),
                     timeout=settings.get("timeout", 180), session_isolation=ref.isolation,
                     config_version=ref.config_version,
+                    **({"job_status": job_status} if job_status is not None else {}),
                 ))
             except BaseException:
                 await stack.aclose()

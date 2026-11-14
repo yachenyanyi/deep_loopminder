@@ -21,7 +21,7 @@ from src.runtime.routing.models import WorkerCandidate
 from .capabilities import worker_candidate
 from .control import ACPWorker
 from .graph import create_control_graph, create_worker_graph
-from .pool import ProjectWorkerPool
+from .pool import ProjectWorkerPool, observed_modes
 
 _workers: dict[str, ACPWorker] = {}
 _candidates = []
@@ -180,7 +180,11 @@ async def lifespan(app):
         stack.callback(_workers.clear)
         stack.callback(_candidates.clear)
         stack.callback(_worker_errors.clear)
-        from src.middlewares.agent.pm_settings import PMCredentials, current, resolve_runtime_config
+        from src.middlewares.agent.pm_settings import (
+            PMCredentials,
+            current,
+            resolve_runtime_config,
+        )
 
         pm_settings = current()
         runtime = pm_settings.read().get("runtime", {}) if pm_settings else {}
@@ -306,6 +310,13 @@ def project_worker_pool():
     return _project_workers
 
 
+async def inspect_worker_workspace(provider_id, directory, *, mode_id=None):
+    """Inspect a configured project worker without exposing its connection."""
+    if _project_workers is None:
+        raise ValueError("Worker 连接管理器不可用")
+    return await _project_workers.inspect_workspace(provider_id, directory, mode_id=mode_id)
+
+
 def managed_worker_status(provider_id):
     """Expose public connection status without exposing the runtime registries."""
     return {"revision": _active_managed_revision.get(provider_id), "error": _worker_errors.get(provider_id)}
@@ -313,30 +324,10 @@ def managed_worker_status(provider_id):
 
 def discover_live_modes(provider_id, directory=None):
     """Find only modes reported by this provider and the requested project."""
-    candidates = []
     bootstrap = _workers.get(provider_id)
-    if bootstrap is not None and getattr(bootstrap, "provider_id", provider_id) == provider_id:
-        if directory is None or os.path.normcase(bootstrap.cwd) == os.path.normcase(directory):
-            candidates.append(bootstrap)
-    pool = _project_workers
-    if pool is not None:
-        connections = (list(getattr(pool, "_readonly_connections", {}).values())
-                       + list(getattr(pool, "_execution_connections", {}).values())
-                       + list(getattr(pool, "_connections", {}).values()))
-        for worker in connections:
-            if worker is None or worker in candidates or getattr(worker, "provider_id", None) != provider_id:
-                continue
-            if directory is not None and os.path.normcase(worker.cwd) != os.path.normcase(directory):
-                continue
-            candidates.append(worker)
-    if not candidates:
-        return {"available": False, "reason": "worker_not_connected", "modes": [], "current": None}
-    for worker in candidates:
-        for session_id in reversed(list(getattr(worker, "_metadata", {}) or {})):
-            state = worker.mode_state(session_id)
-            if state.get("available"):
-                return state
-    return {"available": False, "reason": "worker_has_no_session", "modes": [], "current": None}
+    if _project_workers is None:
+        return observed_modes((bootstrap,), provider_id, directory)
+    return _project_workers.discover_live_modes(provider_id, directory, bootstrap=bootstrap)
 
 
 def acp_worker(governance=None):

@@ -77,6 +77,38 @@ def test_claim_watcher_uses_each_conversations_owner():
     asyncio.run(scenario())
 
 
+def test_claim_watcher_retries_only_after_known_claim_finishes():
+    """A failed claim can retry once; a running or unknown claim cannot."""
+    async def scenario():
+        statuses = {"claim-1": "running"}
+        class Runs:
+            async def get(self, thread_id, run_id):
+                if run_id not in statuses:
+                    raise RuntimeError("unavailable")
+                return {"status": statuses[run_id]}
+        client = SimpleNamespace(runs=Runs())
+        watcher = ClaimWatcher()
+        assert not await watcher._already_triggered(client, "owner", "worker-run")
+        watcher._mark_triggered("worker-run", "claim-1")
+        assert await watcher._already_triggered(client, "owner", "worker-run")
+        statuses["claim-1"] = "error"
+        assert not await watcher._already_triggered(client, "owner", "worker-run")
+        watcher._mark_triggered("worker-run", "claim-2")
+        statuses["claim-2"] = "error"
+        assert await watcher._already_triggered(client, "owner", "worker-run")
+        watcher._mark_triggered("unknown-worker", None)
+        assert await watcher._already_triggered(client, "owner", "unknown-worker")
+
+        async def failed_create(*args, **kwargs):
+            raise TimeoutError("outcome unknown")
+        client.runs.create = failed_create
+        task = {"run_id": "uncertain", "agent_name": "worker"}
+        assert not await watcher._wake(client, "project", "owner", [("worker", task, "success")], {})
+        assert await watcher._already_triggered(client, "owner", "uncertain")
+
+    asyncio.run(scenario())
+
+
 def test_worker_review_owner_comes_from_matching_dispatch(monkeypatch):
     from src.workbench import worker_reviews
     async def scenario():
@@ -88,6 +120,38 @@ def test_worker_review_owner_comes_from_matching_dispatch(monkeypatch):
             "phase": "execution", "worker_agent_id": "worker", "owner_thread": "conversation"})
         assert await _owner_for_worker({"project_id": "p", "task_id": "task", "thread_id": "worker"}) == "conversation"
         assert await _owner_for_worker({"project_id": "p", "task_id": "task", "thread_id": "other"}) is None
+    asyncio.run(scenario())
+
+
+def test_dispatch_reconciliation_requires_matching_owner_and_run(monkeypatch):
+    """Reconciliation reads the saved claim and refuses another owner's checkpoint."""
+    from src.middlewares.project_state.artifacts import content_hash
+    from src.workbench import app as workbench
+
+    async def scenario():
+        store = InMemoryStore()
+        await store.aput(("deep_loopminder", "project_dispatch_intents", "p", "history"),
+                         "intent", {"claimed_run_id": "run"})
+        async def get_store():
+            return store
+        class Runs:
+            async def list(self, *_args, **_kwargs):
+                return [{"run_id": "run", "status": "success"}]
+        class Threads:
+            owner = "conversation"
+            async def get_history(self, *_args, **_kwargs):
+                return [{"values": {"owner_thread_id": self.owner,
+                        "request": {"pm_dispatch_id": "intent", "pm_phase": "execution", "message": "work"},
+                        "worker_ref": {"project_id": "p", "task_id": "task", "thread_id": "worker"}}}]
+        threads = Threads()
+        monkeypatch.setattr(workbench, "get_store", get_store)
+        monkeypatch.setattr(workbench, "get_client", lambda **_: SimpleNamespace(runs=Runs(), threads=threads))
+        intent = {"worker_agent_id": "worker", "intent_id": "intent", "phase": "execution",
+                  "owner_thread": "conversation", "message_digest": content_hash("work")}
+        assert (await workbench._matching_dispatches("p", "task", intent))[0]["run_id"] == "run"
+        threads.owner = "another-conversation"
+        assert await workbench._matching_dispatches("p", "task", intent) == []
+
     asyncio.run(scenario())
 
 

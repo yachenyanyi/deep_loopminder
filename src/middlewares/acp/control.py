@@ -1,7 +1,9 @@
 """Thin ACP SDK calls with current grants and existing approval policy."""
 
 import asyncio
+import json
 import os
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -125,6 +127,7 @@ class ACPWorker:
         session_isolation: str | None = None,
         config_version: str | None = None,
         suppress_stderr: bool = False,
+        job_status: str | Path | None = None,
     ):
         """配置启动参数与权限；timeout=None 时不按总耗时取消原生调用。"""
         if not provider_id.strip() or not command or (timeout is not None and timeout <= 0):
@@ -144,6 +147,9 @@ class ACPWorker:
         self.session_isolation = session_isolation or ("native-readonly" if readonly_enforcement is not None else None)
         self.config_version = config_version
         self.suppress_stderr = suppress_stderr
+        self.job_status = Path(job_status) if job_status is not None else None
+        if self.job_status is not None and (os.name != "nt" or not self.job_status.is_absolute()):
+            raise ValueError("ACP Job status requires an absolute Windows path")
         self.grants, self.approval, self.review = grants, approval, review
         self.on_update = on_update
         self.env, self.timeout = env, timeout
@@ -178,12 +184,22 @@ class ACPWorker:
     async def __aenter__(self):
         """Let the official SDK spawn, frame and clean up the adapter process."""
         self._authorize("worker.connect")
+        command = self.command
+        transport_kwargs = {"stderr": asyncio.subprocess.DEVNULL if self.suppress_stderr else None}
+        if self.job_status is not None:
+            if not self.job_status.parent.is_dir() or self.job_status.exists():
+                raise ValueError("ACP Job status path must be new and its directory must exist")
+            command = (sys.executable, str(Path(__file__).with_name("job.py")),
+                       "--status", str(self.job_status), "--", *command)
+            # The adapter needs time to close cleanly and the Job owner must
+            # count all remaining descendants before it writes confirmation.
+            transport_kwargs["shutdown_timeout"] = 15
         self._transport = spawn_agent_process(
             _Client(self),
-            *self.command,
+            *command,
             cwd=self.cwd,
             env={**os.environ, **(self.env or {})},
-            transport_kwargs={"stderr": asyncio.subprocess.DEVNULL if self.suppress_stderr else None},
+            transport_kwargs=transport_kwargs,
             use_unstable_protocol=True,
         )
         self.connection, self.process = await self._transport.__aenter__()
@@ -207,13 +223,23 @@ class ACPWorker:
 
     async def __aexit__(self, exc_type, exc, traceback):
         """Close the SDK connection; provider persistence remains provider-owned."""
+        transport, self._transport = self._transport, None
         try:
-            return await self._transport.__aexit__(exc_type, exc, traceback)
+            outcome = await transport.__aexit__(exc_type, exc, traceback) if transport is not None else None
         finally:
             self.connection = None
             self._refs.clear()
             self._metadata.clear()
             self._usage.clear()
+        if self.job_status is not None:
+            try:
+                status = json.loads(self.job_status.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                status = None
+            if (not isinstance(status, dict) or status.get("state") != "stopped_verified"
+                    or status.get("execution_id") != self.job_status.stem):
+                raise RuntimeError("ACP Job process tree shutdown is unconfirmed")
+        return outcome
 
     async def _call(self, request):
         return await asyncio.wait_for(request, timeout=self.timeout)

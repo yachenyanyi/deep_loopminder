@@ -836,7 +836,8 @@ taskStatusButton.onclick = async () => {
     (data.unconfirmed_workers || []).forEach((w) => {
       const button = document.createElement('button');
       button.className = 'secondary';
-      button.textContent = '停止并核对未确认的负责人 · ' + (w.task_id || w.agent_id);
+      const observations = { starting: '正在启动', assigned: '已分配', running: '运行中', stop_unknown: '停止未知', unknown: '状态未知' };
+      button.textContent = '停止并核对负责人 · ' + (w.task_id || w.agent_id) + '（最近记录：' + (observations[w.last_job_state] || '未知') + '）';
       button.onclick = async () => {
         try {
           await api('stop-unconfirmed-worker', { project_id: project, agent_id: w.agent_id });

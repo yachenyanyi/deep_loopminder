@@ -367,7 +367,10 @@ async def pm_agent(*, studio=False, trace_project_id=None):
     # 先确定模型与共享存储，项目状态和历史记忆使用同一个 Store。
     dynamic_memory_model = True
     store = (await get_pm_memory_store()).store
-    from src.middlewares.agent.user_configurable import configured_pm_model, pm_model_catalog
+    from src.middlewares.agent.user_configurable import (
+        configured_pm_model,
+        pm_model_catalog,
+    )
 
     catalog = pm_model_catalog(store)
     selected = await catalog.get_default()
@@ -377,8 +380,11 @@ async def pm_agent(*, studio=False, trace_project_id=None):
     memory = None if studio or not memory_enabled else PMMemory(store, model)
     from src.middlewares.project_state.workflow import ProjectWorkflow
 
+    from .collaboration import reconcile_verified_jobs
+
     project_state = ProjectStateMiddleware(
-        workflow=ProjectWorkflow(store), pm_discussion_gate=not studio
+        workflow=ProjectWorkflow(store), pm_discussion_gate=not studio,
+        project_recovery=reconcile_verified_jobs if not studio else None,
     )
     trajectory = None
     workspace_item = await store.aget(("deep_loopminder", "pm_settings"), "workspace") if pm_settings is None else None

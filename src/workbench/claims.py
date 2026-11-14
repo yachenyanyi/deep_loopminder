@@ -11,8 +11,8 @@ PM 在其中领取并继续。候选不只看缓存的未完成状态：官方�
 需要宿主触发，否则结果一直无人领取；权威门槛是 fresh runs.get 的终态。
 busy 会话不动（官方拉取在下一次模型调用前投递）；等待人工
 决策的会话不动（用户答复后的拉取会投递）；Worker 等待输入（waiting）无事可领，
-同样跳过。每次进程生命周期内每个 run_id 至多触发一次；触发后的领取失败（例如
-模型未配置）不会自动重试，等用户下一次交互或重启后再触发。
+同样跳过。领取 Run 明确结束后，仍未领取的结果最多再唤醒一次；状态不可查询
+时不重试，避免在领取请求结果未知时重复派发。
 """
 
 import asyncio
@@ -31,6 +31,7 @@ _TERMINAL = frozenset({"success", "error", "cancelled", "interrupted", "timeout"
 # 或等待人工决策的父会话。
 _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 _MAX_TRIGGERED = 4096
+_MAX_WAKE_ATTEMPTS = 2
 
 
 def _poll_seconds():
@@ -86,15 +87,27 @@ class ClaimWatcher:
     def __init__(self, store=None):
         """Leave the Store unset to resolve it lazily; startup ordering cannot break the loop."""
         self.store = store
-        self._triggered: dict[str, None] = {}
+        self._triggered: dict[str, dict] = {}
 
-    def _already_triggered(self, run_id: str) -> bool:
-        """Whether this process already woke PM for the run."""
-        return run_id in self._triggered
+    async def _already_triggered(self, client, thread_id: str, run_id: str) -> bool:
+        """Wait for a known claim run to finish before allowing a bounded retry."""
+        entry = self._triggered.get(run_id)
+        if entry is None:
+            return False
+        claim_id = entry.get("claim_run_id")
+        if not claim_id or entry["attempts"] >= _MAX_WAKE_ATTEMPTS:
+            return True
+        try:
+            claim = await client.runs.get(thread_id, claim_id)
+        except Exception:  # noqa: BLE001  # unknown outcome must not create a duplicate wake
+            return True
+        return claim.get("status") not in _TERMINAL
 
-    def _mark_triggered(self, run_id: str) -> None:
-        """Remember the wake with bounded memory for long-lived processes."""
-        self._triggered[run_id] = None
+    def _mark_triggered(self, run_id: str, claim_run_id: str | None) -> None:
+        """Track the claim run and limit retries for each worker result."""
+        previous = self._triggered.get(run_id, {})
+        self._triggered[run_id] = {"claim_run_id": claim_run_id,
+                                   "attempts": previous.get("attempts", 0) + 1}
         while len(self._triggered) > _MAX_TRIGGERED:
             self._triggered.pop(next(iter(self._triggered)))
 
@@ -122,7 +135,7 @@ class ClaimWatcher:
             run_id = task.get("run_id")
             if not run_id or delivered.get(run_id):
                 continue
-            if self._already_triggered(run_id):
+            if await self._already_triggered(client, thread_id, run_id):
                 continue
             try:
                 run = await client.runs.get(task_id, run_id)
@@ -141,9 +154,9 @@ class ClaimWatcher:
         return entries
 
     async def _wake(self, client, project_id: str, thread_id: str, entries, names) -> bool:
-        """Start one claim run carrying the project context; failures stay retryable."""
+        """Start one claim run; an unknown create outcome is not retried blindly."""
         try:
-            await client.runs.create(
+            claim = await client.runs.create(
                 thread_id,
                 "pm_agent",
                 input={"messages": [{"role": "user", "content": _claim_message(entries, names)}]},
@@ -154,11 +167,13 @@ class ClaimWatcher:
                 }},
                 multitask_strategy="enqueue",
             )
-        except Exception:  # noqa: BLE001  # transient server errors: tried again next pass
+        except Exception:  # noqa: BLE001  # create may have succeeded despite a lost response
+            for _, task, _ in entries:
+                self._mark_triggered(task["run_id"], None)
             _LOGGER.warning("无法为项目 %s 创建领取 Run", project_id, exc_info=True)
             return False
         for _, task, _ in entries:
-            self._mark_triggered(task["run_id"])
+            self._mark_triggered(task["run_id"], claim.get("run_id") if isinstance(claim, dict) else None)
         return True
 
     async def poll_once(self, client) -> list[tuple[str, str]]:
