@@ -138,6 +138,206 @@ def test_claim_watcher_uses_each_conversations_owner():
     asyncio.run(scenario())
 
 
+def test_claim_event_marks_run_and_blocks_worker_dispatch():
+    """Claim notifications may deliver results but cannot create dispatches."""
+    from types import SimpleNamespace
+
+    from src.middlewares.project_state.middleware import ProjectStateMiddleware
+    from src.workbench.context import run_config
+
+    async def scenario():
+        created = []
+
+        async def create(*args, **kwargs):
+            created.append((args, kwargs))
+            return {"run_id": "claim-run"}
+
+        watcher = ClaimWatcher()
+        client = SimpleNamespace(runs=SimpleNamespace(create=create))
+        entries = [("worker-thread", {"run_id": "worker-run", "agent_name": "developer"}, "success")]
+        assert await watcher._wake(client, "project", "owner", entries, {})
+        config = created[0][1]["config"]
+        assert config["configurable"]["_pm_claim_event"] is True
+        assert created[0][0][0] == "owner"
+        assert await watcher._already_triggered(client, "owner", "worker-run")
+        async def thread_get(_thread_id):
+            return {"status": "idle"}
+
+        client.threads = SimpleNamespace(get=thread_get)
+        assert await watcher._claimable(client, "owner", {
+            "async_tasks": {"worker-thread": entries[0][1]},
+            "acp_delivered": {"worker-run": True},
+        }) == []
+        assert len(created) == 1
+        middleware = ProjectStateMiddleware(pm_discussion_gate=True)
+        calls = []
+
+        async def handler(request):
+            calls.append(request.tool_call["name"])
+            return "delivered"
+
+        for name in ("spawn_agent", "followup_task", "begin_discussion", "begin_codex_review"):
+            request = SimpleNamespace(tool_call={"name": name, "id": "call", "args": {}},
+                                      runtime=SimpleNamespace(config=config))
+            result = await middleware._execute_tool_call(request, handler)
+            assert "claim_event_dispatch_blocked" in result.content
+        assert not calls
+        request = SimpleNamespace(tool_call={"name": "wait_agent", "id": "call", "args": {}},
+                                  runtime=SimpleNamespace(config=config))
+        assert await middleware._execute_tool_call(request, handler) == "delivered"
+        user_config = run_config("project", {})
+        assert user_config["configurable"]["_pm_claim_event"] is False
+        request = SimpleNamespace(tool_call={"name": "followup_task", "id": "call", "args": {}},
+                                  runtime=SimpleNamespace(config=user_config))
+        assert await middleware._execute_tool_call(request, handler) == "delivered"
+
+    asyncio.run(scenario())
+
+
+def test_project_status_exposes_worker_recovery_without_inventing_status(monkeypatch):
+    """Show the persisted task and recovery facts, including unknown values."""
+    from src.deep_agents.agents.pm_agent import collaboration, discussion
+    from src.middlewares.project_state.models import Task, TaskStatus
+    from src.middlewares.project_state.workflow import ProjectWorkflow
+    from src.workbench import app as workbench
+    from src.workbench import context
+
+    async def scenario():
+        store = InMemoryStore()
+        task = Task("task", "Task", TaskStatus.IN_PROGRESS, "developer", frozenset(), frozenset(), ("done",))
+        await ProjectStore(store).save(ProjectSnapshot("p", "goal", (), (task,)))
+        namespace = ("deep_loopminder", "project_worker_executions", "p")
+        await store.aput(namespace, "execution", {
+            "task_id": "task", "owner_thread_id": "owner", "official_run_id": "run",
+            "recovery": {"host_instance": collaboration._HOST_INSTANCE,
+                         "classification": "unknown", "job_state": "running", "worker_state": "unknown",
+                         "thread_status": None, "run_status": None,
+                         "dispatch_allowed": False, "reason": "无法确认进程"},
+        })
+        async def nothing(*_args, **_kwargs):
+            return None
+        async def empty(*_args, **_kwargs):
+            return []
+        async def review(*_args, **_kwargs):
+            return {"status": "unknown"}
+        monkeypatch.setattr(context, "_injected_store", store)
+        monkeypatch.setattr(collaboration, "reconcile_verified_jobs", nothing)
+        monkeypatch.setattr(discussion.DiscussionGate, "latest", nothing)
+        monkeypatch.setattr(ProjectWorkflow, "review_status", empty)
+        monkeypatch.setattr(ProjectWorkflow, "codex_review_status", review)
+        app = Starlette(routes=workbench.routes)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 3000)),
+                                     base_url="http://127.0.0.1") as client:
+            response = await client.get("/workbench/api/project-status", params={"project_id": "p"})
+            assert response.status_code == 200
+            execution = response.json()["worker_executions"][0]
+            assert execution["execution_id"] == "execution" and execution["task_status"] == "in_progress"
+            assert execution["owner_thread_id"] == "owner" and execution["run_id"] == "run"
+            assert execution["recovery"]["classification"] == "unknown"
+            assert execution["recovery"]["worker_state"] == "unknown"
+            assert execution["recovery"]["run_status"] is None
+            assert execution["recovery"]["dispatch_allowed"] is False
+            assert execution["recovery"]["reason"] == "无法确认进程"
+            await store.aput(namespace, "execution", {
+                "task_id": "task", "recovery": {"host_instance": "previous-host",
+                "classification": "completed", "dispatch_allowed": True}})
+            stale = (await client.get("/workbench/api/project-status", params={"project_id": "p"})).json()
+            assert stale["worker_executions"][0]["recovery"]["classification"] == "pending"
+            assert stale["worker_executions"][0]["recovery"]["dispatch_allowed"] is None
+    asyncio.run(scenario())
+
+
+def test_worker_recovery_classifies_and_retains_isolation(monkeypatch):
+    """Only verified stop and official terminal facts permit isolation cleanup."""
+    from src.deep_agents.agents.pm_agent import collaboration
+
+    async def scenario():
+        store = InMemoryStore()
+        project = "recover-project"
+        owner = "owner"
+        await store.aput(THREADS, owner, {"project_id": project, "thread_id": owner})
+        archive = ("deep_loopminder", "project_worker_executions", project)
+        quarantine = ("deep_loopminder", "project_worker_quarantine", project)
+        monkeypatch.setattr(collaboration, "job_observation", lambda record: {
+            "state": record["test_job"], "reason": "test observation"})
+        monkeypatch.setattr(collaboration, "_job_is_live", lambda record: record.get("test_live", False))
+
+        class Threads:
+            async def get(self, worker):
+                if worker == "missing":
+                    raise RuntimeError("registry unavailable")
+                return {"thread_id": worker, "status": "idle"}
+            async def get_history(self, worker, **kwargs):
+                run_id = kwargs["metadata"]["run_id"]
+                return [{"next": [], "values": {"owner_thread_id": "foreign" if worker == "foreign" else owner,
+                         "worker_ref": {"project_id": project, "task_id": worker, "thread_id": worker},
+                         "messages": [{"type": "ai", "additional_kwargs": {"acp_run_id": run_id}}]}}]
+        class Runs:
+            async def get(self, worker, run_id):
+                return {"thread_id": worker, "run_id": run_id,
+                        "status": "running" if worker in {"old", "current", "live"} else "success"}
+        client = SimpleNamespace(threads=Threads(), runs=Runs())
+        for worker, job, live, host in (
+            ("done", "stopped_verified", False, "old-host"),
+            ("foreign", "stopped_verified", False, "old-host"),
+            ("old", "stopped_verified", False, "old-host"),
+            ("current", "stopped_verified", False, collaboration._HOST_INSTANCE),
+            ("live", "running", True, "old-host"),
+            ("unknown", "running", False, "old-host"),
+            ("missing", "stopped_verified", False, "old-host"),
+        ):
+            value = {"project_id": project, "task_id": worker, "owner_thread_id": owner,
+                     "official_run_id": "run-" + worker, "execution_id": "exec-" + worker,
+                     "worker_ref": {"project_id": project, "task_id": worker, "thread_id": worker},
+                     "test_job": job, "test_live": live, "host_instance": host}
+            await store.aput(archive, value["execution_id"], value)
+            await store.aput(quarantine, worker, value)
+        await collaboration.recover_worker_executions(store, client, include_completed=True)
+        for worker, expected in (("done", "completed"), ("foreign", "recovery_failed"),
+                                 ("old", "interrupted"), ("current", "pending"),
+                                 ("live", "running"), ("unknown", "unknown"),
+                                 ("missing", "recovery_failed")):
+            record = (await store.aget(archive, "exec-" + worker)).value
+            assert record["recovery"]["classification"] == expected
+            assert (await store.aget(quarantine, worker) is None) == (worker == "done")
+        await collaboration.recover_worker_executions(store, client)
+        assert (await store.aget(archive, "exec-done")).value["owner_thread_id"] == owner
+        assert await store.aget(quarantine, "done") is None
+
+    asyncio.run(scenario())
+
+
+def test_worker_execution_is_not_started_twice_for_same_run(tmp_path, monkeypatch):
+    """A persisted run identity blocks a second execution before any dispatch claim."""
+    import pytest
+
+    from src.deep_agents.agents.pm_agent import collaboration
+    from src.middlewares.acp.correlation import WorkerRef
+
+    async def scenario():
+        store = InMemoryStore()
+        governance = collaboration.PMWorkerGovernance(lambda: store)
+        monkeypatch.setattr(collaboration, "_job_directory", lambda: tmp_path)
+        async def authorize(*_args):
+            return None
+        async def digest(*_args):
+            return "digest"
+        async def claim(*_args):
+            pytest.fail("duplicate execution must not claim or start work")
+        monkeypatch.setattr(governance, "authorize_execution", authorize)
+        monkeypatch.setattr(governance, "claim_intent", claim)
+        monkeypatch.setattr(collaboration.ProjectFolders, "content_digest", digest)
+        ref = WorkerRef("claude", "session", "project", "task", "worker", "developer", str(tmp_path))
+        await store.aput(("deep_loopminder", "project_worker_executions", "project"), "prior",
+                         {"official_run_id": "run"})
+        with pytest.raises(PermissionError, match="不能重复启动"):
+            await governance.begin_execution(ref, {"owner_thread_id": "owner", "pm_dispatch_id": "intent"},
+                                             {"metadata": {"run_id": "run"}}, {})
+        assert await store.aget(("deep_loopminder", "project_worker_quarantine", "project"), "worker") is None
+
+    asyncio.run(scenario())
+
+
 def test_claim_watcher_retries_only_after_known_claim_finishes():
     """A failed claim can retry once; a running or unknown claim cannot."""
     async def scenario():

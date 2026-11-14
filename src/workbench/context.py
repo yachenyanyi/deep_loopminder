@@ -19,6 +19,7 @@ def run_config(project_id, data):
         "project_id": project_id,
         "project_state_single_writer": True,
         "workbench_trace": True,
+        "_pm_claim_event": False,
     }
     for key in ("model_use_default",):
         if data.get(key) is True:

@@ -1,6 +1,8 @@
 """PM-specific authorization and mode rules for ACP Worker turns."""
 
+import asyncio
 import json
+import logging
 import os
 import uuid
 from datetime import UTC, datetime
@@ -13,6 +15,12 @@ from src.middlewares.acp.pool import mode_can_write
 from src.middlewares.project_state.artifacts import content_hash
 from src.middlewares.project_state.folders import ProjectFolders
 from src.middlewares.project_state.scope import project_write_lock
+
+_EXECUTIONS = ("deep_loopminder", "project_worker_executions")
+_QUARANTINE = ("deep_loopminder", "project_worker_quarantine")
+_TERMINAL_RUNS = {"success", "error", "cancelled", "interrupted", "timeout"}
+_HOST_INSTANCE = uuid.uuid4().hex
+logger = logging.getLogger(__name__)
 
 
 def _job_directory():
@@ -70,6 +78,213 @@ def verified_job_stop(record):
     return observed_job_state(record) == "stopped_verified"
 
 
+def current_execution_recovery(record):
+    """Do not present a previous host's observation as a current check."""
+    recovery = record.get("recovery") if isinstance(record, dict) else None
+    if not isinstance(recovery, dict) or recovery.get("host_instance") != _HOST_INSTANCE:
+        return {"classification": "pending", "worker_state": "unknown",
+                "thread_status": None, "run_status": None, "dispatch_allowed": None,
+                "reason": "等待本次服务核验原 Worker 和官方 Run。"}
+    return recovery
+
+
+def _job_is_live(record):
+    """Require a matching Windows process identity; a saved running label is insufficient."""
+    if os.name != "nt" or observed_job_state(record) != "running":
+        return False
+    handle = None
+    try:
+        import win32api
+        import win32con
+        import win32event
+        import win32process
+
+        with Path(record["job_status"]).open(encoding="utf-8") as stream:
+            status = json.load(stream)
+        if status.get("execution_id") != record.get("execution_id") or status.get("state") != "running":
+            return False
+        pid, created = status.get("adapter_pid"), status.get("adapter_creation_time")
+        if not isinstance(pid, int) or pid <= 0 or not isinstance(created, str):
+            return False
+        handle = win32api.OpenProcess(win32con.PROCESS_QUERY_LIMITED_INFORMATION | win32con.SYNCHRONIZE, False, pid)
+        return (win32process.GetProcessTimes(handle)["CreationTime"].isoformat() == created
+                and win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT)
+    except Exception:  # noqa: BLE001  # Win32 access failures leave process state unknown
+        return False
+    finally:
+        if handle is not None:
+            handle.Close()
+
+
+async def inspect_execution(store, client, project_id, record):
+    """Combine persisted ownership, Job evidence and official Thread/Run facts."""
+    job = job_observation(record)
+    worker = "stopped_verified" if job["state"] == "stopped_verified" else (
+        "running" if _job_is_live(record) else "unknown"
+    )
+    state = {"classification": "recovery_failed", "job_state": job["state"],
+             "worker_state": worker, "thread_status": None, "run_status": None,
+             "dispatch_allowed": False, "reason": "执行身份不完整，无法核验。",
+             "host_instance": _HOST_INSTANCE}
+    ref = record.get("worker_ref")
+    owner, run_id = record.get("owner_thread_id"), record.get("official_run_id")
+    if (record.get("project_id") != project_id or not isinstance(ref, dict)
+            or ref.get("project_id") != project_id or ref.get("task_id") != record.get("task_id")
+            or not isinstance(ref.get("thread_id"), str) or not ref["thread_id"]
+            or not isinstance(owner, str) or not owner or not isinstance(run_id, str) or not run_id):
+        return state
+    binding = await store.aget(("deep_loopminder", "workbench_threads"), owner)
+    if binding is None or binding.value.get("project_id") != project_id or binding.value.get("thread_id") != owner:
+        state["reason"] = "原发起 PM 会话与项目的绑定无法核验。"
+        return state
+    try:
+        async with asyncio.timeout(10):
+            thread = await client.threads.get(ref["thread_id"])
+            run = await client.runs.get(ref["thread_id"], run_id)
+        if (not isinstance(thread, dict) or thread.get("thread_id") != ref["thread_id"]
+                or not isinstance(run, dict) or run.get("thread_id") != ref["thread_id"]
+                or run.get("run_id") != run_id or not isinstance(run.get("status"), str)):
+            state["reason"] = "官方 Thread 或 Run 的身份无法核验。"
+            return state
+    except Exception:
+        state["reason"] = "无法查询原 Worker 的官方 Thread 或 Run；不推测其运行状态。"
+        return state
+    state["thread_status"], state["run_status"] = thread.get("status"), run["status"]
+    if worker == "running":
+        state.update(classification="running", reason="已核验原 Worker 进程仍在运行；保留项目隔离。")
+        return state
+    if worker != "stopped_verified":
+        state.update(classification="unknown", reason=job["reason"])
+        return state
+    if run["status"] == "success":
+        try:
+            async with asyncio.timeout(10):
+                history = await client.threads.get_history(ref["thread_id"], metadata={"run_id": run_id}, limit=1)
+            snapshot = history[0] if history else {}
+            values = snapshot.get("values", {})
+            saved_ref = values.get("worker_ref") or {}
+            messages = values.get("messages") or []
+            reply = next((m for m in reversed(messages) if isinstance(m, dict)
+                          and (m.get("type") == "ai" or m.get("role") == "assistant")), None)
+            if (values.get("owner_thread_id") != owner or saved_ref.get("thread_id") != ref["thread_id"]
+                    or saved_ref.get("project_id") != project_id or saved_ref.get("task_id") != record.get("task_id")
+                    or snapshot.get("next") or not reply
+                    or (reply.get("additional_kwargs") or {}).get("acp_run_id") != run_id):
+                state["reason"] = "已完成 Run 的结果归属无法核验。"
+                return state
+        except Exception:
+            state["reason"] = "无法核验已完成 Run 的结果归属。"
+            return state
+        state.update(classification="completed", dispatch_allowed=True,
+                     reason="Worker 已停止，结果保留给原发起会话领取。")
+        return state
+    if run["status"] not in _TERMINAL_RUNS and record.get("host_instance") == _HOST_INSTANCE:
+        state.update(classification="pending", reason="Worker 已停止，等待本次官方 Run 完成收尾。")
+        return state
+    state.update(classification="interrupted", dispatch_allowed=run["status"] in _TERMINAL_RUNS,
+                 reason="Worker 已确认停止；原 Run 未成功完成，不会自动重新执行。")
+    if not state["dispatch_allowed"]:
+        state["reason"] += "官方 Run 尚未结束，暂不允许继续派工。"
+    return state
+
+
+async def recover_project_executions(store, client, project_id, *, include_completed=False):
+    """Reconcile a project's recorded executions without starting a Worker or Run."""
+    archive, quarantine = (*_EXECUTIONS, project_id), (*_QUARANTINE, project_id)
+    async with project_write_lock(project_id):
+        offset = 0
+        while True:
+            pending = await store.asearch(quarantine, limit=100, offset=offset)
+            for item in pending:
+                value = item.value if isinstance(item.value, dict) else {}
+                execution_id = value.get("execution_id")
+                if isinstance(execution_id, str) and execution_id and await store.aget(archive, execution_id) is None:
+                    await store.aput(archive, execution_id, value, index=False)
+            if len(pending) < 100:
+                break
+            offset += len(pending)
+        records, offset = [], 0
+        while True:
+            page = await store.asearch(archive, limit=100, offset=offset)
+            records.extend(page)
+            if len(page) < 100:
+                break
+            offset += len(page)
+    for item in records:
+        if not isinstance(item.value, dict):
+            continue
+        value = dict(item.value)
+        if value.get("execution_id") != item.key:
+            async with project_write_lock(project_id):
+                current_record = await store.aget(archive, item.key)
+                if current_record is not None and current_record.value == item.value:
+                    failed = {"classification": "recovery_failed", "worker_state": "unknown",
+                              "thread_status": None, "run_status": None, "dispatch_allowed": False,
+                              "reason": "执行记录的身份不匹配，无法核验。", "host_instance": _HOST_INSTANCE}
+                    await store.aput(archive, item.key, {**value, "recovery": failed}, index=False)
+            continue
+        # A completed result has already been validated and its receipt is
+        # durable; don't repeatedly query every historical run on startup.
+        prior_recovery = value.get("recovery")
+        if (not include_completed and isinstance(prior_recovery, dict)
+                and prior_recovery.get("classification") == "completed"
+                and prior_recovery.get("host_instance") == _HOST_INSTANCE):
+            # The host may have exited after saving the observation but before
+            # deleting the corresponding isolation record.
+            async with project_write_lock(project_id):
+                ref = value.get("worker_ref")
+                worker_id = ref.get("thread_id") if isinstance(ref, dict) else None
+                current = await store.aget(quarantine, worker_id) if worker_id else None
+                if (current is not None and current.value.get("execution_id") == item.key
+                        and prior_recovery.get("dispatch_allowed") is True
+                        and verified_job_stop(current.value)):
+                    await store.adelete(quarantine, worker_id)
+            continue
+        try:
+            recovery = await inspect_execution(store, client, project_id, value)
+        except Exception:  # noqa: BLE001  # one corrupt record must not hide other executions
+            recovery = {"classification": "recovery_failed", "worker_state": "unknown",
+                        "thread_status": None, "run_status": None, "dispatch_allowed": False,
+                        "reason": "无法核验执行记录或读取恢复信息。", "host_instance": _HOST_INSTANCE}
+        async with project_write_lock(project_id):
+            current_record = await store.aget(archive, item.key)
+            if current_record is None or not isinstance(current_record.value, dict):
+                continue
+            current_value = dict(current_record.value)
+            # The Job may finish or a new observation may be written while
+            # the official service is queried outside the project lock.
+            if {k: v for k, v in current_value.items() if k != "recovery"} != {
+                    k: v for k, v in value.items() if k != "recovery"}:
+                continue
+            await store.aput(archive, item.key, {**current_value, "recovery": recovery}, index=False)
+            ref = value.get("worker_ref")
+            worker_id = ref.get("thread_id") if isinstance(ref, dict) else None
+            current = await store.aget(quarantine, worker_id) if worker_id else None
+            if current is not None and current.value.get("execution_id") == item.key:
+                if recovery["dispatch_allowed"] and verified_job_stop(current.value):
+                    await store.adelete(quarantine, worker_id)
+                else:
+                    await store.aput(quarantine, worker_id, {**current.value, "recovery": recovery}, index=False)
+
+
+async def recover_worker_executions(store, client, *, include_completed=False):
+    """Observe all projects with archived or unresolved Worker executions."""
+    projects = set()
+    for prefix in (_EXECUTIONS, _QUARANTINE):
+        offset = 0
+        while True:
+            namespaces = await store.alist_namespaces(prefix=prefix, max_depth=3, limit=100, offset=offset)
+            projects.update(ns[2] for ns in namespaces if len(ns) == 3 and ns[:2] == prefix)
+            if len(namespaces) < 100:
+                break
+            offset += len(namespaces)
+    for project_id in sorted(projects):
+        try:
+            await recover_project_executions(store, client, project_id, include_completed=include_completed)
+        except Exception:  # noqa: BLE001  # continue checking other projects; the next scan retries
+            logger.exception("Worker 恢复核验失败，项目：%s", project_id)
+
+
 async def reconcile_verified_jobs(store, project_id, *, locked=False):
     """Remove only records backed by their own confirmed Job shutdown."""
     namespace = ("deep_loopminder", "project_worker_quarantine", project_id)
@@ -78,8 +293,13 @@ async def reconcile_verified_jobs(store, project_id, *, locked=False):
         for entry in entries:
             value = entry.value
             ref = value.get("worker_ref") if isinstance(value, dict) else None
+            execution_id = value.get("execution_id") if isinstance(value, dict) else None
+            saved = await store.aget((*_EXECUTIONS, project_id), execution_id) if execution_id else None
+            recovery = (saved.value.get("recovery") if saved is not None and isinstance(saved.value, dict) else None)
             if (isinstance(ref, dict) and value.get("project_id") == project_id
                     and ref.get("project_id") == project_id and ref.get("thread_id") == entry.key
+                    and isinstance(recovery, dict) and recovery.get("host_instance") == _HOST_INSTANCE
+                    and recovery.get("dispatch_allowed") is True
                     and verified_job_stop(value)):
                 await store.adelete(namespace, entry.key)
     if locked:
@@ -115,13 +335,21 @@ class PMWorkerGovernance:
             run_id = str(config.get("metadata", {}).get("run_id", ""))
             if not run_id:
                 raise PermissionError("开发请求缺少官方 Run 标识")
+            previous = await self.get_store().asearch(
+                (*_EXECUTIONS, project_id), filter={"official_run_id": run_id}, limit=1
+            )
+            if previous:
+                raise PermissionError("此 Run 已有 Worker 执行记录，不能重复启动")
             await self.claim_intent(project_id, ref.task_id, request["pm_dispatch_id"], run_id)
             record = {"project_id": project_id, "task_id": ref.task_id,
                       "owner_thread_id": request["owner_thread_id"], "worker_ref": ref.to_dict(),
                       "intent_id": request["pm_dispatch_id"], "official_run_id": run_id,
                       "execution_id": execution_id, "job_status": str(status_path),
-                      "status": "shutdown_unconfirmed", "ticket": ticket}
+                      "host_instance": _HOST_INSTANCE, "status": "shutdown_unconfirmed", "ticket": ticket}
+            # Quarantine first: if archiving fails or the host dies between
+            # writes, startup can reconstruct the archive without starting work.
             await self.get_store().aput(namespace, ref.thread_id, record, index=False)
+            await self.get_store().aput((*_EXECUTIONS, project_id), execution_id, record, index=False)
         return record
 
     async def finish_execution(self, ref, record, error=None):
@@ -131,12 +359,20 @@ class PMWorkerGovernance:
             item = await self.get_store().aget(namespace, ref.thread_id)
             if item is None or item.value.get("execution_id") != record["execution_id"]:
                 return
+            archive = (*_EXECUTIONS, ref.project_id)
+            current = await self.get_store().aget(archive, record["execution_id"])
+            if current is None:
+                # Do not discard the only recovery record if archiving failed.
+                return
             if error is None and verified_job_stop(item.value):
-                await self.get_store().adelete(namespace, ref.thread_id)
+                value = {**item.value, "status": "job_stopped"}
+                await self.get_store().aput(archive, record["execution_id"], value, index=False)
+                await self.get_store().aput(namespace, ref.thread_id, value, index=False)
             else:
                 value = {**item.value, "status": "shutdown_unconfirmed"}
                 if error is not None:
                     value["reason"] = str(error)[:500]
+                await self.get_store().aput(archive, record["execution_id"], value, index=False)
                 await self.get_store().aput(namespace, ref.thread_id, value, index=False)
 
     async def claim_intent(self, project_id: str, task_id: str, dispatch_id: str, run_id: str):

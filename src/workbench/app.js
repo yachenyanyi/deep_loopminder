@@ -833,6 +833,21 @@ taskStatusButton.onclick = async () => {
           })
           .join('\n\n')
       : '当前项目没有任务。';
+    if ((data.worker_executions || []).length) {
+      const labels = { completed: '已完成', interrupted: '已确认停止，运行未完成', running: '运行中',
+        unknown: '停止状态未知', recovery_failed: '恢复失败', pending: '待核验' };
+      taskStatusResult.textContent += '\n\nWorker 执行恢复：\n' + data.worker_executions.map((entry) => {
+        const r = entry.recovery || {}, classification = r.classification || 'pending';
+        const worker = r.worker_state === 'stopped_verified' ? '已确认停止'
+          : r.worker_state === 'running' ? '运行中（已核验）' : '未知';
+        const dispatch = r.dispatch_allowed === true ? '本执行不再阻断；仍需通过项目门禁'
+          : r.dispatch_allowed === false ? '本执行仍阻断派工' : '未知，暂不能判定';
+        return (entry.task_id || '未知任务') + ' · 当前任务状态：' + (entry.task_status || '未知') +
+          '\n恢复：' + (labels[classification] || '未知') + '；Worker：' + worker +
+          '；Thread：' + (r.thread_status || '未知') + '；Run：' + (r.run_status || '未知') +
+          '\n继续派工：' + dispatch + (r.reason ? '\n原因：' + r.reason : '');
+      }).join('\n\n');
+    }
     (data.unconfirmed_workers || []).forEach((w) => {
       const button = document.createElement('button');
       button.className = 'secondary';

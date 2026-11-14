@@ -311,6 +311,7 @@ async def project_status(request):
     if snapshot is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     from src.deep_agents.agents.pm_agent.collaboration import (
+        current_execution_recovery,
         job_observation,
         reconcile_verified_jobs,
     )
@@ -383,9 +384,31 @@ async def project_status(request):
                             "last_job_state": observation["state"], "last_job_reason": observation["reason"],
                             "owner_thread_id": item.value.get("owner_thread_id"),
                             "run_id": item.value.get("official_run_id")})
+    records, offset = [], 0
+    while True:
+        page = await store.asearch(("deep_loopminder", "project_worker_executions", project_id),
+                                   limit=100, offset=offset)
+        records.extend(page)
+        if len(page) < 100:
+            break
+        offset += len(page)
+    task_states = {task.task_id: task.status.value for task in snapshot.tasks}
+    executions = []
+    for item in records:
+        value = item.value if isinstance(item.value, dict) else {}
+        recovery = current_execution_recovery(value)
+        task_id = value.get("task_id")
+        executions.append({"execution_id": item.key, "task_id": task_id,
+                           "task_status": task_states.get(task_id),
+                           "owner_thread_id": value.get("owner_thread_id"),
+                           "run_id": value.get("official_run_id"),
+                           "recovery": {key: recovery.get(key) for key in
+                                        ("classification", "job_state", "worker_state", "thread_status", "run_status",
+                                         "reason", "dispatch_allowed")}})
     return JSONResponse({"project_id": project_id, "goal": TrajectoryRecorder.clean_public(snapshot.goal),
                          "tasks": [TrajectoryRecorder.clean_public(task) for task in tasks],
-                         "unconfirmed_workers": unconfirmed})
+                         "unconfirmed_workers": unconfirmed,
+                         "worker_executions": TrajectoryRecorder.clean_public(executions)})
 
 
 async def stop_unconfirmed_worker(request):

@@ -57,7 +57,7 @@ def _claim_message(entries, names):
     return (
         "[宿主通知] 以下后台任务的 Run 已结束且结果尚未领取：\n"
         + "\n".join(lines)
-        + "\n请用 wait_agent 领取未读结果并继续推进；这是宿主状态提示，不是新的业务指令。"
+        + "\n请用 wait_agent 领取未读结果、记录并向用户报告；不要在此通知中启动新派工。"
     )
 
 
@@ -164,6 +164,7 @@ class ClaimWatcher:
                     "project_id": project_id,
                     "project_state_single_writer": True,
                     "workbench_trace": True,
+                    "_pm_claim_event": True,
                 }},
                 multitask_strategy="enqueue",
             )

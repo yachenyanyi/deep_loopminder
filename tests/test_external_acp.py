@@ -473,8 +473,10 @@ def test_pm_execution_reconciles_only_matching_verified_job(tmp_path, monkeypatc
     from langgraph.store.memory import InMemoryStore
 
     from src.deep_agents.agents.pm_agent.collaboration import (
+        _HOST_INSTANCE,
         PMWorkerGovernance,
         reconcile_verified_jobs,
+        recover_project_executions,
         verified_job_stop,
     )
     from src.middlewares.project_state.folders import ProjectFolders
@@ -515,6 +517,13 @@ def test_pm_execution_reconciles_only_matching_verified_job(tmp_path, monkeypatc
         assert await store.aget(namespace, "worker") is not None
         status.write_text(json.dumps({"state": "stopped_verified", "execution_id": record["execution_id"]}), encoding="utf-8")
         await reconcile_verified_jobs(store, "project")
+        assert await store.aget(namespace, "worker") is not None
+
+        async def inspected(*_args):
+            return {"classification": "completed", "dispatch_allowed": True, "host_instance": _HOST_INSTANCE}
+
+        monkeypatch.setattr("src.deep_agents.agents.pm_agent.collaboration.inspect_execution", inspected)
+        await recover_project_executions(store, None, "project")
         assert await store.aget(namespace, "worker") is None
         await store.aput(namespace, "old-worker", {"project_id": "project", "status": "shutdown_unconfirmed"})
         await reconcile_verified_jobs(store, "project")

@@ -192,6 +192,17 @@ class ProjectStateMiddleware(AgentMiddleware):
     async def _execute_tool_call(self, request, handler):
         """允许独立制品并行，拒绝多次快照写或混合写，避免快照覆盖与依赖竞态。"""
         name = request.tool_call["name"]
+        if (self.pm_discussion_gate
+                and request.runtime.config.get("configurable", {}).get("_pm_claim_event") is True
+                and name in {"spawn_agent", "followup_task", "begin_discussion", "begin_codex_review"}):
+            return ToolMessage(
+                content=json.dumps({"ok": False, "error": {
+                    "code": "claim_event_dispatch_blocked",
+                    "message": "结果领取通知不能启动新的 Worker；请向用户汇报结果并等待新指示。",
+                }}, ensure_ascii=False),
+                tool_call_id=request.tool_call["id"], name=name, status="error",
+                additional_kwargs={"recoverable_business_rejection": True},
+            )
         if name == "send_message" and self.pm_discussion_gate:
             return ToolMessage(
                 content=json.dumps({"ok": False, "error": {
