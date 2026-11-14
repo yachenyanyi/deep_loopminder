@@ -75,14 +75,9 @@ async def _restore_registered_thread(client, project_id, thread_id):
             checkpoint = await get_pm_checkpoint(thread_id)
     except Exception as exc:
         raise ValueError("无法读取 PM 检查点，未恢复会话。") from exc
-    expected = {"thread_id": thread_id, "graph_id": "pm_agent",
-                "loopminder_project_id": project_id, "loopminder_purpose": "pm_workbench"}
-    metadata = checkpoint.metadata if checkpoint is not None else None
     config = checkpoint.config if checkpoint is not None else None
     configurable = config.get("configurable") if isinstance(config, dict) else None
-    if (not isinstance(metadata, dict) or not isinstance(config, dict)
-            or any(metadata.get(key) != value for key, value in expected.items())
-            or not isinstance(configurable, dict) or configurable.get("thread_id") != thread_id):
+    if not isinstance(configurable, dict) or configurable.get("thread_id") != thread_id:
         raise ValueError("找不到与项目匹配的 PM 检查点，未恢复会话。")
     try:
         async with asyncio.timeout(15):

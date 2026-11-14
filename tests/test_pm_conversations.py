@@ -59,19 +59,23 @@ def test_conversations_are_independent_and_bound_to_project(monkeypatch):
 def test_missing_registered_thread_restores_only_verified_checkpoint(monkeypatch):
     """A missing registry entry cannot create an empty or foreign PM session."""
     import pytest
+    from langgraph.checkpoint.base import CheckpointTuple
 
     from src.middlewares.persistence import pm_runtime
 
     async def scenario():
         store = InMemoryStore()
         await store.aput(THREADS, "thread", {"project_id": "project", "thread_id": "thread"})
-        metadata = {"thread_id": "thread", "graph_id": "pm_agent", "loopminder_project_id": "project",
-                    "loopminder_purpose": "pm_workbench"}
-        checkpoint = SimpleNamespace(metadata=metadata, config={"configurable": {"thread_id": "thread"}})
+        checkpoint = CheckpointTuple(
+            config={"configurable": {"thread_id": "thread", "checkpoint_ns": "", "checkpoint_id": "checkpoint"}},
+            checkpoint={"v": 4, "id": "checkpoint", "ts": "2026-11-15T00:00:00Z",
+                        "channel_values": {}, "channel_versions": {}, "versions_seen": {}, "updated_channels": None},
+            metadata={"source": "loop", "step": 1, "parents": {}},
+        )
         observed = []
 
         class OfficialThreads:
-            other_owner = False
+            mismatch = None
             async def get(self, _thread_id):
                 request = httpx.Request("GET", "http://localhost/threads/thread")
                 raise httpx.HTTPStatusError("missing", request=request,
@@ -79,9 +83,12 @@ def test_missing_registered_thread_restores_only_verified_checkpoint(monkeypatch
             async def create(self, **kwargs):
                 observed.append(kwargs)
                 returned = {**kwargs["metadata"], "graph_id": kwargs["graph_id"]}
-                if self.other_owner:
-                    returned["loopminder_project_id"] = "other"
-                return {"thread_id": kwargs["thread_id"], "metadata": returned}
+                result = {"thread_id": kwargs["thread_id"], "metadata": returned}
+                if self.mismatch == "thread_id":
+                    result["thread_id"] = "other"
+                elif self.mismatch:
+                    returned[self.mismatch] = "other"
+                return result
         official = OfficialThreads()
         client = SimpleNamespace(threads=official)
 
@@ -90,19 +97,19 @@ def test_missing_registered_thread_restores_only_verified_checkpoint(monkeypatch
         monkeypatch.setattr(pm_runtime, "get_pm_checkpoint", load)
         assert await threads.project_thread(store, client, "project", "thread") == "thread"
         assert observed[0]["if_exists"] == "do_nothing" and observed[0]["graph_id"] == "pm_agent"
-        official.other_owner = True
-        with pytest.raises(ValueError, match="身份不匹配"):
-            await threads.project_thread(store, client, "project", "thread")
-        official.other_owner = False
+        for field in ("thread_id", "graph_id", "loopminder_project_id", "loopminder_purpose"):
+            official.mismatch = field
+            with pytest.raises(ValueError, match="身份不匹配"):
+                await threads.project_thread(store, client, "project", "thread")
+        official.mismatch = None
         before = len(observed)
-        for bad in (None, {**metadata, "graph_id": "foreign"},
-                    {**metadata, "loopminder_project_id": "other"},
-                    {**metadata, "loopminder_purpose": "other"}, {**metadata, "thread_id": "other"}):
-            checkpoint.metadata = bad
+        original = checkpoint
+        for bad in (None, original._replace(config={"configurable": {"thread_id": "other"}})):
+            checkpoint = bad
             with pytest.raises(ValueError, match="检查点"):
                 await threads.project_thread(store, client, "project", "thread")
         assert len(observed) == before
-        checkpoint.metadata = metadata
+        checkpoint = original
         with pytest.raises(ValueError, match="不属于"):
             await threads.project_thread(store, client, "other", "thread")
         assert len(observed) == before
