@@ -1,4 +1,4 @@
-"""PM configuration migration, isolation and credential handling."""
+"""PM configuration isolation and credential handling."""
 
 import asyncio
 import json
@@ -7,7 +7,7 @@ import pytest
 from langgraph.store.memory import InMemoryStore
 
 from src.middlewares.agent.model_catalog import ModelCatalog
-from src.middlewares.agent.pm_settings import PMSettings, migrate_legacy
+from src.middlewares.agent.pm_settings import PMSettings
 from src.middlewares.project_state.worker_modes import ProjectWorkerModes
 
 
@@ -156,46 +156,16 @@ def test_worker_nonsecret_environment_does_not_corrupt_trajectory_redaction(tmp_
     asyncio.run(scenario())
 
 
-def test_migrate_legacy_prefers_existing_values_and_keeps_secrets_out_of_json(tmp_path, monkeypatch):
-    from src.middlewares.agent import model_catalog
+def test_pm_database_uses_only_current_credential(tmp_path, monkeypatch):
+    from src.middlewares.agent import pm_settings
+    from src.middlewares.persistence import pm_runtime
 
-    for name in ("ACP_WORKERS_JSON", "ACP_SUBAGENTS_JSON", "PM_CLEF_ACCOUNT_ID", "PM_CLEF_API_KEY",
-                 "CLOUDFLARE_AUTH_TOKEN", "CLOUDFLARE_AI_API_KEY", "LANGGRAPH_POSTGRES_URI"):
-        monkeypatch.delenv(name, raising=False)
-
-    class Credentials:
-        def __init__(self, prefix=""):
-            self.prefix = prefix
-
-        async def get(self, identity):
-            return "legacy-secret" if self.prefix != "DeepLoopMinder/clef/" else "clef-secret"
-
-    async def scenario():
-        settings = PMSettings(tmp_path)
-        settings.path.write_text(json.dumps({"workspace": {"trace_enabled": False}}), encoding="utf-8")
-        settings.env_path.write_text("OTHER_AGENT_KEY=keep\nCLOUDFLARE_ACCOUNT_ID=abc123\n", encoding="utf-8")
-        store = InMemoryStore()
-        await store.aput(("deep_loopminder", "model_endpoints"), "local", {
-            "provider_id": "local", "base_url": "http://127.0.0.1:8000/v1",
-            "models": [{"id": "a", "enabled": True}],
-        })
-        await store.aput(("deep_loopminder", "pm_settings"), "workspace", {"trace_enabled": True})
-        await store.aput(("deep_loopminder", "project_worker_modes"), "p1/claude", {
-            "project_id": "p1", "provider_id": "claude", "mode_id": "plan"})
-        await migrate_legacy(store, settings, workers={})
-        assert settings.read()["workspace"]["trace_enabled"] is False
-        assert settings.read()["projects"]["p1"]["worker_modes"]["claude"]["mode_id"] == "plan"
-        assert await ModelCatalog(store, settings=settings).get_credential(
-            "local", settings.read()["models"]["providers"]["local"]) == "legacy-secret"
-        assert settings.secret("PM_CLEF_ACCOUNT_ID") == "abc123"
-        assert settings.secret("PM_CLEF_API_KEY") == "clef-secret"
-        assert "legacy-secret" not in settings.path.read_text(encoding="utf-8")
-        assert "clef-secret" not in settings.path.read_text(encoding="utf-8")
-        assert "OTHER_AGENT_KEY=keep" in settings.env_path.read_text(encoding="utf-8")
-        assert await migrate_legacy(store, settings, workers={}) == []
-
-    monkeypatch.setattr(model_catalog, "WindowsCredentials", Credentials)
-    asyncio.run(scenario())
+    monkeypatch.setattr(pm_settings, "_ROOT", tmp_path)
+    monkeypatch.setenv("LANGGRAPH_POSTGRES_URI", "postgresql://old/database")
+    monkeypatch.delenv("PM_POSTGRES_URI", raising=False)
+    assert pm_runtime.database_uri() is None
+    (tmp_path / ".env").write_text("PM_POSTGRES_URI=postgresql://current/database\n", encoding="utf-8")
+    assert pm_runtime.database_uri() == "postgresql://current/database"
 
 
 def test_optional_memory_does_not_remove_required_pm_guards():

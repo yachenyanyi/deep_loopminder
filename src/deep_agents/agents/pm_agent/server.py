@@ -9,7 +9,6 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from src.middlewares.acp import server as acp_server
-from src.middlewares.agent.pm_settings import migrate_legacy
 from src.middlewares.persistence.pm_runtime import status
 from src.workbench.app import routes
 from src.workbench.worker_reviews import (
@@ -21,14 +20,10 @@ from src.workbench.worker_reviews import (
 
 @asynccontextmanager
 async def lifespan(app):
-    """Migrate settings before starting Worker connections."""
-    from langgraph_api.store import get_store
-
-    store = await get_store()
+    """Start Worker connections when the PM store is available."""
     if not status()["store_ready"]:
         yield
         return
-    await migrate_legacy(store)
     app.state.worker_review = WorkerReview()
     app.state.pm_execution_review = app.state.worker_review.review
     async with acp_server.lifespan(app):

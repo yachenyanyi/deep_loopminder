@@ -2,10 +2,8 @@
 
 import asyncio
 import logging
-import os
 from contextlib import ExitStack, asynccontextmanager
 
-from dotenv import dotenv_values
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
@@ -18,13 +16,8 @@ _checkpoint_ready = None
 
 
 def database_uri() -> str | None:
-    """Read the PM credential, allowing the old URI only before migration."""
-    settings = PMSettings()
-    value = settings.secret("PM_POSTGRES_URI")
-    if value or settings.read().get("migration", {}).get("legacy_imported"):
-        return value
-    legacy = dotenv_values(settings.env_path, interpolate=False) if settings.env_path.exists() else {}
-    return legacy.get("LANGGRAPH_POSTGRES_URI") or os.environ.get("LANGGRAPH_POSTGRES_URI")
+    """Read the PM PostgreSQL credential from the current environment."""
+    return PMSettings().secret("PM_POSTGRES_URI")
 
 
 def status() -> dict:

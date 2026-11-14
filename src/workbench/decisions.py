@@ -12,6 +12,7 @@ from src.middlewares.project_state.persistence import ProjectStore
 from .context import forbidden as _forbidden
 from .context import get_store
 from .context import local as _local
+from .context import run_config
 from .threads import project_thread
 
 
@@ -224,20 +225,7 @@ async def submit_decision(request):
     command = {"resume": {"decisions": [
         {"type": "respond", "message": answer.strip()} for answer in answers
     ]}}
-    # Same project binding and trace flags as chat, so the resumed run stays
-    # isolated to this project and keeps recording its trajectory. Model
-    # options live inside "configurable", exactly where chat puts them.
-    configurable = {
-        "project_id": project_id, "project_state_single_writer": True, "workbench_trace": True,
-    }
-    if data.get("model_use_default") is True:
-        configurable["model_use_default"] = True
-    if data.get("model_use_legacy") is True:
-        configurable["model_use_legacy"] = True
-    for key in ("model_provider", "model_name", "reasoning_effort"):
-        if data.get(key):
-            configurable[key] = data[key]
-    config = {"configurable": configurable}
+    config = run_config(project_id, data)
     try:
         run = await client.runs.create(
             thread_id, "pm_agent", command=command, config=config, multitask_strategy="enqueue",

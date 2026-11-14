@@ -300,7 +300,6 @@ async def runtime_settings(request):
                 "trajectory_stop_on_error": runtime.get("trajectory_stop_on_error", False),
                 "acp_workers": runtime.get("acp_workers", []),
                 "acp_subagents": runtime.get("acp_subagents", []),
-                "migration_warnings": snapshot.get("migration", {}).get("warnings", []),
                 "restart_required": True,
             })
         data = await request.json()

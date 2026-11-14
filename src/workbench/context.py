@@ -13,6 +13,22 @@ WRITE_LOCK = asyncio.Lock()
 _injected_store = None
 
 
+def run_config(project_id, data):
+    """Build the same project and model configuration for chat and resume."""
+    configurable = {
+        "project_id": project_id,
+        "project_state_single_writer": True,
+        "workbench_trace": True,
+    }
+    for key in ("model_use_default", "model_use_legacy"):
+        if data.get(key) is True:
+            configurable[key] = True
+    for key in ("model_provider", "model_name", "reasoning_effort"):
+        if data.get(key):
+            configurable[key] = data[key]
+    return {"configurable": configurable}
+
+
 async def get_store():
     """Return the same Store used by PM graphs, or an injected test Store."""
     if _injected_store is not None:

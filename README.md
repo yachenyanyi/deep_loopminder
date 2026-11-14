@@ -378,8 +378,8 @@ python scripts/run_pm_server.py
 ```
 
 PM 的普通设置保存在项目根目录 `settings.json`，密钥、Clef 账号和 PostgreSQL
-连接保存在 `.env`；设置页不会回显这些值。首次启动可从旧 Store、Worker 配置和
-Windows 凭据迁移缺失项，旧数据不会删除。迁移完成后 PM 以新文件为准。
+连接保存在 `.env`；设置页不会回显这些值。PM 直接使用本机当前配置，
+不会自动导入旧 Store、Worker 配置或 Windows 凭据。
 设置中的模型和商讨模式在后续调用中使用；Worker、数据库和中间件装配的修改需要
 重启 PM 服务。数据库不可用时仍可打开设置页，但不能创建临时项目冒充持久化项目。
 

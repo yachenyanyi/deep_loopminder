@@ -33,6 +33,7 @@ from .context import WRITE_LOCK as _write_lock
 from .context import forbidden as _forbidden
 from .context import get_store
 from .context import local as _local
+from .context import run_config
 from .decisions import pending_decision, submit_decision
 from .threads import project_thread
 from .settings_routes import (
@@ -702,14 +703,7 @@ async def chat(request):
             raise ValueError("项目不存在")
         client = get_client(url=None)
         thread_id = await project_thread(store, client, project_id)
-        config = {"project_id": project_id, "project_state_single_writer": True, "workbench_trace": True}
-        if data.get("model_use_default") is True:
-            config["model_use_default"] = True
-        if data.get("model_use_legacy") is True:
-            config["model_use_legacy"] = True
-        for key in ("model_provider", "model_name", "reasoning_effort"):
-            if data.get(key):
-                config[key] = data[key]
+        config = run_config(project_id, data)
     except (ValueError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
@@ -717,7 +711,7 @@ async def chat(request):
         try:
             async for event in client.runs.stream(
                 thread_id, "pm_agent", input={"messages": [{"role": "user", "content": text}]},
-                config={"configurable": config}, stream_mode=["updates"], multitask_strategy="enqueue",
+                config=config, stream_mode=["updates"], multitask_strategy="enqueue",
             ):
                 yield "data: " + json.dumps({"event": event.event, "data": TrajectoryRecorder.clean_public(event.data)}, ensure_ascii=False, default=str) + "\n\n"
         except Exception as exc:
