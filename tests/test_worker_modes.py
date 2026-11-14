@@ -569,8 +569,8 @@ def test_execution_is_registered_and_released_after_readonly_connections(tmp_pat
                 "provider_id": "claude", "command": ["fake"], "grants": [],
                 "runtime_dir": str(tmp_path), "node": "node",
             }], execution_review=review)
-            first = await pool.get_readonly("claude", str(tmp_path), mode_id="plan")
-            second = await pool.get_readonly("claude", str(tmp_path), mode_id="acceptEdits")
+            first = await pool.get_readonly("claude", str(tmp_path), mode_id="plan", session_key="thread")
+            second = await pool.get_readonly("claude", str(tmp_path), mode_id="acceptEdits", session_key="thread")
             config_version = pool._versions["claude"]
             ref = WorkerRef("claude", "session", "project", "task", "thread", "developer",
                             str(tmp_path), isolation="native-readonly",
@@ -579,7 +579,7 @@ def test_execution_is_registered_and_released_after_readonly_connections(tmp_pat
             assert execution not in (first, second)
             assert execution.review is review
             assert first.review is None and second.review is None
-            # 只读连接必须全部关闭，不能留下持有同一会话的进程。
+            # 目标会话的只读连接必须关闭，不能留下持有同一会话的进程。
             assert first.process.returncode == 0
             assert second.process.returncode == 0
             # 重复取用返回同一连接。
@@ -659,3 +659,52 @@ def test_readonly_fact_names_the_saved_mode_not_unconfirmed():
 
     unconfirmed = ProjectWorkerPool._readonly_fact("claude", "unconfirmed")
     assert "not yet confirmed" in unconfirmed.gap
+
+
+def test_execution_closes_only_its_worker_connection(tmp_path, monkeypatch):
+    from contextlib import AsyncExitStack
+
+    from src.middlewares.acp import pool as pool_module
+
+    class FakeWorker:
+        def __init__(self, provider, command, cwd, **kwargs):
+            self.process = SimpleNamespace(returncode=None)
+            self._prompt_locks = {}
+            self._refs = {}
+            self.readonly_enforcement = kwargs.get("readonly_enforcement")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            self.process.returncode = 0
+
+    monkeypatch.setattr(pool_module, "ACPWorker", FakeWorker)
+
+    async def scenario():
+        async with AsyncExitStack() as stack:
+            pool = pool_module.ProjectWorkerPool(stack, [{
+                "provider_id": "claude", "command": ["fake"], "grants": [],
+            }])
+            first = await pool.get_readonly("claude", str(tmp_path), mode_id="plan", session_key="worker-a")
+            other = await pool.get_readonly("claude", str(tmp_path), mode_id="plan", session_key="worker-b")
+            assert first is not other
+            first._prompt_locks["session-a"] = asyncio.Lock()
+            await first._prompt_locks["session-a"].acquire()
+            with pytest.raises(ValueError, match="正在运行"):
+                await pool.get_readonly("claude", str(tmp_path), mode_id="acceptEdits", session_key="worker-a")
+            first._prompt_locks["session-a"].release()
+            other._prompt_locks["session-b"] = asyncio.Lock()
+            await other._prompt_locks["session-b"].acquire()
+            ref = WorkerRef("claude", "session-a", "project", "task", "worker-a", "developer",
+                            str(tmp_path), isolation="native-readonly", config_version=pool._versions["claude"])
+            execution = await pool.get_execution(ref, "a" * 32)
+            assert first.process.returncode == 0
+            assert other.process.returncode is None
+            assert execution.process.returncode is None
+            with pytest.raises(ValueError, match="正在开发"):
+                await pool.get_readonly("claude", str(tmp_path), mode_id="plan", session_key="worker-a")
+            assert await pool.get_readonly("claude", str(tmp_path), mode_id="plan", session_key="worker-b") is other
+            await pool.release_execution(ref)
+
+    asyncio.run(scenario())

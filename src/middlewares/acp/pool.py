@@ -129,7 +129,7 @@ class ProjectWorkerPool:
         node = settings.get("node") or "node"
         return (node, str(entry))
 
-    async def get_readonly(self, provider_id, directory, *, mode_id=None, ephemeral_home=None):
+    async def get_readonly(self, provider_id, directory, *, mode_id=None, ephemeral_home=None, session_key=None):
         """Start the native adapter for a discussion or review phase.
 
         The boundary fact describes the adapter's own permission mode and host
@@ -150,30 +150,30 @@ class ProjectWorkerPool:
         # The mode is part of the key: a cached connection carries the boundary
         # fact of the mode it was opened under, so reusing it after a mode
         # change would record a stale (possibly read-only) capability.
-        key = (provider_id, cwd, self._versions.get(provider_id), mode_id)
+        key = (provider_id, cwd, self._versions.get(provider_id), mode_id, session_key)
         async with self._lock:
+            if session_key is not None and (provider_id, cwd, self._versions.get(provider_id), session_key) in self._execution_connections:
+                raise ValueError("负责人正在开发，不能同时恢复同一会话")
             if self._version(provider_id) != self._versions[provider_id]:
                 raise ValueError("Worker 配置已变化，请重启宿主后重新验证")
             existing = self._readonly_connections.get(key)
             if existing is not None and existing.process.returncode is None:
                 return existing
-            # A saved mode change leaves the previous mode's connection unused.
-            # Close it now instead of keeping an idle adapter process for the
-            # rest of the host's lifetime. A connection with an in-flight
-            # prompt is left alone; it is closed when its turn ends.
+            # A mode change must not attach the same session to two live
+            # adapters. Close its old connection before opening a new one.
             stale = [item for item in self._readonly_connections
                      if item[:3] == (provider_id, cwd, self._versions.get(provider_id))
-                     and item != key]
+                     and item[4] == session_key and item != key]
             for item in stale:
                 worker = self._readonly_connections.get(item)
-                if worker is None or any(lock.locked() for lock in worker._prompt_locks.values()):
+                if worker is None:
                     continue
+                if any(lock.locked() for lock in worker._prompt_locks.values()):
+                    raise ValueError("负责人正在运行，不能切换会话模式")
                 try:
                     await worker.__aexit__(None, None, None)
-                except Exception:
-                    # Keep the entry; a stale connection that will not close is
-                    # not silently forgotten.
-                    continue
+                except Exception as exc:
+                    raise ValueError("无法确认原 Worker 已停止，不能切换会话模式") from exc
                 self._readonly_connections.pop(item, None)
             grant = SecurityGrant(frozenset(settings["grants"]))
             worker = await self._stack.enter_async_context(
@@ -241,17 +241,25 @@ class ProjectWorkerPool:
     def observe_live(self, ref):
         """Read a bound live session only; never start or resume one for display."""
         if ref.isolation == READONLY_ISOLATION:
-            worker = next((value for key, value in self._readonly_connections.items()
-                           if key[:3] == (ref.provider_id, ref.cwd, ref.config_version)), None)
-            if worker is None:
-                worker = self._execution_connections.get((ref.provider_id, ref.cwd, ref.config_version, ref.thread_id))
+            workers = [value for key, value in self._readonly_connections.items()
+                       if key[:3] == (ref.provider_id, ref.cwd, ref.config_version)
+                       and key[4] in (ref.thread_id, None)]
+            execution = self._execution_connections.get(
+                (ref.provider_id, ref.cwd, ref.config_version, ref.thread_id)
+            )
+            if execution is not None:
+                workers.append(execution)
         else:
-            worker = self._connections.get((ref.provider_id, ref.cwd))
-        if worker is None or worker.process.returncode is not None:
-            return None
-        try:
-            observed = worker.observe(ref)
-        except (ValueError, PermissionError, KeyError):
+            workers = [self._connections.get((ref.provider_id, ref.cwd))]
+        for worker in workers:
+            if worker is None or worker.process.returncode is not None:
+                continue
+            try:
+                observed = worker.observe(ref)
+                break
+            except (ValueError, PermissionError, KeyError):
+                continue
+        else:
             return None
         return {"context_usage": observed.get("context_usage"),
                 "compaction_visibility": observed.get("compaction_visibility", "unknown")}
@@ -275,17 +283,15 @@ class ProjectWorkerPool:
                 if existing.process is None or existing.process.returncode is not None:
                     raise ValueError("上次 Worker 进程的退出尚未确认")
                 return existing
-            # Close every read-only connection for this project/version, not
-            # just one: connections are cached per mode, so several may exist
-            # and each owns an adapter process holding the same session.
+            # Only close connections owned by this Worker thread. Other PM
+            # conversations may be prompting on their own adapter processes.
             readonly_keys = [item for item in self._readonly_connections
-                             if item[:3] == (ref.provider_id, ref.cwd, ref.config_version)]
+                             if item[:3] == (ref.provider_id, ref.cwd, ref.config_version)
+                             and item[4] == ref.thread_id]
             readonly = [self._readonly_connections[item] for item in readonly_keys]
-            if any(lock.locked() for worker in readonly
-                   for lock in worker._prompt_locks.values()):
+            if any(any(lock.locked() for lock in worker._prompt_locks.values())
+                   for worker in readonly):
                 raise ValueError("负责人还有正在运行的只读请求，不能切换到开发")
-            # Close every connection even if one fails; a failure keeps that
-            # entry so a later attempt can retry it instead of losing it.
             failure = None
             for item, worker in zip(readonly_keys, readonly):
                 try:
@@ -295,7 +301,7 @@ class ProjectWorkerPool:
                 else:
                     self._readonly_connections.pop(item, None)
             if failure is not None:
-                raise ValueError("无法确认部分只读 Worker 已停止；保持隔离等待核对") from failure
+                raise ValueError("无法确认负责人只读 Worker 已停止；保持隔离等待核对") from failure
             settings = self._settings[ref.provider_id]
             approval = (resolve_provider(ApprovalProviderConfig(**settings["approval"]))
                         if settings.get("approval") else None)

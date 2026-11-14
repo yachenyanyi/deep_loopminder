@@ -139,3 +139,62 @@ def test_history_chat_and_decision_follow_selected_thread(monkeypatch):
         assert calls == [(first["thread_id"], "pm_agent", "p"), (second["thread_id"], "pm_agent", "p")]
 
     asyncio.run(scenario())
+
+
+def test_restored_run_observer_tracks_only_selected_conversation():
+    """A reopened page refreshes finished work without touching a switched view."""
+    import json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    import pytest
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required to exercise the workbench observer")
+    source = (Path(__file__).resolve().parents[1] / "src/workbench/app.js").read_text(encoding="utf-8")
+    observer = source[source.index("async function watchRestoredRun"):source.index("async function loadProject(p, conversation)")]
+    script = """
+const vm = require('vm');
+const assert = require('assert');
+let scheduled = [], opened = 0, requests = 0;
+const state = { viewVersion: 1, busy: false, busyThreads: new Set(), conversation: {thread_id: 'a'} };
+const button = {disabled: false};
+let result = {run: {run_id: 'r1', status: 'running'}};
+const context = { state, $: () => button, api: async () => { requests++; return result; },
+  setTimeout: fn => scheduled.push(fn), showError: message => { throw Error(message); },
+  openConversation: async conversation => { assert.strictEqual(conversation.thread_id, 'a'); opened++; } };
+vm.createContext(context);
+vm.runInContext(OBSERVER, context);
+(async () => {
+  await context.watchRestoredRun('p', 'a', 1);
+  assert(state.busy && button.disabled && scheduled.length === 1);
+  result = {run: {run_id: 'r1', status: 'success'}};
+  await scheduled.shift()();
+  assert.strictEqual(opened, 1);
+  assert(!state.busy);
+  // A timer from an old conversation must not query or refresh the new one.
+  state.viewVersion = 2;
+  await context.watchRestoredRun('p', 'a', 1);
+  assert.strictEqual(requests, 2);
+  // A run started and completed by the claim watcher still refreshes history.
+  state.viewVersion = 1;
+  await context.watchRestoredRun('p', 'a', 1, {id: 'previous', active: false});
+  assert.strictEqual(opened, 2);
+  // A locally streamed run is not refreshed out from under its stream.
+  state.busyThreads.add('a');
+  await context.watchRestoredRun('p', 'a', 1, {id: 'previous', active: false});
+  assert.strictEqual(opened, 2);
+  state.busyThreads.delete('a');
+  await scheduled.pop()();
+  assert.strictEqual(opened, 3);
+  // Switching views while the request is in flight discards its response.
+  state.busy = false;
+  context.api = async () => { state.viewVersion = 2; return {run: {run_id: 'r2', status: 'running'}}; };
+  await context.watchRestoredRun('p', 'a', 1);
+  assert(!state.busy);
+  assert.strictEqual(opened, 3);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("OBSERVER", json.dumps(observer))
+    subprocess.run([node], input=script, text=True, check=True, capture_output=True)

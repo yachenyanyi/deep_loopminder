@@ -70,10 +70,6 @@ def create_worker_graph(
     governance=None,
 ):
     """Compile a worker bridge; execution and persistence belong to Agent Server."""
-
-
-
-
     async def prepare(state: ACPRunState, config: RunnableConfig):
         message = next(
             m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)
@@ -141,6 +137,7 @@ def create_worker_graph(
                     worker = await project_workers.get_readonly(
                         ref.provider_id, ref.cwd,
                         mode_id=await governance.readonly_mode(ref.project_id, ref.provider_id),
+                        session_key=ref.thread_id,
                     )
                 else:
                     worker = await project_workers.get(ref.provider_id, ref.cwd)
@@ -180,6 +177,7 @@ def create_worker_graph(
                     worker = await project_workers.get_readonly(
                         decision.provider_id, binding["directory"],
                         mode_id=await governance.readonly_mode(request["project_id"], decision.provider_id),
+                        session_key=config["configurable"]["thread_id"],
                     )
                 else:
                     worker = await project_workers.get(decision.provider_id, binding["directory"])
@@ -290,9 +288,11 @@ def create_worker_graph(
                     worker = await project_workers.get_readonly(
                         ref.provider_id, ref.cwd,
                         mode_id=await governance.readonly_mode(ref.project_id, ref.provider_id),
+                        session_key=ref.thread_id,
                     )
                     if worker.readonly_enforcement is None:
                         raise PermissionError("只读执行能力不可验证")
+                    await worker.resume(ref)
                 elif execution_phase:
                     worker = await project_workers.get_execution(ref, request["pm_dispatch_id"])
                     await worker.resume(ref)

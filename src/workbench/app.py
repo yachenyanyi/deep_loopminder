@@ -30,11 +30,9 @@ from src.middlewares.trajectory.web import read_events
 from .context import ROOT as _ROOT
 from .context import WRITE_LOCK as _write_lock
 from .context import forbidden as _forbidden
-from .context import get_store
+from .context import get_store, run_config
 from .context import local as _local
-from .context import run_config
 from .decisions import pending_decision, submit_decision
-from .threads import conversations, project_thread
 from .settings_routes import (
     clef_settings,
     default_model,
@@ -45,6 +43,7 @@ from .settings_routes import (
     worker_settings,
     workspace_settings,
 )
+from .threads import conversations, project_thread
 
 _MODEL_CONFIGURATION_ERRORS = frozenset({
     "尚未配置默认模型，请在设置中选择已启用的模型",
@@ -762,7 +761,7 @@ async def trajectory_status(request):
         client = get_client(url=None)
         thread_id = await project_thread(await get_store(), client, project_id, request.query_params.get("thread_id"))
         runs = await client.runs.list(thread_id, limit=1)
-        return JSONResponse({"run": {"status": runs[0]["status"]} if runs else None, "first_error": None, "stop_requested": False})
+        return JSONResponse({"run": {"run_id": runs[0]["run_id"], "status": runs[0]["status"]} if runs else None, "first_error": None, "stop_requested": False})
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 

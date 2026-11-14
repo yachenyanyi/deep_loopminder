@@ -231,10 +231,43 @@ async function loadProviders() {
   state.providers = await api('providers');
   paintModels();
 }
+
+// A page reload loses the local streaming request, but the official Run keeps
+// going. Observe only this conversation and refresh its history when it ends.
+async function watchRestoredRun(project, thread, view, previous = null) {
+  if (state.viewVersion !== view) return;
+  try {
+    const result = await api('trace/status?project_id=' + encodeURIComponent(project) +
+      '&thread_id=' + encodeURIComponent(thread));
+    if (state.viewVersion !== view) return;
+    const active = ['pending', 'running'].includes(result.run?.status);
+    const changed = previous && previous.id !== result.run?.run_id;
+    if (active) {
+      state.busy = true;
+      $('#send').disabled = true;
+    } else if (previous && (previous.active || changed) && state.busyThreads.has(thread)) {
+      // Preserve the observation until the original stream has finished.
+      setTimeout(() => watchRestoredRun(project, thread, view, previous), 3000);
+      return;
+    } else if (previous && (previous.active || changed)) {
+      state.busy = false;
+      await openConversation(state.conversation);
+      return;
+    }
+    setTimeout(() => watchRestoredRun(project, thread, view,
+      { id: result.run?.run_id, active }), 3000);
+  } catch (e) {
+    if (state.viewVersion === view) {
+      showError('无法查询会话运行状态：' + e.message);
+      setTimeout(() => watchRestoredRun(project, thread, view, previous), 5000);
+    }
+  }
+}
 async function loadProject(p, conversation) {
   const view = ++state.viewVersion;
   workerReviewPanel.replaceChildren();
   let loaded = false;
+  let baseline = null;
   if (state.conversation) state.drafts.set(state.conversation.thread_id, $('#message').value);
   state.project = p;
   state.conversation = conversation;
@@ -260,6 +293,15 @@ async function loadProject(p, conversation) {
   $('#messages').replaceChildren();
   showError('项目管理已启用；商讨和开发需要可验证的负责人环境与门禁。');
   try {
+    try {
+      const status = await api('trace/status?project_id=' + encodeURIComponent(p.project_id) +
+        '&thread_id=' + encodeURIComponent(conversation.thread_id));
+      baseline = { id: status.run?.run_id, active: ['pending', 'running'].includes(status.run?.status) };
+    } catch (_) {
+      // History may still be readable; the observer reports and retries failures.
+    }
+    if (state.viewVersion !== view) return;
+    if (baseline?.active && !state.busyThreads.has(conversation.thread_id)) state.busy = true;
     const h = await api(
       'history?project_id=' +
         encodeURIComponent(p.project_id) +
@@ -296,6 +338,8 @@ async function loadProject(p, conversation) {
       $('#model').disabled = !loaded;
       $('#effort').disabled = !loaded;
       $('#send').disabled = state.busy || state.loadingView || !state.project;
+      if (loaded)
+        watchRestoredRun(p.project_id, conversation.thread_id, view, baseline);
     }
   }
 }
@@ -800,7 +844,8 @@ taskStatusButton.onclick = async () => {
           button.textContent = '已确认停止';
           button.disabled = true;
         } catch (e) {
-          if (state.viewVersion === view) taskStatusResult.textContent = e.message;
+          if (state.viewVersion === view)
+            taskStatusResult.textContent = e.message + ' 服务重启后可能无法确认原进程树；重复核对不一定能恢复，请先检查原 Worker 进程。';
         }
       };
       workerRecovery.append(button);
