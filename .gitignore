@@ -136,6 +136,7 @@ celerybeat.pid
 
 # Environments
 .env
+/.pm-settings-lock/
 .envrc
 .venv
 env/
@@ -246,6 +247,10 @@ skills_repo/
 !/tests/test_pm_checkpointer.py
 !/tests/test_worker_modes.py
 !/tests/test_acp_middleware.py
+!/tests/test_workbench_claims.py
+!/tests/test_pm_review_loop.py
+!/tests/test_pm_settings.py
+!/tests/test_pm_postgres_integration.py
 .local-acp/
 test.jsonl
 大赛大大.zip
@@ -317,3 +322,4 @@ test.jsonl
 !/tests/test_trajectory.py
 !/tests/test_trajectory_projection.cjs
 !/tests/test_trajectory_snapshot.py
+!/tests/test_pm_worker_review.py

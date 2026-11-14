@@ -15,8 +15,9 @@ _PROJECT_LOCKS = WeakKeyDictionary()
 class _LocalWriterLock:
     """Cooperate across local processes sharing the same application data root."""
 
-    def __init__(self, category, identity):
+    def __init__(self, category, identity, *, lock_directory=None):
         self.category, self.identity = category, identity
+        self.lock_directory = lock_directory
         self.local = None
         self.file = None
         self.locked = False
@@ -28,9 +29,12 @@ class _LocalWriterLock:
         self.local = locks.setdefault(key, asyncio.Lock())
         await self.local.acquire()
         try:
-            base = os.getenv("LOOPMINDER_DATA_DIR") or os.getenv("LOCALAPPDATA")
-            root = Path(base) if base else Path.home() / ".local" / "share"
-            directory = root / "DeepLoopMinder" / "writer-locks"
+            if self.lock_directory is None:
+                base = os.getenv("LOOPMINDER_DATA_DIR") or os.getenv("LOCALAPPDATA")
+                root = Path(base) if base else Path.home() / ".local" / "share"
+                directory = root / "DeepLoopMinder" / "writer-locks"
+            else:
+                directory = Path(self.lock_directory)
             directory.mkdir(parents=True, exist_ok=True)
             filename = hashlib.sha256((self.category + "\0" + self.identity).encode("utf-8")).hexdigest() + ".lock"
             self.file = (directory / filename).open("a+b")
@@ -86,11 +90,11 @@ def project_write_lock(project_id: str) -> _LocalWriterLock:
     return _LocalWriterLock("project", project_id)
 
 
-def directory_write_lock(directory_identity: str) -> _LocalWriterLock:
+def directory_write_lock(directory_identity: str, *, lock_directory=None) -> _LocalWriterLock:
     """Serialize creation and binding of the same canonical directory."""
     if not isinstance(directory_identity, str) or not directory_identity:
         raise ValueError("directory identity is required")
-    return _LocalWriterLock("directory", directory_identity)
+    return _LocalWriterLock("directory", directory_identity, lock_directory=lock_directory)
 
 
 def resolve_project_id(config: dict) -> str:

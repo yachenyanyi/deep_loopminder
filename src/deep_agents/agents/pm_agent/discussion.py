@@ -21,9 +21,9 @@ from langgraph_sdk import get_client
 
 from src.middlewares.agent.model_catalog import WindowsCredentials
 from src.middlewares.project_state.artifacts import content_hash
-from src.middlewares.project_state.folders import ProjectFolders
+from src.middlewares.project_state.folders import ProjectFolders, content_digest_scope
 from src.middlewares.project_state.tools import project_scope, require_writer
-from src.middlewares.project_state.worker_modes import ProjectWorkerModes
+from src.middlewares.project_state.worker_modes import pm_worker_modes
 from src.middlewares.project_state.workflow import ProjectWorkflow
 from src.middlewares.trajectory.middleware import TrajectoryRecorder
 from src.runtime.routing import RoleRequirement, route_worker
@@ -193,6 +193,7 @@ class DiscussionGate:
             "discussion_turn_refs": [turn["result_ref"] for turn in turns],
             "discussion_watermark": watermark,
             "project_content_digest": content_digest,
+            "project_content_digest_scope": content_digest_scope(),
             "pm_confirmation": pm_confirmation,
             "mode_record": mode_record,
             "decision": decision.outcome,
@@ -310,14 +311,15 @@ class PMDiscussionMiddleware(AgentMiddleware):
             if provider:
                 candidates = tuple(candidate for candidate in candidates if candidate.provider_id == provider)
             decision = route_worker(RoleRequirement("developer", task.required_capabilities), candidates)
-            if decision.provider_id is None or acp_server._project_workers is None:
+            pool = acp_server.project_worker_pool()
+            if decision.provider_id is None or pool is None:
                 return {"ok": False, "error": {"code": "developer_unavailable", "message": "没有满足任务要求的负责人。"}}
             # Open the connection under the mode this project saved, so the
             # boundary fact names the real mode instead of "unconfirmed".
-            saved_mode = await ProjectWorkerModes(runtime.store).get(project_id, decision.provider_id)
+            saved_mode = await pm_worker_modes(runtime.store).get(project_id, decision.provider_id)
             saved_mode_id = (saved_mode or {}).get("mode_id")
             try:
-                worker = await acp_server._project_workers.get_readonly(
+                worker = await pool.get_readonly(
                     decision.provider_id, folder["directory"], mode_id=saved_mode_id
                 )
                 if os.path.normcase(worker.cwd) != os.path.normcase(folder["directory"]):
@@ -399,13 +401,20 @@ class PMDiscussionMiddleware(AgentMiddleware):
             """Submit the PM conclusion and a recorded Worker discussion result for Clef review."""
             require_writer(runtime)
             project_id, _ = project_scope(runtime)
-            settings = await runtime.store.aget(("deep_loopminder", "pm_settings"), "clef")
-            account_id = (settings.value.get("account_id") if settings else None) or os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-            token = (
-                (await WindowsCredentials("DeepLoopMinder/clef/").get("account") if account_id else None)
-                or os.getenv("CLOUDFLARE_AUTH_TOKEN")
-                or os.getenv("CLOUDFLARE_AI_API_KEY", "")
-            )
+            from src.middlewares.agent.pm_settings import current
+
+            pm_settings = current()
+            if pm_settings is not None:
+                account_id = pm_settings.secret("PM_CLEF_ACCOUNT_ID") or ""
+                token = pm_settings.secret("PM_CLEF_API_KEY") or ""
+            else:
+                settings = await runtime.store.aget(("deep_loopminder", "pm_settings"), "clef")
+                account_id = (settings.value.get("account_id") if settings else None) or os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+                token = (
+                    (await WindowsCredentials("DeepLoopMinder/clef/").get("account") if account_id else None)
+                    or os.getenv("CLOUDFLARE_AUTH_TOKEN")
+                    or os.getenv("CLOUDFLARE_AI_API_KEY", "")
+                )
             record = await DiscussionGate(runtime.store).evaluate(
                 project_id, task_id,
                 owner_thread=runtime.config.get("configurable", {}).get("thread_id", ""),
@@ -448,10 +457,11 @@ class PMDiscussionMiddleware(AgentMiddleware):
 
             candidates = tuple(candidate for candidate in acp_server.worker_catalog() if candidate.provider_id == "codex")
             decision = route_worker(RoleRequirement("reviewer", frozenset()), candidates)
-            if decision.provider_id != "codex" or acp_server._project_workers is None:
+            pool = acp_server.project_worker_pool()
+            if decision.provider_id != "codex" or pool is None:
                 return {"ok": False, "error": {"code": "codex_unavailable", "message": "独立 Codex 审查者不可用。"}}
             try:
-                worker = await acp_server._project_workers.get_readonly("codex", folder["directory"])
+                worker = await pool.get_readonly("codex", folder["directory"])
                 if worker.readonly_enforcement is None or os.path.normcase(worker.cwd) != os.path.normcase(folder["directory"]):
                     raise ValueError("审查会话的只读能力或项目目录不可验证")
                 subject = await workflow.delivery_subject(project_id, task_id)

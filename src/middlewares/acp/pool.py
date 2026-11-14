@@ -55,9 +55,10 @@ def mode_can_write(provider_id, mode_id):
 class ProjectWorkerPool:
     """Own SDK connections bound to one provider and one project directory."""
 
-    def __init__(self, stack, settings):
+    def __init__(self, stack, settings, *, execution_review=None):
         """Register provider settings; connections start lazily per directory."""
         self._stack = stack
+        self._execution_review = execution_review
         self._settings = {entry["provider_id"]: entry for entry in settings}
         self._versions = {provider: self._version(provider) for provider in self._settings}
         self._connections = {}
@@ -304,7 +305,7 @@ class ProjectWorkerPool:
                 worker = await stack.enter_async_context(ACPWorker(
                     ref.provider_id, self._command(settings), ref.cwd,
                     grants=lambda _ref, grant=SecurityGrant(frozenset(settings["grants"])): grant,
-                    approval=approval, env=self._worker_env(settings),
+                    approval=approval, review=self._execution_review, env=self._worker_env(settings),
                     timeout=settings.get("timeout", 180), session_isolation=ref.isolation,
                     config_version=ref.config_version,
                 ))

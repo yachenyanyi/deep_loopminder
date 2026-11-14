@@ -12,7 +12,6 @@ from langgraph.config import get_store, get_stream_writer
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph_sdk import get_client
 
-from src.middlewares.project_state.artifacts import content_hash
 from src.middlewares.project_state.folders import ProjectFolders
 from src.middlewares.project_state.persistence import ProjectStore
 from src.middlewares.project_state.scope import project_write_lock
@@ -21,7 +20,7 @@ from src.runtime.routing import RoleRequirement, WorkerCandidate, route_worker
 
 from .control import ACPWorker, UnsupportedControl
 from .correlation import WorkerRef
-from .pool import READONLY_ISOLATION
+from .pool import READONLY_ISOLATION, mode_can_write
 
 
 def project_recorder(project_id):
@@ -36,12 +35,21 @@ def project_recorder(project_id):
     if not isinstance(project_id, str) or not project_id.strip():
         return None
     try:
-        from src.workbench.paths import trajectory_directory
+        from src.middlewares.agent.pm_settings import current
+        from src.middlewares.trajectory.paths import trajectory_directory
 
+        settings = current()
+        if settings is not None:
+            values = settings.read()
+            if (not values.get("runtime", {}).get("middleware", {}).get("trajectory", True)
+                    or not values.get("workspace", {}).get("trace_enabled", True)):
+                return None
         return TrajectoryRecorder(trajectory_directory(project_id))
     except (ValueError, OSError):
         # Tracing is an observation channel; losing it must not fail a run.
         return None
+
+
 
 
 class ACPRunState(MessagesState):
@@ -59,70 +67,12 @@ def create_worker_graph(
     candidates: Sequence[WorkerCandidate],
     *,
     project_workers=None,
+    governance=None,
 ):
     """Compile a worker bridge; execution and persistence belong to Agent Server."""
 
-    async def readonly_mode(project_id, provider_id):
-        """Read the saved target so the boundary fact names a real mode."""
-        from src.middlewares.project_state.worker_modes import ProjectWorkerModes
 
-        try:
-            saved = await ProjectWorkerModes(get_store()).get(project_id, provider_id)
-        except ValueError:
-            return None
-        return (saved or {}).get("mode_id")
 
-    async def authorize_execution(request, ref, config):
-        from src.deep_agents.agents.pm_agent.discussion import DiscussionGate
-
-        decision = await DiscussionGate(get_store()).require_pass(
-            ref.project_id, ref.task_id, worker_agent_id=ref.thread_id
-        )
-        intent_id = request.get("pm_dispatch_id")
-        if not isinstance(intent_id, str) or not intent_id:
-            raise PermissionError("开发请求缺少持久化派工意图")
-        intent = await get_store().aget(
-            ("deep_loopminder", "project_dispatch_intents", ref.project_id, "history"), intent_id
-        )
-        value = intent.value if intent else {}
-        run_id = str(config.get("metadata", {}).get("run_id", ""))
-        if (value.get("intent_id") != intent_id or value.get("phase") != "execution"
-                or value.get("project_id") != ref.project_id or value.get("task_id") != ref.task_id
-                or value.get("worker_agent_id") != ref.thread_id
-                or value.get("owner_thread") != request.get("owner_thread_id")
-                or value.get("decision_id") != decision.get("decision_id")
-                or value.get("input_version") != decision.get("input_version")
-                or not isinstance(request.get("message"), str)
-                or value.get("message_digest") != content_hash(request["message"])
-                or value.get("status") not in {"pending", "confirmed"}
-                or (value.get("claimed_run_id") and value.get("claimed_run_id") != run_id)
-                or (value.get("status") == "confirmed" and value.get("run_id") != run_id)):
-            raise PermissionError("派工意图与当前负责人或门禁版本不匹配")
-
-    async def authorize_readonly(request, project_id, task_id, worker_id, config):
-        from src.middlewares.project_state.workflow import ProjectWorkflow
-
-        intent_id = request.get("pm_dispatch_id")
-        if not isinstance(intent_id, str) or not intent_id:
-            raise PermissionError("只读请求缺少持久化意图")
-        item = await get_store().aget(("deep_loopminder", "project_dispatch_intents", project_id, "history"), intent_id)
-        value = item.value if item else {}
-        run_id = str(config.get("metadata", {}).get("run_id", ""))
-        workflow = ProjectWorkflow(get_store())
-        snapshot, task = await workflow.task(project_id, task_id)
-        if (value.get("intent_id") != intent_id or value.get("phase") != request.get("pm_phase")
-                or value.get("phase") not in {"discussion", "review"}
-                or value.get("project_id") != project_id or value.get("task_id") != task_id
-                or value.get("owner_thread") != request.get("owner_thread_id")
-                or (value.get("worker_agent_id") and value.get("worker_agent_id") != worker_id)
-                or value.get("input_version") != await workflow.input_version(snapshot, task)
-                or not value.get("readonly_mechanism")
-                or not isinstance(request.get("message"), str)
-                or value.get("message_digest") != content_hash(request["message"])
-                or value.get("status") not in {"pending", "confirmed"}
-                or (value.get("claimed_run_id") and value.get("claimed_run_id") != run_id)
-                or (value.get("status") == "confirmed" and value.get("run_id") != run_id)):
-            raise PermissionError("只读请求与持久化意图不匹配")
 
     async def prepare(state: ACPRunState, config: RunnableConfig):
         message = next(
@@ -143,6 +93,8 @@ def create_worker_graph(
         if project_workers is not None and isinstance(claimed_project, str) and claimed_project:
             governed = governed or await ProjectStore(get_store()).load(claimed_project) is not None
         if governed:
+            if governance is None:
+                raise PermissionError("PM Worker 缺少协作门禁")
             request["pm_governed"] = True
             if request.get("pm_phase") not in {"discussion", "review", "execution"}:
                 raise PermissionError("PM Worker 请求缺少可信的协作阶段")
@@ -154,7 +106,7 @@ def create_worker_graph(
                 raise PermissionError("项目目录与其他项目重叠，不能启动 Worker")
             if request["pm_phase"] in {"discussion", "review"}:
                 prior_ref = state.get("worker_ref") or {}
-                await authorize_readonly(request, claimed_project, prior_ref.get("task_id") or request.get("task_id"),
+                await governance.authorize_readonly(request, claimed_project, prior_ref.get("task_id") or request.get("task_id"),
                                          prior_ref.get("thread_id") or config["configurable"]["thread_id"], config)
         if "worker_ref" in state:
             ref = WorkerRef(**state["worker_ref"])
@@ -169,7 +121,7 @@ def create_worker_graph(
                     "A followup cannot change the session's project, task or role"
                 )
             if governed and request["pm_phase"] == "execution":
-                await authorize_execution(request, ref, config)
+                await governance.authorize_execution(request, ref, config)
                 binding = await ProjectFolders(get_store()).verified_binding(ref.project_id)
                 if binding is None or binding["directory"] != ref.cwd:
                     raise ValueError("项目目录未绑定或与现有会话不一致")
@@ -188,7 +140,7 @@ def create_worker_graph(
                         raise PermissionError("现有会话没有已声明的执行边界")
                     worker = await project_workers.get_readonly(
                         ref.provider_id, ref.cwd,
-                        mode_id=await readonly_mode(ref.project_id, ref.provider_id),
+                        mode_id=await governance.readonly_mode(ref.project_id, ref.provider_id),
                     )
                 else:
                     worker = await project_workers.get(ref.provider_id, ref.cwd)
@@ -227,7 +179,7 @@ def create_worker_graph(
                 if governed and request["pm_phase"] in {"discussion", "review"}:
                     worker = await project_workers.get_readonly(
                         decision.provider_id, binding["directory"],
-                        mode_id=await readonly_mode(request["project_id"], decision.provider_id),
+                        mode_id=await governance.readonly_mode(request["project_id"], decision.provider_id),
                     )
                 else:
                     worker = await project_workers.get(decision.provider_id, binding["directory"])
@@ -252,53 +204,22 @@ def create_worker_graph(
             "mode_record": mode_record,
         }
 
-    async def _apply_discussion_mode(worker, ref, request):
-        """Switch to the saved mode and return only what the adapter reported."""
-        from src.middlewares.project_state.worker_modes import ProjectWorkerModes
-
-        if not request.get("pm_governed") or request.get("pm_phase") != "discussion":
-            return None
-        # Only the two managed providers have saved preferences; any other
-        # adapter simply runs with its own default mode.
-        try:
-            saved = await ProjectWorkerModes(get_store()).get(ref.project_id, ref.provider_id)
-        except ValueError:
-            saved = None
-        requested = (saved or {}).get("mode_id")
-        if not requested:
-            return {"requested_mode": None, "reported_mode": None,
-                    "reported_mode_source": None, "confirmed_at": None}
-        applied = await worker.apply_mode(ref, requested)
-        record = {"requested_mode": requested, "reported_mode": applied["reported_mode"],
-                  "reported_mode_source": applied["reported_mode_source"],
-                  "confirmed_at": applied["confirmed_at"]}
-        if not applied["matched"]:
-            raise PermissionError(
-                f"目标模式 {requested}，适配器报告 {applied['reported_mode']}；未发送商讨内容。"
-            )
-        return record
 
     async def execute(state: ACPRunState, config: RunnableConfig):
         ref = WorkerRef(**state["worker_ref"])
         request = state["request"]
         if request.get("pm_governed"):
             if request.get("pm_phase") == "execution":
-                await authorize_execution(request, ref, config)
+                await governance.authorize_execution(request, ref, config)
             elif request.get("pm_phase") not in {"discussion", "review"} or ref.isolation != READONLY_ISOLATION:
                 raise PermissionError("当前会话没有可信的只读边界")
             else:
                 async with project_write_lock(ref.project_id):
-                    await authorize_readonly(request, ref.project_id, ref.task_id, ref.thread_id, config)
+                    await governance.authorize_readonly(request, ref.project_id, ref.task_id, ref.thread_id, config)
                     run_id = str(config.get("metadata", {}).get("run_id", ""))
                     if not run_id:
                         raise PermissionError("只读请求缺少官方 Run 标识")
-                    namespace = ("deep_loopminder", "project_dispatch_intents", ref.project_id)
-                    item = await get_store().aget((*namespace, "history"), request["pm_dispatch_id"])
-                    claimed = {**item.value, "claimed_run_id": run_id}
-                    await get_store().aput((*namespace, "history"), request["pm_dispatch_id"], claimed, index=False)
-                    current = await get_store().aget(namespace, ref.task_id)
-                    if current and current.value.get("intent_id") == request["pm_dispatch_id"]:
-                        await get_store().aput(namespace, ref.task_id, claimed, index=False)
+                    await governance.claim_intent(ref.project_id, ref.task_id, request["pm_dispatch_id"], run_id)
         chunks = []
         usage = None
         writer = get_stream_writer()
@@ -309,9 +230,13 @@ def create_worker_graph(
             nonlocal usage
             update = event.update
             if update.session_update == "usage_update":
+                # cost 是协议同一事件的可靠字段；适配器未上报时保持缺失，不猜。
                 usage = {
                     "used": update.used, "size": update.size,
                     "remaining": update.size - update.used if update.used <= update.size else None,
+                    **({"cost": update.cost.model_dump(mode="json", by_alias=True,
+                                                    exclude_none=True)}
+                       if getattr(update, "cost", None) is not None else {}),
                     "source": "acp.session_update.usage_update",
                     "observed_at": datetime.now(UTC).isoformat(),
                 }
@@ -338,7 +263,7 @@ def create_worker_graph(
         if execution_phase:
             ticket = project_workers.execution_ticket(ref, request["pm_dispatch_id"])
             async with project_write_lock(ref.project_id):
-                await authorize_execution(request, ref, config)
+                await governance.authorize_execution(request, ref, config)
                 if await get_store().asearch(quarantine, limit=1):
                     raise PermissionError("项目中已有运行中或未确认停止的 Worker")
                 # Reject pre-existing links before any writable process is
@@ -348,13 +273,7 @@ def create_worker_graph(
                 run_id = str(config.get("metadata", {}).get("run_id", ""))
                 if not run_id:
                     raise PermissionError("开发请求缺少官方 Run 标识")
-                namespace = ("deep_loopminder", "project_dispatch_intents", ref.project_id)
-                history = await get_store().aget((*namespace, "history"), request["pm_dispatch_id"])
-                claimed = {**history.value, "claimed_run_id": run_id}
-                await get_store().aput((*namespace, "history"), request["pm_dispatch_id"], claimed, index=False)
-                current = await get_store().aget(namespace, ref.task_id)
-                if current and current.value.get("intent_id") == request["pm_dispatch_id"]:
-                    await get_store().aput(namespace, ref.task_id, claimed, index=False)
+                await governance.claim_intent(ref.project_id, ref.task_id, request["pm_dispatch_id"], run_id)
                 await get_store().aput(quarantine, ref.thread_id, {
                     "project_id": ref.project_id, "task_id": ref.task_id, "worker_ref": ref.to_dict(),
                     "intent_id": request["pm_dispatch_id"], "status": "shutdown_unconfirmed",
@@ -370,25 +289,49 @@ def create_worker_graph(
                 if request.get("pm_governed") and request.get("pm_phase") in {"discussion", "review"}:
                     worker = await project_workers.get_readonly(
                         ref.provider_id, ref.cwd,
-                        mode_id=await readonly_mode(ref.project_id, ref.provider_id),
+                        mode_id=await governance.readonly_mode(ref.project_id, ref.provider_id),
                     )
                     if worker.readonly_enforcement is None:
                         raise PermissionError("只读执行能力不可验证")
                 elif execution_phase:
                     worker = await project_workers.get_execution(ref, request["pm_dispatch_id"])
                     await worker.resume(ref)
-                    await authorize_execution(request, ref, config)
+                    # 续接的负责人会话带着商讨时的只读模式（plan/read-only），
+                    # 开发前必须切回可写模式，否则适配器按只读边界中止写入
+                    # （真实 E2E 发现：人工授权后仍"写入被工具中止"）。
+                    # 模式列表以适配器实际上报为准，不猜测；切换结果以
+                    # config_option 快照确认为准，未确认则不带病写入。
+                    try:
+                        mode_snapshot = worker.mode_state(ref.session_id)
+                    except Exception:
+                        mode_snapshot = {}
+                    current_id = (mode_snapshot or {}).get("current")
+                    if current_id is not None and not mode_can_write(ref.provider_id, current_id):
+                        offered = [item["id"] for item in (mode_snapshot or {}).get("modes", [])
+                                   if isinstance(item, dict) and item.get("id")]
+                        writable = [item for item in offered if mode_can_write(ref.provider_id, item)]
+                        if not writable:
+                            raise PermissionError(
+                                f"负责人会话停留在只读模式 {current_id}，适配器未提供可写模式；未发送开发内容。"
+                            )
+                        target = "default" if "default" in writable else writable[0]
+                        applied = await worker.apply_mode(ref, target)
+                        if not applied.get("matched"):
+                            raise PermissionError(
+                                f"执行模式切换未获适配器确认：请求 {target}，适配器报告 {applied.get('reported_mode')}。"
+                            )
+                    await governance.authorize_execution(request, ref, config)
                 else:
                     worker = await project_workers.get(ref.provider_id, ref.cwd)
             if request.get("pm_governed") and request.get("pm_phase") in {"discussion", "review"}:
                 # Recheck after connection setup as close as possible to ask.
                 # This is not an atomic send against unrelated filesystem or
                 # Store writers; stale results must still fail subsequent checks.
-                await authorize_readonly(request, ref.project_id, ref.task_id, ref.thread_id, config)
+                await governance.authorize_readonly(request, ref.project_id, ref.task_id, ref.thread_id, config)
             # The mode is set and confirmed here, immediately before the prompt
             # leaves the host. A mismatch raises and no discussion content is
             # ever processed by the adapter under the wrong mode.
-            mode_record = await _apply_discussion_mode(worker, ref, request)
+            mode_record = await governance.apply_discussion_mode(worker, ref, request) if governance is not None else None
             # Persist the adapter-reported mode under this Run so the PM side
             # can read it back after dispatch. The worker checkpoint is not
             # visible to the dispatching tool result.

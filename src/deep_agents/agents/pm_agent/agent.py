@@ -13,6 +13,9 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 
 from src.deep_agents.agents.pm_agent.discussion import PMDiscussionMiddleware
+from src.middlewares.agent.pm_settings import (
+    resolve_compaction_settings as resolve_compaction_settings,
+)
 from src.middlewares.agent.user_configurable import PMModelSelectionMiddleware
 from src.middlewares.approval import (
     HumanDecisionRequestMiddleware,
@@ -93,16 +96,17 @@ _PM_MIDDLEWARE_REQUIREMENTS = (
 )
 
 
-def default_pm_profile(*, acp_enabled: bool = False) -> PMProfile:
+def default_pm_profile(*, acp_enabled: bool = False, memory_enabled: bool = True) -> PMProfile:
     """生成 PM 默认配置，实际执行能力由 Worker 提供。"""
     profile = PMProfile(
         role="project_manager",
         capabilities=_PM_CONTROL_CAPABILITIES,
         context_policy="pm_project_projection",
-        memory_policy="pm_project_orientation_and_recall",
+        memory_policy="pm_project_orientation_and_recall" if memory_enabled else "disabled",
         budget_policy="pm_control_budget",
         approval_policy="human_boundary",
-        middleware_profile=_PM_MIDDLEWARE_REQUIREMENTS
+        middleware_profile=tuple(name for name in _PM_MIDDLEWARE_REQUIREMENTS
+                                 if memory_enabled or name != "PMAgentMemoryMiddleware")
         + (("ACPMiddleware",) if acp_enabled else ()),
     )
     forbidden = profile.capabilities & _FORBIDDEN_EXECUTION_CAPABILITIES
@@ -140,7 +144,9 @@ blockers, and delegate by role plus required capability.
 - 同一负责人会话续接时，不因上次失败猜测原因或追加永久限制；需要改变目标、方案、范围或关键约束时重新商讨。
 - Worker 拥有独立工具集，不继承你的项目状态、记忆、制品工具。通过会话返回进度与成果，由 wait_agent 领取并自动保存；不能要求它研究宿主代码、访问宿主 Store 或绕过工具补能力。
 - Worker 若具备原生子代理，可自主拆分内部工作并对最终成果负责；你管理项目级负责人，不指挥其内部子代理。
+- 派工、商讨或续问发出后立即交还控制权，不要调用 wait_agent 阻塞等待：负责人完成时官方后台通知会送达，宿主也会在会话空闲时发送"[宿主通知]"提示；在等待期间继续向用户汇报进度或处理其他任务。
 - 正常跟进使用 wait_agent 默认的新结果模式；只有明确查阅某一历史轮次时，才给出 run_id 重读。不要反复读取旧失败来判断新 Run。
+- 收到"[宿主通知]"或官方后台通知时，用 wait_agent 领取结果并按项目规则推进；这是状态提示不是新业务指令。
 - 工作台核对并关联了派工结果、但当前会话缺少该负责人时，使用 recover_dispatched_session 恢复引用，再用 wait_agent 领取结果；不要重新派工。
 - 验收记录缺失、验收不通过、人工拒绝是不同事实；“尚未写入”不能转述为“宿主拒绝”。以本轮可信验收事实和原始决定为准。
 - 历史简报可能包含过期工具说明，续问不复制其中要求Worker调用PM工具、搜索宿主目录的指令；引用材料由宿主交接，缺失部分先澄清。
@@ -284,11 +290,6 @@ pm_role_requirement = role_requirement_from_task
 
 # 4. 中间件装配：检查配置，依次接入审批、项目状态、记忆、摘要和 ACP。
 
-_PM_CONTEXT_POLICY = "pm_project_projection"
-
-_REVIEWED_PM_REQUIREMENTS = _PM_MIDDLEWARE_REQUIREMENTS
-
-
 def assemble_pm_user_middleware(
     profile: PMProfile,
     *,
@@ -302,14 +303,13 @@ def assemble_pm_user_middleware(
     recent_daily_days: int = 3,
     trajectory: AgentMiddleware | None = None,
     dynamic_memory_model: bool = False,
+    memory_enabled: bool = True,
 ) -> tuple[AgentMiddleware, ...]:
     """检查 PM 配置并装配中间件，运行生命周期交给官方接口。"""
-    if profile.context_policy != _PM_CONTEXT_POLICY:
+    expected = default_pm_profile(acp_enabled=acp is not None, memory_enabled=memory_enabled)
+    if profile.context_policy != expected.context_policy:
         raise ValueError("PM context_policy must use the reviewed #33 projection path")
-    requirements = _REVIEWED_PM_REQUIREMENTS + (
-        ("ACPMiddleware",) if acp is not None else ()
-    )
-    if profile.middleware_profile != requirements:
+    if profile.middleware_profile != expected.middleware_profile:
         raise ValueError(
             "PM middleware_profile must exactly match the reviewed PM requirements"
         )
@@ -322,16 +322,17 @@ def assemble_pm_user_middleware(
         HumanDecisionRequestMiddleware(),
         human_decision_hitl_middleware(),
         project_state if project_state is not None else ProjectStateMiddleware(),
-        PMAgentMemoryMiddleware(
+    )
+    if memory_enabled:
+        middleware += (PMAgentMemoryMiddleware(
             memory_jobs,
             recent_daily_days=recent_daily_days,
             context_token_threshold=compaction_token_threshold // 2,
             context_token_limit=context_token_limit,
             model_profile_enabled=dynamic_memory_model,
-        ),
-    )
+        ),)
     # 配置后台记忆服务后，追加压缩交接，避免长对话丢失关键依据。
-    if memory_jobs is not None:
+    if memory_enabled and memory_jobs is not None:
         middleware += (
             PMMemorySummarizationMiddleware(
                 memory_jobs,
@@ -357,40 +358,76 @@ def assemble_pm_user_middleware(
 
 async def pm_agent(model=None, *, studio=False, trace_project_id=None):
     """创建 PM 主图，运行与检查点生命周期交给官方 Server。"""
-    model_module = await asyncio.to_thread(importlib.import_module, "src.models.llm")
+    from src.middlewares.agent.pm_settings import current
 
+    pm_settings = current()
+    if pm_settings is not None:
+        from src.middlewares.persistence.pm_runtime import require_ready
+
+        require_ready()
+    config = pm_settings.read() if pm_settings is not None else {}
+    switches = config.get("runtime", {}).get("middleware", {})
+    if not isinstance(switches, dict) or any(type(value) is not bool for value in switches.values()):
+        raise ValueError("PM 中间件开关配置无效")
+    memory_enabled = switches.get("memory", True)
+    acp_enabled = switches.get("acp", True)
+    trajectory_enabled = switches.get("trajectory", True)
     # 先确定模型与共享存储，项目状态和历史记忆使用同一个 Store。
     # Every PM session may switch models through middleware, including when
     # the host supplied the graph's initial model explicitly.
     dynamic_memory_model = True
-    if model is None:
-        model = model_module.get_easycli_model()
     store = (await get_pm_memory_store()).store
-    memory = None if studio else PMMemory(store, model)
+    if model is None:
+        if pm_settings is not None:
+            from src.middlewares.agent.user_configurable import (
+                configured_pm_model,
+                pm_model_catalog,
+            )
+
+            catalog = pm_model_catalog(store)
+            selected = await catalog.get_default()
+            if selected is None:
+                raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
+            model = await configured_pm_model(catalog, selected)
+        else:
+            model_module = await asyncio.to_thread(importlib.import_module, "src.models.llm")
+            model = model_module.get_easycli_model()
+    memory = None if studio or not memory_enabled else PMMemory(store, model)
     from src.middlewares.project_state.workflow import ProjectWorkflow
 
     project_state = ProjectStateMiddleware(
         workflow=ProjectWorkflow(store), pm_discussion_gate=not studio
     )
     trajectory = None
-    if trace_project_id and not studio:
-        from src.workbench.paths import trajectory_directory
+    workspace_item = await store.aget(("deep_loopminder", "pm_settings"), "workspace") if pm_settings is None else None
+    workspace_values = config.get("workspace", {}) if pm_settings else (workspace_item.value if workspace_item else {})
+    compaction_threshold, context_limit = resolve_compaction_settings(workspace_values, use_environment=pm_settings is None)
+    if trace_project_id and not studio and trajectory_enabled:
+        from src.middlewares.trajectory.paths import trajectory_directory
 
-        trace_settings = await store.aget(("deep_loopminder", "pm_settings"), "workspace")
-        enabled = trace_settings is None or trace_settings.value.get("trace_enabled") is True
+        enabled = workspace_values.get("trace_enabled", True) is True
         directory = trajectory_directory(trace_project_id) if enabled else None
     else:
-        directory = None if studio else os.getenv("PM_TRAJECTORY_DIRECTORY")
+        directory = (None if studio or not trajectory_enabled else
+                     config.get("runtime", {}).get("trajectory_directory") if pm_settings else
+                     os.getenv("PM_TRAJECTORY_DIRECTORY"))
     if directory:
         from src.middlewares.trajectory import TrajectoryMiddleware, TrajectoryRecorder
 
         trajectory = TrajectoryMiddleware(
             await asyncio.to_thread(TrajectoryRecorder, directory),
-            stop_on_error=os.getenv("PM_TRAJECTORY_STOP_ON_ERROR", "false").lower() == "true",
+            stop_on_error=(config.get("runtime", {}).get("trajectory_stop_on_error", False) if pm_settings
+                           else os.getenv("PM_TRAJECTORY_STOP_ON_ERROR", "false").lower() == "true"),
         )
     # 根据部署配置启用 ACP；角色与 Worker 连接仍由 ACP 中间件管理。
-    specs = [] if studio else json.loads(os.getenv("ACP_SUBAGENTS_JSON") or "[]")
-    if not studio:
+    specs = ([] if studio or not acp_enabled else
+             list(config.get("runtime", {}).get("acp_subagents", [])) if pm_settings else
+             json.loads(os.getenv("ACP_SUBAGENTS_JSON") or "[]"))
+    if pm_settings is not None:
+        from src.middlewares.agent.pm_settings import resolve_runtime_config
+
+        specs = [resolve_runtime_config(spec, pm_settings) for spec in specs]
+    if not studio and acp_enabled:
         from src.middlewares.acp.server import load_managed_worker_settings
 
         for provider, role, description in (
@@ -417,16 +454,15 @@ async def pm_agent(model=None, *, studio=False, trace_project_id=None):
         model,
         system_prompt=stable_pm_system_prompt(),
         middleware=assemble_pm_user_middleware(
-            default_pm_profile(acp_enabled=acp is not None),
+            default_pm_profile(acp_enabled=acp is not None, memory_enabled=memory_enabled),
             acp=acp,
             memory_jobs=memory,
             project_state=project_state,
             trajectory=trajectory,
             dynamic_memory_model=dynamic_memory_model,
-            compaction_token_threshold=int(
-                os.getenv("PM_COMPACTION_TOKEN_THRESHOLD") or "300000"
-            ),
-            context_token_limit=int(os.getenv("PM_CONTEXT_TOKEN_LIMIT") or "500000"),
+            compaction_token_threshold=compaction_threshold,
+            context_token_limit=context_limit,
+            memory_enabled=memory_enabled,
         ),
         store=store,
     )

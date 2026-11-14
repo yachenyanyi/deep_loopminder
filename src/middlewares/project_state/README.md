@@ -52,7 +52,7 @@ PM 启用商讨门禁时，按以下顺序操作：
 2. 使用返回的 `project-artifact://...` 作为 create_task 的 task_brief_ref；路径、自造引用、外项目/外任务制品均拒绝。
 3. 依赖满足后通过 `begin_discussion` 与负责人商讨；领取实际讨论结果，PM 确认后调用 `assess_discussion`。只有当前输入版本的 Clef 通过结果才允许开发。
 4. 使用 `followup_task` 在已商讨的负责人会话开发；宿主注入已确认的任务材料，确认官方 Run 后关联任务。结果不明时先核对，不能盲目重派。
-5. `wait_agent` 领取开发结果；进入审查后通过 `begin_codex_review` 发起独立 Codex 会话，再领取其审查结果。原范围返工可使用当前不通过审查的发现；实质变化须重新商讨和判断。
+5. 派工后立即交还控制权；官方后台通知（或宿主"[宿主通知]"领取提示）到达后由 `wait_agent` 领取开发结果；进入审查后通过 `begin_codex_review` 发起独立 Codex 会话，通知到达后再领取其审查结果。原范围返工可使用当前不通过审查的发现；实质变化须重新商讨和判断。
 6. 独立审查通过后，可信宿主逐条记录验收；人工批准单独记录。只有对应记录有效时才能推进 passed、approved 或 done。
 
 非 PM 场景若未启用商讨门禁，仍可使用通用 ACP `spawn_agent`；这不适用于上述 PM 流程。PM Worker 在本机以原生 ACP 进程运行，商讨阶段的边界是适配器自身的权限模式加宿主 grants 与审批回调；用户也可以选择可写模式，此时记录会标明边界不保证只读，安全依赖双方确认与 Clef 门禁。
@@ -94,7 +94,7 @@ BaseStore 不提供通用原子 CAS，单纯 aget/aput 不具备跨线程并发�
 
 新任务编号与 ACP 别名使用相同字符约束：字母开头，字母/数字/下划线/连字符，最长64字符，区分大小写；不修改历史存储编号。task_name 是 Worker 别名，task_id 是业务归属；例如 `spawn_agent(task_name="T0_review", task_id="T0", agent_type="reviewer", message="独立核验交付")`。同任务可关联不同角色的多个独立会话。
 
-任务读取和修改返回 controls，包括 current_status、allowed_transitions、gated_transitions、blocking_dependencies、allowed_worker_roles 和 dependency_editable。写操作仅返回修改后的任务或项目概要，不再每一步重复全部任务；需要完整快照时使用 project_read。通过官方后台通知看到成功后，仍须 wait_agent 领取交付制品；通知不会自动写入项目验收。
+任务读取和修改返回 controls，包括 current_status、allowed_transitions、gated_transitions、blocking_dependencies、allowed_worker_roles 和 dependency_editable。写操作仅返回修改后的任务或项目概要，不再每一步重复全部任务；需要完整快照时使用 project_read。通过官方后台通知或宿主领取提示看到成功后，仍须 wait_agent 领取交付制品；通知不会自动写入项目验收。
 
 状态拒绝返回明确 code/reason/next_action：dependencies_blocked 要核对前置依赖；validation_required 需要宿主可信验收；approval_required 需要认证人工批准；invalid_task_transition 要依照 controls 修正。错误依赖仅在尚未执行的 backlog/ready 任务上用 update_task_dependencies 修正，修改后重回 backlog 并重新检查未知依赖和环；真正的前置依赖仍必须等到 done，不得为了推进而删除。review 与 testing 可以互转，均不能绕过可信验收。
 

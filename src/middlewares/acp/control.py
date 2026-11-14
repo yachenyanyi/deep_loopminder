@@ -228,10 +228,14 @@ class ACPWorker:
 
     def _update_metadata(self, session_id, update):
         if update.session_update == "usage_update" and session_id in self._refs:
+            # cost 是协议同一事件的可靠字段；适配器未上报时保持缺失，不猜。
             self._usage[session_id] = {
                 "used": update.used,
                 "size": update.size,
                 "remaining": update.size - update.used if update.used <= update.size else None,
+                **({"cost": update.cost.model_dump(mode="json", by_alias=True,
+                                                  exclude_none=True)}
+                   if getattr(update, "cost", None) is not None else {}),
                 "source": "acp.session_update.usage_update",
                 "observed_at": datetime.now(UTC).isoformat(),
             }

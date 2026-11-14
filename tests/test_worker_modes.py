@@ -11,6 +11,7 @@ from acp.schema import (
     SetSessionConfigOptionResponse,
 )
 
+from src.deep_agents.agents.pm_agent.collaboration import PMWorkerGovernance
 from src.middlewares.acp.capabilities import UnsupportedControl
 from src.middlewares.acp.control import ACPWorker
 from src.middlewares.acp.correlation import WorkerRef
@@ -292,7 +293,7 @@ def test_graph_persists_reported_mode_for_the_run(tmp_path, monkeypatch):
         monkeypatch.setattr(acp_graph, "get_store", lambda: store)
         candidate = WorkerCandidate("claude", "acp", frozenset({"developer"}), frozenset(), True)
         graph = acp_graph.create_worker_graph({"claude": FakeWorker("unused")}, [candidate],
-                                              project_workers=Pool())
+                                              project_workers=Pool(), governance=PMWorkerGovernance(acp_graph.get_store))
         payload = {"operation": "spawn", "owner_thread_id": "parent", "project_id": "project",
                    "task_id": "task", "agent_type": "developer", "message": message,
                    "pm_governed": True, "pm_phase": "discussion",
@@ -306,6 +307,142 @@ def test_graph_persists_reported_mode_for_the_run(tmp_path, monkeypatch):
         assert item is not None, "图未把模式回报写入运行记录"
         assert item.value["reported_mode"] == "plan"
         assert item.value["reported_mode_source"] == "config_option_snapshot"
+
+    asyncio.run(scenario())
+
+
+def test_discussion_defaults_to_plan_only_when_advertised(tmp_path, monkeypatch):
+    """需求默认商讨模式 plan：适配器提供就请求并记录来源；不提供则明确失败。
+
+    默认 plan 与用户显式保存的模式都不可用时一律失败并提示选择可用模式，
+    不发送商讨内容，不静默降级。
+    """
+    import json
+
+    from langchain_core.messages import HumanMessage
+    from langgraph.store.memory import InMemoryStore
+
+    from src.middlewares.acp import graph as acp_graph
+    from src.middlewares.acp.control import UnsupportedControl
+    from src.middlewares.acp.correlation import WorkerRef
+    from src.middlewares.project_state.artifacts import content_hash
+    from src.middlewares.project_state.folders import ProjectFolders
+    from src.middlewares.project_state.models import ProjectSnapshot, Task, TaskStatus
+    from src.middlewares.project_state.persistence import ProjectStore
+    from src.middlewares.project_state.worker_modes import ProjectWorkerModes
+    from src.middlewares.project_state.workflow import ProjectWorkflow
+    from src.runtime.routing.models import WorkerCandidate
+
+    def make_worker(advertise_plan):
+        class FakeWorker:
+            requests = []  # 按类共享：Pool 每次新建实例，测试断言读取类属性。
+            controls = []
+
+            def __init__(self, cwd):
+                self.cwd, self.process = cwd, SimpleNamespace(returncode=None)
+                self.readonly_enforcement = "native-readonly"
+
+            async def new(self, *, project_id, task_id, thread_id, role):
+                return WorkerRef("claude", "native", project_id, task_id, thread_id, role,
+                                 self.cwd, isolation="native-readonly")
+
+            async def resume(self, ref):
+                pass
+
+            async def apply_mode(self, ref, mode_id):
+                self.requests.append(mode_id)
+                if not (advertise_plan and mode_id == "plan"):
+                    raise UnsupportedControl("requested mode was not advertised")
+                return {"requested_mode": mode_id, "reported_mode": mode_id,
+                        "reported_mode_source": "config_option_snapshot",
+                        "confirmed_at": "now", "matched": True}
+
+            async def control(self, ref, action, payload, *, on_update):
+                self.controls.append(action)
+                return SimpleNamespace(stop_reason="end_turn")
+
+        return FakeWorker
+
+    class Pool:
+        def __init__(self, worker):
+            self.worker = worker
+
+        async def get_readonly(self, provider, directory, **_):
+            return self.worker(directory)
+
+    async def run_graph(store, worker, tmp_path):
+        await ProjectFolders(store).bind("project", str(tmp_path))
+        await ProjectStore(store).save(ProjectSnapshot(
+            "project", "Goal", (),
+            (Task("task", "Feature", TaskStatus.READY, "developer", frozenset(),
+                  frozenset(), ("Works",)),),
+        ))
+        workflow = ProjectWorkflow(store)
+        brief = await workflow.artifacts.create("project", "task", "task_brief", "# Goal\nDiscuss")
+        await ProjectStore(store).save(ProjectSnapshot(
+            "project", "Goal", (),
+            (Task("task", "Feature", TaskStatus.READY, "developer", frozenset(),
+                  frozenset(), ("Works",), artifact_refs=(brief["reference"],)),),
+        ))
+        version = await workflow.input_version(*(await workflow.task("project", "task")))
+        message = "discuss this"
+        intent_id = "c" * 32
+        await store.aput(
+            ("deep_loopminder", "project_dispatch_intents", "project", "history"), intent_id,
+            {"intent_id": intent_id, "phase": "discussion", "project_id": "project",
+             "task_id": "task", "owner_thread": "parent", "readonly_mechanism": "native",
+             "readonly_capability": "enforceable", "message": message,
+             "message_digest": content_hash(message), "status": "pending",
+             "input_version": version}, index=False,
+        )
+        monkeypatch.setattr(acp_graph, "get_store", lambda: store)
+        candidate = WorkerCandidate("claude", "acp", frozenset({"developer"}), frozenset(), True)
+        graph = acp_graph.create_worker_graph({"claude": worker("unused")}, [candidate],
+                                              project_workers=Pool(worker), governance=PMWorkerGovernance(acp_graph.get_store))
+        payload = {"operation": "spawn", "owner_thread_id": "parent", "project_id": "project",
+                   "task_id": "task", "agent_type": "developer", "message": message,
+                   "pm_governed": True, "pm_phase": "discussion",
+                   "pm_dispatch_id": intent_id, "pm_provider_id": "claude"}
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content=json.dumps(payload))]},
+            {"configurable": {"thread_id": "worker-thread"}, "metadata": {"run_id": "run-d1"}},
+        )
+        return await store.aget(("deep_loopminder", "project_run_modes", "project"), "run-d1")
+
+    async def scenario():
+        # 适配器提供 plan：未保存任何模式时默认请求 plan，记录默认来源。
+        worker = make_worker(advertise_plan=True)
+        store = InMemoryStore()
+        item = await run_graph(store, worker, tmp_path)
+        assert item is not None and worker.requests == ["plan"]
+        assert item.value["requested_mode"] == "plan"
+        assert item.value["requested_mode_source"] == "default_plan"
+        assert worker.controls == ["ask"]
+
+        # 适配器未提供默认 plan：明确失败并提示选择模式，不静默继续发送。
+        worker = make_worker(advertise_plan=False)
+        store = InMemoryStore()
+        raised = None
+        try:
+            await run_graph(store, worker, tmp_path)
+        except PermissionError as exc:
+            raised = str(exc)
+        assert raised and "plan" in raised and "选择" in raised
+        assert worker.requests == ["plan"]
+        assert worker.controls == []  # 未发送任何商讨内容。
+        assert await store.aget(("deep_loopminder", "project_run_modes", "project"), "run-d1") is None
+
+        # 用户显式保存的模式不可用：仍然失败，不静默降级。
+        worker = make_worker(advertise_plan=False)
+        store = InMemoryStore()
+        await ProjectWorkerModes(store).save("project", "claude", "read-only")
+        raised = False
+        try:
+            await run_graph(store, worker, tmp_path)
+        except UnsupportedControl:
+            raised = True
+        assert raised
+        assert worker.controls == []
 
     asyncio.run(scenario())
 
@@ -411,6 +548,7 @@ def test_execution_is_registered_and_released_after_readonly_connections(tmp_pat
             self.provider_id, self.cwd = provider, cwd
             self.process = SimpleNamespace(returncode=None)
             self.readonly_enforcement = kwargs.get("readonly_enforcement")
+            self.review = kwargs.get("review")
             self._prompt_locks = {}
             created.append(self)
 
@@ -424,10 +562,13 @@ def test_execution_is_registered_and_released_after_readonly_connections(tmp_pat
 
     async def scenario():
         async with AsyncExitStack() as stack:
+            async def review(_request, _decision):
+                return False
+
             pool = pool_module.ProjectWorkerPool(stack, [{
                 "provider_id": "claude", "command": ["fake"], "grants": [],
                 "runtime_dir": str(tmp_path), "node": "node",
-            }])
+            }], execution_review=review)
             first = await pool.get_readonly("claude", str(tmp_path), mode_id="plan")
             second = await pool.get_readonly("claude", str(tmp_path), mode_id="acceptEdits")
             config_version = pool._versions["claude"]
@@ -436,6 +577,8 @@ def test_execution_is_registered_and_released_after_readonly_connections(tmp_pat
                             config_version=config_version)
             execution = await pool.get_execution(ref, "a" * 32)
             assert execution not in (first, second)
+            assert execution.review is review
+            assert first.review is None and second.review is None
             # 只读连接必须全部关闭，不能留下持有同一会话的进程。
             assert first.process.returncode == 0
             assert second.process.returncode == 0
@@ -459,10 +602,11 @@ def test_tool_config_cannot_downgrade_acp_mutations():
     assert analyzer.analyze("acp.edit", {}) is RiskLevel.MEDIUM
 
 
-def test_live_mode_state_filters_by_provider_and_directory():
+def test_live_mode_state_filters_by_provider_and_directory(monkeypatch):
     """The workbench must not show another provider's or project's modes."""
     from types import SimpleNamespace
 
+    from src.middlewares.acp import server
     from src.workbench.app import _live_mode_state
 
     def worker(provider, cwd, modes):
@@ -476,7 +620,8 @@ def test_live_mode_state_filters_by_provider_and_directory():
     other_project = worker("claude", r"C:\projects\b", [{"id": "plan", "name": "Plan", "description": None}])
     pool = SimpleNamespace(_readonly_connections={"x": codex, "y": other_project},
                            _execution_connections={}, _connections={"z": claude})
-    server = SimpleNamespace(_workers={}, _project_workers=pool)
+    monkeypatch.setattr(server, "_workers", {})
+    monkeypatch.setattr(server, "_project_workers", pool)
 
     async def scenario():
         # 找到本项目的 claude 连接。
@@ -485,15 +630,15 @@ def test_live_mode_state_filters_by_provider_and_directory():
         # 查询 claude 时，不能拿 codex 的会话充当结果。
         only_codex = SimpleNamespace(_readonly_connections={"x": codex},
                                      _execution_connections={}, _connections={})
-        state = await _live_mode_state(SimpleNamespace(_workers={}, _project_workers=only_codex),
-                                       "claude", r"C:\projects\a")
+        monkeypatch.setattr(server, "_project_workers", only_codex)
+        state = await _live_mode_state(server, "claude", r"C:\projects\a")
         assert state["available"] is False
         # 只找到其他提供方的连接，等同于本项目没有可用连接。
         assert state["reason"] == "worker_not_connected"
         # 其他项目的会话不得出现在本项目的结果里。
-        state = await _live_mode_state(SimpleNamespace(_workers={}, _project_workers=SimpleNamespace(
-            _readonly_connections={"y": other_project}, _execution_connections={}, _connections={})),
-            "claude", r"C:\projects\a")
+        monkeypatch.setattr(server, "_project_workers", SimpleNamespace(
+            _readonly_connections={"y": other_project}, _execution_connections={}, _connections={}))
+        state = await _live_mode_state(server, "claude", r"C:\projects\a")
         assert state["available"] is False
 
     asyncio.run(scenario())

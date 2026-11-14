@@ -19,13 +19,14 @@ from langgraph.types import Command
 _request_identity = ContextVar("trajectory_request_identity", default=None)
 _secret_lock = threading.RLock()
 _known_secrets: set[str] = set()
+_exact_secrets: set[str] = set()
 
 
-def register_secret(value):
+def register_secret(value, *, exact_only=False):
     """Keep runtime credentials available only to the in-memory redactor."""
     if isinstance(value, str) and value:
         with _secret_lock:
-            _known_secrets.add(value)
+            (_exact_secrets if exact_only else _known_secrets).add(value)
 
 
 def _runtime_secrets():
@@ -157,6 +158,11 @@ class TrajectoryRecorder:
                 [f"[其余{len(value) - 100}项已截断]"] if limit and len(value) > 100 else []
             )
         if isinstance(value, str):
+            # Short Worker environment values can also be credentials, but
+            # replacing them inside arbitrary text corrupts IDs such as run-1.
+            with _secret_lock:
+                if value in _exact_secrets:
+                    return "[已脱敏]"
             try:
                 structured = json.loads(value)
             except (ValueError, TypeError):

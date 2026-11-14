@@ -523,7 +523,326 @@ shell.execute / test.execute / web.search`，并新增 `update_task_capabilities
   落盘，检查点在 PG——两者生命周期不同但重启后可对上（官方按 checkpoint
   重建状态）；`aprune/acopy_thread` 未实现时运行时有降级警告，功能不受损。
 
-### 7.1 结果
+### 7.0.5 wait_agent 改造：派工即回 + 完成通知到达再领取（2026-11-14）
+
+- **官方机制核对（安装源码 0.7.35）**：忙时投递由
+  `AsyncSubagentsMiddleware.abefore_model/aafter_model` 实现——PM 每次模型
+  调用前/最终答复后拉取未完成任务状态并注入官方通知
+  HumanMessage（`get_notification_metadata` 可读 `TaskEvent`），与子代理
+  类型无关；**空闲唤醒**依赖 `_ParentNotifierMiddleware`（官方注明
+  `create_deep_agent` 只给 deep agent 附加），acp_worker 是普通
+  StateGraph，空闲 PM 收不到官方唤醒；且官方 `_awake_parent` 创建的通知
+  Run 不携带本项目按 Run 传入的 configurable（project_id 等），PM 在其中
+  无法操作项目。测试 `test_workbench_claims.py` 用真实官方中间件验证忙时
+  投递对普通子代理同样生效。
+- **派工即回**：`spawn_agent`/`followup_task` 成功返回
+  `next_action="yield_control"`；PM 提示词与 acp `_PM_INSTRUCTIONS` 同步
+  "派工/商讨/续问后立即交还控制权，不要 wait_agent 阻塞等待"。项目状态
+  README 与 acp README 的典型调用顺序同步更新。
+- **空闲领取由宿主补位**：新增 `src/workbench/claims.py`
+  （`ClaimWatcher.watch_claims`），ACP server lifespan 启动观察循环（
+  `PM_CLAIM_POLL_SECONDS` 可调，默认 5 秒）：发现"Worker Run 结束 +
+  结果未领取（acp_delivered 无记录）+ PM 线程 idle/error"时，创建携带
+  项目 configurable 的领取 Run，消息以"[宿主通知]"开头、声明是状态提示
+  不是新业务指令。候选**不只看缓存的未完成状态**：官方忙时通知可能已把
+  缓存标成终态而 wait_agent 尚未领取，这种任务同样触发，否则结果一直
+  无人领取；权威门槛是 fresh `runs.get` 终态，成功 Run 还镜像官方
+  `_task_status` 核查 Worker 线程（interrupted=等输入、busy=有更新 Run
+  在工作 → 无事可领）。busy/等待人工决策（interrupted）的会话按官方
+  `_DELIVERABLE_THREAD_STATUSES` 同一规则跳过；每个 run_id 每个进程生命
+  周期至多触发一次；创建失败不标记，下一轮重试。
+- **实测 E2E（真实服务、真实模型）**：新项目 → PM 创建任务
+  e2e_check 并 begin_discussion 商讨 → **立即结束本轮交还控制权**（
+  最终回复明说"不等待负责人回复"）→ Worker Run 结束 → 宿主观察约 1 个
+  轮询周期内创建领取 Run → PM 领取到负责人商讨回复并自动调用
+  assess_discussion → Clef 判定 pass → PM 向用户汇报方案并说明范围差异。
+  `acp_delivered` 标记已领取，闭环完整。
+- 测试：`tests/test_workbench_claims.py` 13 项（官方忙时投递、idle 触发、
+  busy/interrupted 不打扰、已领取/运行中/等待输入/线程忙跳过、**通知已标
+  终态未领取仍触发且去重保留**、状态映射对齐官方、单次触发、失败可
+  重试、会话 404 跳过、多任务合并一条通知、通知措辞、轮询配置回退）。
+  全量 385 passed（仍不含 `test_pm_memory_integration` 2 项既有失败），
+  ruff 通过。
+
+### 7.0.6 独立审查闭环验证与设置/压缩事件逐项核对（2026-11-14）
+
+- **独立审查闭环（5 项新测试 `tests/test_pm_review_loop.py` 全过）**：
+  - **登记**：审查 Run 领取后中间件自动 `record_codex_review`——receipt 落库
+    （review_run_id/agent_id/result_ref/subject/decision/summary/findings），
+    `wait_agent` 返回的 completed 条目回填 `codex_review.decision`；
+  - **读取**：`codex_review_status` 按"latest receipt + 当前交付版本 subject +
+    独立性 + 只读来源 + 报告复核"读取，fail 携带 findings；
+  - **返工**：固定指令"按照已确认方案处理审查问题"只在存在**当前有效的
+    fail 审查**时放行（review pass 或缺失一律 `current_failed_review_required`
+    拒绝且不创建 Run），放行时由宿主把 summary/findings 交接给负责人，
+    原始指令文本不透传；
+  - **重新审查**：返工后交付版本变化 → 旧审查 `review_subject_changed`
+    失效 → 新审查派出后、结论领取前 `newer_review_pending` → 重审结论
+    登记后 latest 替换，旧 receipt 不可变保留；
+  - **三种事实区分**：审查通过（Codex 独立审查 receipt）≠ 可信验收
+    （`record_validation` 宿主逐条核验）≠ 人工批准（`record_approval`）：
+    审查通过时 `passed` 仍被 `validation_required` 拒绝；验收后
+    `approved` 仍被 `approval_required` 拒绝；批准需任务已 passed。
+- **Worker 压缩事件核对（协议层证据）**：安装的 ACP SDK `schema.py` 中
+  session_update 共 13 种（agent_message_chunk、agent_thought_chunk、
+  available_commands_update、config_option_update、current_mode_update、
+  plan、plan_removed、plan_update、session_info_update、tool_call、
+  tool_call_update、usage_update、user_message_chunk）——**没有 compaction
+  类型**；`session_info_update` 只有 title/updated_at。因此
+  `compaction_visibility` 保持 `unknown` 是唯一诚实选项（工作台已按"未知"
+  显示）。`usage_update`（used/size/**cost**）是唯一用量信号：图级与会话级
+  捕获 → pool.observe_live → worker-usage 端点 → UI；本次接入 cost
+  （同一事件的协议字段，适配器未上报时保持缺失不猜），既有真实 E2E 证据：
+  usage_update used=16954/size=430000 到达并被显示。
+- **网页设置逐项核对（全部有真实读写 handler，无假设置）**：
+  | 设置项 | 端点 | 落点 |
+  |---|---|---|
+  | 模型服务（编号/地址/凭据/模型发现） | providers | Store + Windows 凭据管理器（凭据不回显） |
+  | 默认模型/思考等级 | default-model | Store |
+  | Clef（account_id/令牌） | clef | Store + 凭据管理器；env 仅作回退显示 |
+  | Claude 负责人 / Codex 审查者 | worker-settings | worker-settings.json + 凭据管理器，restart_required 标记 |
+  | 商讨模式（项目默认） | worker-modes | Store + 适配器实时发现；无会话显式"无法选择"，已保存值保留 |
+  | 验收与轨迹 | workspace-settings | trace_enabled→Store；验收/批准强制本机确认，不可关闭 |
+  | PM 压缩阈值 | workspace-settings | compaction_token_threshold/context_token_limit→Store；保存值优先于 env 与默认 |
+  | 负责人上下文用量 | worker-usage | checkpoint + observe_live（usage_update），来源/时间自证 |
+- **确实只能文件/环境变量配置的项目（核对后列实）**：
+  - `.env`：`LANGGRAPH_POSTGRES_URI`（PM Store 与检查点数据库）、
+    `ACP_WORKERS_JSON`（claude/codex 之外的通用 Worker）、
+    `ACP_SUBAGENTS_JSON`（PM 角色目录；受管 claude/codex 启用时被合并）、
+    `CLOUDFLARE_AUTH_TOKEN`/`CLOUDFLARE_AI_API_KEY`/`CLOUDFLARE_ACCOUNT_ID`
+    （Clef 的 env 回退；网页已可保存凭据与账号）、`MCP_CONFIG`、
+    `DEEPSEEK_API_KEY`/`OPEN_ROUTER_API_KEY`（模型服务凭据的 env 回退）；
+  - env：`PM_TRAJECTORY_DIRECTORY`/`PM_TRAJECTORY_STOP_ON_ERROR`
+    （非工作台模式下的轨迹目录与出错即停；工作台内轨迹目录按项目派生、
+    开关在网页设置）、`PM_CLAIM_POLL_SECONDS`（领取观察间隔）、
+    `LOOPMINDER_DATA_DIR`（数据目录根）；PM 压缩阈值
+    `PM_COMPACTION_TOKEN_THRESHOLD`/`PM_CONTEXT_TOKEN_LIMIT` 已补网页界面
+    （工作台保存值优先，env 仍是免界面回退）；
+  - 启动脚本 CLI：`scripts/run_dev_server.py --port/--n-jobs-per-worker`；
+  - 文件：`langgraph.json`（http/store/checkpointer 路径、dependencies、
+    watch.exclude）、`worker-settings.json` 的 revision 机制（网页写、服务重启读）。
+
+### 7.0.7 需求收敛：默认商讨模式、指纹范围声明与压缩阈值界面（2026-11-14）
+
+- **默认商讨模式 plan（按适配器实际能力，不猜；用户决定 2026-11-14 修订）**：
+  项目+提供方未保存任何模式时，Worker 图默认尝试 `plan`；适配器确实提供
+  （`config_option_update` 快照确认）→ 按 `requested_mode_source: "default_plan"`
+  记录并照常确认。适配器未提供（`UnsupportedControl`）→ **明确失败并提示
+  用户在工作台的商讨模式设置中为该项目选择适配器提供的可用模式（可写模式
+  会标注说明），未发送任何商讨内容，不静默继续**——早期"按未确认运行继续发送"
+  的做法经用户指出已废弃。用户显式保存的模式不可用同样失败，不静默降级。
+  测试：`tests/test_worker_modes.py::test_discussion_defaults_to_plan_only_when_advertised`
+  （3 个场景：提供→默认+来源且内容照常发送；不提供→PermissionError+提示
+  选择+未发送内容+无运行模式记录；显式保存不可用→仍失败且未发送内容）。
+- **集中审查修复（子代理审查后确认 3 项）**：
+  - **指纹范围声明的键不一致（真 bug）**：商讨结论落库用
+    `project_content_digest_scope`，project_status 端点却读
+    `content_digest_scope`，导致新结论在工作台也显示"未记录"。
+    已改为读正确键，并补 API 级回归测试
+    （`test_project_status_reports_discussion_scope_declaration`）；
+  - **env 配错把设置页打成 500**：`workspace-settings` 的阈值读取与
+    `resolve_compaction_settings` 均改为逐级回退（保存值 > env > 默认），
+    单一来源非数字时如实回退下一级，不让端点或图构建崩溃（补 2 组测试）；
+  - **文档措辞修正**：默认 plan 不可用时商讨内容照常发送、按未确认记录，
+    原文"不发送商讨内容"不准确，已改。
+  修复后全套 399 项通过。
+- **默认 plan 不可用改为明确失败（用户决定 2026-11-14）**：上一版在此路径
+  仍发送商讨内容（按未确认记录）；用户指出后改为 `PermissionError`，错误
+  信息明确提示在工作台选择适配器提供的可用模式（可写模式说明保留），
+  内容一律不发送；补未发送内容与无运行模式记录的断言。
+- **商讨结论指纹范围声明**：`content_digest_scope()`（folders.py）从同一组
+  忽略常量生成文字声明——任何深度的 `.git`/`.venv`/`node_modules` 等、嵌套层
+  `dist`/`build` 等（项目根同名除外）不计入，项目外文件不在检测范围，
+  且明确"该指纹用于检测项目内容变化，不是访问控制"。声明随商讨结论落库
+  （`project_content_digest_scope`）→ 项目状态 API → 工作台"查看商讨记录"
+  面板展示；旧结论无声明时 UI 显示"未记录（旧结论未声明范围，请重新商讨后核对）"。
+- **PM 压缩阈值补网页界面**：`PM_COMPACTION_TOKEN_THRESHOLD`/
+  `PM_CONTEXT_TOKEN_LIMIT` 原先只能 env 配置；现可在工作台设置（验收与轨迹
+  区域）保存到 Store（`("deep_loopminder","pm_settings")/"workspace"`），
+  `resolve_compaction_settings` 取值顺序：工作台保存值 > 环境变量 > 内置默认
+  （300000/500000）。POST 只保存轨迹开关时不清掉已存阈值；阈值下限 1000。
+  图构建时（`pm_agent`）读取同一记录，保存后重启服务生效。
+- **受影响验证**：`tests/test_worker_modes.py` 19 项、
+  `tests/test_pm_discussion.py` 7 项（替身补 `apply_mode`：提供 plan
+  以放行其授权链路，非 plan 模式仍抛 `UnsupportedControl`）、
+  `tests/test_workbench.py` 4 项（新增 workspace-settings 往返/保留/校验）、
+  `tests/test_pm_middleware_assembly.py`（新增取值顺序 3 组）；
+  全套 397 项通过。
+
+### 7.0.8 真实 E2E：模式发现/默认 plan/派工即回/领取唤醒/执行 HITL（2026-11-14）
+
+隔离测试项目（FizzBuzz，临时目录）+ 真实 Claude Code 适配器（本地代理 8317）+ 真实 Clef 判断 + 最新代码（重启后加载）：
+
+- **模式发现（真实适配器）**：会话建立后 worker-modes 端点如实上报适配器
+  实际提供的 5 个模式（default/acceptEdits/plan/auto/bypassPermissions），
+  当前 plan；可写标注正确（plan 不在可写列表）。
+- **默认商讨模式 plan（真实确认）**：未保存任何模式时两次商讨派工均由
+  适配器确认 plan（`project_run_modes`：requested=plan/reported=plan/
+  source=default_plan/confirmed），且两次派工**复用同一负责人会话**
+  （session_id 相同）——续接与默认模式同时验证。
+- **派工即回 + 领取唤醒（真实生效）**：PM 派工后立即交还控制权；商讨结果
+  领取由两条路径实测——官方 busy-pull（第二轮派工 Run 期间送达）与
+  **宿主空闲唤醒**（PM 会话中出现"[宿主通知] …fizzbuzz…status success…
+  请用 wait_agent 领取"消息，claims.py 真实触发）。
+- **真实 Clef 判断三次**：两次 unknown（概率 pass 0.37/0.67，confidence
+  0.033/0.304——判断模型真实输出，如实记录不猜），第三轮收窄问题后 pass。
+  PM 按设计在 unknown 后继续商讨而非强行通过。
+- **执行阶段 HITL**：负责人写入被工具策略中止 → PM 请求人工决策 →
+  本机批准（绑定指纹 + 官方 Command(resume)）→ PM 转达授权继续。
+  中断读取/指纹绑定/官方恢复全链在真实链路上工作。
+- **usage_update cost 真实接入**：worker-usage 显示 used=31079、
+  cost≈0.246 USD（本会话新接入字段）；compaction_visibility 如实 unknown。
+- **发现并修复两个真实问题**：
+  1. **POST worker-modes 接受适配器未提供的模式**（no-such-mode 保存
+     成功）。修复：有本项目活动会话时校验模式必须在适配器提供的列表内
+     （`test_worker_modes_rejects_unadvertised_mode_with_live_session`）；
+     无会话仍可保存默认值（派工时适配器会如实拒绝）。
+  2. **决策记录的 mode_record 竞态为空**：门禁在派工返回时立即读回，
+     早于 Worker 图异步写入 Store。展示层改为按最末轮 run_id 从
+     `project_run_modes` 权威记录合并回报字段
+     （`_merged_mode_record`）；权威记录本身经 Store 直读验证是正确的。
+- **测试范围**：受影响文件 45 项（test_workbench 7/test_worker_modes 19/
+  test_pm_discussion 7/test_pm_review_loop 5/test_pm_middleware_assembly 7）；
+  全套 399 项在本轮改动前的基线仍有效（改动只涉及 workbench 端点与
+  展示合并，未触及图/门禁路径）。
+- **第三个真实问题（执行模式阻塞，已修复）**：人工批准执行后，负责人
+  续接的会话仍带着商讨时的 plan 模式，适配器按只读边界中止一切写入——
+  "写入及退出计划模式请求再次被工具中止"。修复：执行续接后读取适配器
+  当前模式（`mode_state`，如实上报值），若在只读集合内则切到适配器提供
+  的可写模式（优先 `default`），以 config_option 快照确认；无可写模式或
+  未确认则明确失败不带病写入（graph.py 执行分支）。
+- **开发模式限制（如实记录，非新问题）**：重启后官方 runtime 线程注册表
+  不持久——PG checkpoint 有数据但线程 404；含悬空工具调用的状态会把
+  模型调用打成 400。工作台拒绝伪装恢复（fail-closed 正确）；隔离测试
+  项目经官方 threads.delete + 记录清理后以新会话接续，项目状态
+  （商讨 pass、任务 in_progress）不受影响。
+- **待验证（链路仍在进行）**：开发交付 → 独立 Codex 审查登记 →
+  可信验收 → 人工批准；页面浏览器验证因工具分类器持续不可用未做，
+  改为 API 层断言（页面数据源即这些端点）。
+
+### 7.0.9 PM 配置与协作结构治理（2026-11-14）
+
+- **范围**：PM 专属工作台和 PM 与 ACP Worker 的协作链路；原多 Agent 入口
+  `langgraph.json` 与其他 Agent 的装配保持原状。新增 `scripts/run_pm_server.py`，
+  默认地址 `http://127.0.0.1:2031/workbench`，线程/Run 开发注册表使用独立目录。
+- **配置**：PM 的非敏感设置集中于仓库根目录 `settings.json`；模型、Worker、
+  Clef 和 PostgreSQL 凭据从 `.env` 的 PM 专用变量读取。旧 Store、环境变量和
+  Windows 凭据只在一次性迁移时读取，新配置已有值优先。真实迁移结果：1 个模型
+  服务、2 个 Worker、1 个项目模式偏好；18 个 Worker 环境变量引用和模型、Clef、
+  PostgreSQL 凭据均可读取。已检查已知凭据值未出现在 `settings.json` 中。
+  保留原 `.env` 中供其他服务使用的键，不删除旧 Store 和 Windows 凭据。
+- **结构**：工作台设置、线程绑定和人工决策从主路由文件拆出，前端脚本独立并
+  合并重复的事件处理；ACP 图的 PM 门禁、派工核验和模式确认由 PM 协作模块注入。
+  轨迹路径由轨迹模块提供，ACP 图不再引用工作台。记忆、轨迹和 ACP 可通过 PM
+  设置开关控制，商讨门禁、项目状态和人工决策不随可选开关被绕过。
+- **验证**：最终完整回归 414 项通过、1 项按设计跳过；跳过的真实 PostgreSQL
+  测试已另外显式运行并通过。真实 PostgreSQL 临时 schema 已验证 PM 服务启动、迁移和项目写入；
+  数据库缺失时真实服务与浏览器验证了设置页可打开、项目操作返回 503、连接地址
+  写入 `.env`。另有并发写入、配置失败回滚、凭据不回显、模式隔离和依赖方向测试。
+- **真实协作结果，未完成闭环**：隔离项目真实完成负责人商讨、Clef 判断通过并
+  进入开发，但写入请求被现有审批策略中止。PM 发起独立审查时，测试专用的空
+  Codex 配置目录没有登录状态，审查未启动，随后进入人工决策；没有生成交付。
+  将必要的原生认证和模型配置复制到另一个临时目录后，单独的 Codex 真实只读调用
+  成功。这只证明隔离认证问题可以复现和纠正，**不等于独立审查或验收通过**。
+  当前 ACP 中危权限请求没有人工审核回调时会直接拒绝；本轮未自动放宽该策略。
+- **运行元数据与测试残留**：最初两次启动探针误用了原工作目录，触发了现有
+  `.langgraph_api` 的刷新；原服务仍在运行，旧运行元数据是否完全未受影响不能
+  断言。后续探针已改用独立目录。一次真实测试的临时目录
+  `C:\Users\Administrator\AppData\Local\Temp\pm-core-e2e-yip9h1gp` 清理时，
+  自动审批以 `blocked by policy` 拒绝递归删除，目录保留；隔离数据库 schema 已删除。
+- **测试隔离事故**：一次全量测试的临时配置错误地回退到进程环境，失败断言在
+  测试工具输出中显示了真实 Cloudflare Account ID；未观察到 API token 出现在
+  该输出。已改为只从当前配置目录的 `.env` 读取 PM 凭据，并避免把 Worker 的
+  非敏感短环境变量登记为轨迹脱敏词；新增针对两处隔离的回归验证。
+
+### 7.0.10 两轮代码与架构审查：当前问题（2026-11-14）
+
+本节记录在 7.0.9 之后的只读审查结论，压缩上下文后应优先参考本节；本轮未修复代码。
+代码质量由用户指定的 GPT-6.1 Terra medium 子代理审查，架构及官方方案由另一子代理审查；
+主代理另用合成数据核验第一项。未重跑完整套件，也没有真实付费模型调用。
+
+1. **Worker 环境变量凭据脱敏缺口，已用合成值复现。**
+   `src/middlewares/agent/pm_settings.py` 的 `protect_runtime_config` 把 Worker 环境变量
+   转移到 `.env`，但 `resolve_runtime_config` 根据变量名判断是否登记轨迹脱敏。
+   如凭据变量名为 `AUTH`，假设 Worker 回显该值，`TrajectoryRecorder.clean_public`
+   会保留原文，存在进入公开输出或持久轨迹的风险。主代理只实测了合成值经
+   `clean_public` 未被隐藏；真实密钥及实际 Worker 回显路径未实测。
+   修复应覆盖自定义敏感变量，同时避免将普通短环境值如 `1` 作为全局替换词而破坏
+   Run ID；已有测试曾暴露这种副作用。不得输出真实凭据。
+2. **旧项目会话与 PM 专属开发服务未打通。** `scripts/run_pm_server.py` 将 dev 服务
+   运行目录改为 `workspace/pm-runtime`，而旧项目在 PostgreSQL Store 的线程绑定仍指向
+   旧服务注册表；`src/workbench/threads.py` 对官方线程 404 会拒绝续接。
+   这符合当前故障关闭行为，不能据此认定旧数据已删除；原服务和其数据仍须保留。
+   这是代码与官方架构对照结论，本次没有实测旧项目迁移。应先核对官方支持的线程、
+   Run 元数据及部署迁移路径；不能单凭 PostgreSQL checkpoint 宣称会话可恢复，也不能
+   直接复制正在使用的 pickle。参考 [官方本地开发说明](https://docs.langchain.com/langsmith/local-dev-testing)。
+3. **ACP 和 PM 仍只有部分解耦。** `src/middlewares/acp/graph.py` 尽管注入了
+   `PMWorkerGovernance`，仍承担 `pm_phase`、项目绑定、派工意图及执行连接生命周期；
+   `src/middlewares/acp/server.py` 仍装配工作台路由和 `watch_claims`。建议围绕实际
+   职责逐步收敛 PM 专属编排，保留发送前模式确认、重复授权检查与连接释放时序，
+   不为了消除关键词而大规模搬迁。共享服务自动领取属于本轮治理前已有的未提交改动，
+   不能误称本次新引入，但需要核实其是否影响其他 Agent 的既有行为。
+4. **配置实现复杂且存在新旧分支。** `src/middlewares/agent/pm_settings.py` 同时处理
+   JSON、`.env`、敏感字段转换和旧数据迁移；`model_catalog.py` 与 ACP server 也保留
+   PM 与旧入口分支。后续可在保留其他 Agent 行为的前提下评估把一次性迁移与日常配置
+   读取分开，不应未核实旧入口就删除兼容路径。`pm_agent/collaboration.py` 的位置合理；
+   `workbench/claims.py` 是后台协作逻辑，长期可评估迁入 PM 协作模块。
+5. **真实开发审批仍阻断完整闭环。** 7.0.9 的真实测试中，开发阶段中危 ACP 写入请求
+   没有可用的人工审核回调而被拒绝；没有实际交付及独立审查结果。不可通过自动放宽
+   权限把它伪装成已通过。测试中 Codex 的隔离目录缺少原生登录材料，后来使用临时
+   必要认证配置单独验证了真实只读调用；不能把它记作完整审查通过。
+
+**官方能力的边界**：保留官方 LangChain 中间件与 HITL；
+[官方异步子代理说明](https://docs.langchain.com/oss/python/deepagents/async-subagents)
+中空闲 supervisor 的自动唤醒有子代理类型限制，不能仅凭官方存在通知就删除普通 ACP
+`StateGraph` 使用的现有领取机制。正式部署能否简化线程持久化，取决于本机版本、
+许可和运行条件，需单独验证。
+
+建议优先顺序：先修合成测试已复现的敏感值脱敏，尽早处理真实开发审批阻断和旧会话
+兼容路径，再治理 ACP 及配置结构。一次集中测试和复审即可，不无止境循环。
+
+### 7.0.11 凭据脱敏与开发权限审批（2026-11-14）
+
+- **Worker 环境变量脱敏**：PM 的自定义 Worker 环境值解析后登记到内存脱敏器；
+  JSON 环境值的字符串叶子也登记，避免凭据名无法识别时直接回显。短于 8 个字符的值
+  仅在整个字符串与之相等时隐藏，避免普通标志 `1` 把 `run-1` 破坏；因此短凭据嵌入
+  更长自由文本时仍可能泄露，不能声称覆盖所有回显形式。非敏感环境值也可能被遮挡。
+  验证使用合成数据，未使用真实凭据。
+- **开发阶段 ACP 审批**：PM 服务为开发连接注入现有 ACP 人工审核回调，工作台展示
+  当前项目的权限请求、工具输入与风险；用户可单次批准或拒绝。申请由随机编号绑定，
+  项目不匹配、重复提交、超时或服务停止均不能批准；批准后原 ACP 回调继续重查 grant
+  和策略，且只选择 `allow_once`。这不替代适配器自身模式，也不保证所有操作都会发出
+  ACP 权限请求。商讨和审查连接未注入该回调，其他 Agent 旧入口保持原有默认行为。
+- **审批验证与限制**：有本地 ASGI 接口、连接池及真实 ACP 测试子进程的集成测试，
+  验证项目隔离、单次性、超时、关闭拒绝、批准后策略收紧以及协议返回；并非真实 Claude
+  或完整 PM 商讨到交付的端到端验证。审批请求保存在当前服务进程内，最长等待 120 秒；
+  重启或 Worker 中断后不会恢复，不属于 LangGraph checkpoint 中的 PM 人工决策。
+- **旧会话**：当前仅改进线程 404 提示，提醒核对原服务和未完成运行；未修改旧绑定、
+  未删除历史或实现跨服务迁移。[官方数据平面说明](https://docs.langchain.com/langsmith/data-plane)
+  区分线程/Run 和检查点；当前 dev 环境两者采用不同注册方式。安全迁移仍待基于隔离
+  数据验证，尤其需要排除原服务并发运行；不能仅凭 PG 检查点自动重建并宣称恢复成功。
+- **结构范围**：审批状态及 HTTP 入口属于工作台，通用 ACP 只接受可选
+  回调注入。原有 ACP 图、共享生命周期和设置迁移的进一步收敛仍未完成，不应称为已治理完毕。
+- **回归**：本轮 `python -m pytest tests -q` 得到 **417 passed、1 skipped**；真实 PostgreSQL
+  专项本轮未重跑。新增与受影响审批文件 Ruff 通过，工作台脚本 `node --check` 通过。
+  无真实模型调用，未重启现有服务，变更尚未提交。
+
+### 7.0.12 精简与复用（2026-11-14）
+
+- 合并本轮新增的 Worker 审批状态和工作台接口到一个文件，删除多余的 PM 侧审批文件；
+  ACP 接入继续复用已有审核回调。
+- 派工意图在 PM 协作模块集中读取并判断是否存在，移除 ACP 图中两处重复读取；
+  保持调用方原有项目锁和派工、授权时序。
+- PM 默认配置和装配复用同一份中间件要求，减少两套名单可能发生的不一致。
+- 压缩阈值与环境变量回退统一由 PM 设置模块计算，PM 装配和工作台共用；旧调用位置
+  保留兼容导出，不更改原有设置值或其他 Agent 的运行配置。
+- 用户要求少做测试：精简后仅跑受影响文件，审批及装配等 54 项、设置及装配等
+  27 项通过（两组有重叠）。7.0.11 的 417 项全套结果早于这些精简，不能当作精简后
+  的全套结果。旧会话迁移、结构进一步收敛和真实 Claude 完整闭环仍未完成。
+
+### 7.1 结果（历史记录）
+
+> 以下为更早的历史基线；当前最近一次完整回归以 7.0.11 的 417 通过、1 跳过为准。
 
 ```
 conda activate python312        # Python 3.12.0
@@ -537,7 +856,7 @@ python -m pytest tests/ -q --ignore=tests/test_pm_memory_integration.py
 
 ### 7.2 新增与变更的测试
 
-`tests/test_worker_modes.py`（新增，18 项）：
+`tests/test_worker_modes.py`（新增，19 项）：
 
 | 测试 | 覆盖 |
 |---|---|

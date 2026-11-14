@@ -62,7 +62,7 @@ def _validate_managed_worker(value, provider_id="claude", *, check_runtime=True)
         raise ValueError("Node 可执行文件路径无效")
 
 
-def _load_managed_workers():
+def _load_legacy_managed_workers():
     path = _worker_settings_path()
     if not path.exists():
         return {}
@@ -77,12 +77,29 @@ def _load_managed_workers():
     return value
 
 
+def _load_managed_workers():
+    from src.middlewares.agent.pm_settings import current
+
+    settings = current()
+    if settings is None:
+        return _load_legacy_managed_workers()
+    value = settings.read().get("workers", {})
+    if not isinstance(value, dict) or any(key not in {"claude", "codex"} for key in value):
+        raise ValueError("Worker 配置无效")
+    for provider, worker in value.items():
+        _validate_managed_worker(worker, provider, check_runtime=False)
+    return value
+
+
 def load_managed_worker_settings(provider_id="claude"):
     """Load public local Worker settings; credentials are stored separately."""
     value = _load_managed_workers().get(provider_id)
     if value is None:
         return None
-    return {key: value.get(key) for key in ("enabled", "endpoint", "runtime_dir", "model", "node", "revision")}
+    result = {key: value.get(key) for key in ("enabled", "endpoint", "runtime_dir", "model", "node", "revision")}
+    if value.get("credential_env"):
+        result["credential_env"] = value["credential_env"]
+    return result
 
 
 async def save_managed_worker_settings(value, token=None, provider_id="claude"):
@@ -99,18 +116,35 @@ async def save_managed_worker_settings(value, token=None, provider_id="claude"):
         public = {key: (previous or {}).get(key) for key in ("endpoint", "runtime_dir", "model", "node")}
         public["enabled"] = False
     endpoint = public.get("endpoint") or ""
-    credentials = WindowsCredentials("DeepLoopMinder/worker/")
+    from src.middlewares.agent.pm_settings import PMCredentials, current, secret_name
+
+    pm_settings = current()
+    credentials = PMCredentials("worker", pm_settings) if pm_settings else WindowsCredentials("DeepLoopMinder/worker/")
     identity = provider_id + "/" + hashlib.sha256(endpoint.encode()).hexdigest()
-    inherited_token = (os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    inherited_token = None if pm_settings else (os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
                        if provider_id == "claude" else os.getenv("CODEX_API_KEY") or os.getenv("OPENAI_API_KEY"))
     if (public["enabled"] and previous and previous.get("endpoint") != endpoint and token is None
             and previous.get("endpoint") and (inherited_token
                 or await credentials.get(provider_id + "/" + hashlib.sha256(previous["endpoint"].encode()).hexdigest()))):
         raise ValueError("更换负责人 API 地址时请重新提供凭据")
-    if token is not None:
+    if token is not None and pm_settings is None:
         await credentials.put(identity, token)
     changed = not previous or any(previous.get(key) != public.get(key) for key in public) or token is not None
     public["revision"] = uuid.uuid4().hex if changed else previous.get("revision")
+
+    if pm_settings is not None:
+        key = secret_name("worker", identity)
+        if token is not None:
+            public["credential_env"] = key
+        elif previous and previous.get("credential_env") and previous.get("endpoint") == endpoint:
+            public["credential_env"] = previous["credential_env"]
+        if token is None:
+            await pm_settings.put("workers", provider_id, public)
+        else:
+            await pm_settings.update(
+                lambda values: values.setdefault("workers", {}).__setitem__(provider_id, public), secrets={key: token}
+            )
+        return public
 
     def write():
         path = _worker_settings_path()
@@ -147,8 +181,17 @@ async def lifespan(app):
         stack.callback(_workers.clear)
         stack.callback(_candidates.clear)
         stack.callback(_worker_errors.clear)
-        configured_workers = json.loads(os.getenv("ACP_WORKERS_JSON") or "[]")
-        managed_workers = await asyncio.to_thread(_load_managed_workers)
+        from src.middlewares.agent.pm_settings import PMCredentials, current, resolve_runtime_config
+
+        pm_settings = current()
+        runtime = pm_settings.read().get("runtime", {}) if pm_settings else {}
+        acp_enabled = runtime.get("middleware", {}).get("acp", True)
+        configured_workers = (runtime.get("acp_workers", []) if pm_settings and acp_enabled
+                              else [] if pm_settings
+                              else json.loads(os.getenv("ACP_WORKERS_JSON") or "[]"))
+        if pm_settings:
+            configured_workers = [resolve_runtime_config(entry, pm_settings) for entry in configured_workers]
+        managed_workers = await asyncio.to_thread(_load_managed_workers) if acp_enabled else {}
         _active_managed_revision = {name: value.get("revision") for name, value in managed_workers.items()}
         if managed_workers:
             configured_workers = [entry for entry in configured_workers if entry.get("provider_id") not in managed_workers]
@@ -157,12 +200,14 @@ async def lifespan(app):
                     continue
                 identity = provider + "/" + hashlib.sha256(managed["endpoint"].encode()).hexdigest()
                 try:
-                    token = await WindowsCredentials("DeepLoopMinder/worker/").get(identity)
+                    credentials = PMCredentials("worker", pm_settings) if pm_settings else WindowsCredentials("DeepLoopMinder/worker/")
+                    token = await credentials.get(identity)
                 except Exception:
                     token = None
                     _worker_errors[provider] = "无法读取本机 Worker 凭据"
-                token = token or (os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
-                                  if provider == "claude" else os.getenv("CODEX_API_KEY") or os.getenv("OPENAI_API_KEY"))
+                if pm_settings is None:
+                    token = token or (os.getenv("ANTHROPIC_AUTH_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+                                      if provider == "claude" else os.getenv("CODEX_API_KEY") or os.getenv("OPENAI_API_KEY"))
                 if provider == "claude":
                     worker_env = {"ANTHROPIC_BASE_URL": managed["endpoint"], "ANTHROPIC_MODEL": managed["model"]}
                 else:
@@ -188,7 +233,8 @@ async def lifespan(app):
                     "runtime_dir": managed["runtime_dir"], "node": managed.get("node"),
                     "managed": True,
                 })
-        _project_workers = _ProjectWorkerPool(stack, configured_workers)
+        review = getattr(app.state, "pm_execution_review", None)
+        _project_workers = _ProjectWorkerPool(stack, configured_workers, execution_review=review)
         bootstrap = None
         for settings in configured_workers:
             provider = settings["provider_id"]
@@ -238,7 +284,17 @@ async def lifespan(app):
                     business_capabilities=frozenset(settings.get("capabilities", ())),
                 )
             )
-        yield
+        # 完成通知的宿主补位：Worker Run 结束而 PM 空闲时触发领取 Run（详见
+        # workbench/claims.py）。随生命周期启停，观察失败不影响服务。
+        from src.workbench.claims import watch_claims
+
+        claims_task = asyncio.create_task(watch_claims()) if acp_enabled else None
+        try:
+            yield
+        finally:
+            if claims_task is not None:
+                claims_task.cancel()
+                await asyncio.gather(claims_task, return_exceptions=True)
 
 
 app = Starlette(routes=workbench_routes, lifespan=lifespan)
@@ -255,9 +311,50 @@ def worker_catalog():
     )
 
 
+def project_worker_pool():
+    """Return the active project pool, if the server started one."""
+    return _project_workers
+
+
+def managed_worker_status(provider_id):
+    """Expose public connection status without exposing the runtime registries."""
+    return {"revision": _active_managed_revision.get(provider_id), "error": _worker_errors.get(provider_id)}
+
+
+def discover_live_modes(provider_id, directory=None):
+    """Find only modes reported by this provider and the requested project."""
+    candidates = []
+    bootstrap = _workers.get(provider_id)
+    if bootstrap is not None and getattr(bootstrap, "provider_id", provider_id) == provider_id:
+        if directory is None or os.path.normcase(bootstrap.cwd) == os.path.normcase(directory):
+            candidates.append(bootstrap)
+    pool = _project_workers
+    if pool is not None:
+        connections = (list(getattr(pool, "_readonly_connections", {}).values())
+                       + list(getattr(pool, "_execution_connections", {}).values())
+                       + list(getattr(pool, "_connections", {}).values()))
+        for worker in connections:
+            if worker is None or worker in candidates or getattr(worker, "provider_id", None) != provider_id:
+                continue
+            if directory is not None and os.path.normcase(worker.cwd) != os.path.normcase(directory):
+                continue
+            candidates.append(worker)
+    if not candidates:
+        return {"available": False, "reason": "worker_not_connected", "modes": [], "current": None}
+    for worker in candidates:
+        for session_id in reversed(list(getattr(worker, "_metadata", {}) or {})):
+            state = worker.mode_state(session_id)
+            if state.get("available"):
+                return state
+    return {"available": False, "reason": "worker_has_no_session", "modes": [], "current": None}
+
+
 def acp_worker():
     """Return the role-routed ACP worker graph registered in langgraph.json."""
-    return create_worker_graph(_workers, _candidates, project_workers=_project_workers)
+    from src.deep_agents.agents.pm_agent.collaboration import PMWorkerGovernance
+
+    return create_worker_graph(_workers, _candidates, project_workers=_project_workers,
+                               governance=PMWorkerGovernance())
 
 
 def acp_control():

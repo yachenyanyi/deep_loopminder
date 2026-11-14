@@ -368,7 +368,26 @@ OPEN_ROUTER_API_KEY=your_key    # 多模型支持
 LANGGRAPH_POSTGRES_URI=postgresql://user:pass@localhost:5432/db
 ```
 
-### 启动
+### PM 专属工作台
+
+PM 使用独立的服务装配和线程运行目录，不改变下面的多 Agent 启动入口：
+
+```powershell
+python scripts/run_pm_server.py
+# 工作台：http://127.0.0.1:2031/workbench
+```
+
+PM 的普通设置保存在项目根目录 `settings.json`，密钥、Clef 账号和 PostgreSQL
+连接保存在 `.env`；设置页不会回显这些值。首次启动可从旧 Store、Worker 配置和
+Windows 凭据迁移缺失项，旧数据不会删除。迁移完成后 PM 以新文件为准。
+设置中的模型和商讨模式在后续调用中使用；Worker、数据库和中间件装配的修改需要
+重启 PM 服务。数据库不可用时仍可打开设置页，但不能创建临时项目冒充持久化项目。
+
+PM 专属开发服务的线程/Run 注册表与原多 Agent 服务分开。PostgreSQL 中有检查点
+不代表另一个服务的线程元数据也可用；旧会话无法读取时工作台会明确提示，不会
+自动新建会话冒充恢复。开发服务与生产部署的恢复能力仍需分别验证。
+
+### 原多 Agent 开发服务启动
 
 **必须用项目自带的启动脚本，不要直接用 `langgraph dev`。**
 原因：本机安装的 langgraph-cli 在 `dev` 命令里构造 `run_server(...)` 调用时

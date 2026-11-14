@@ -189,6 +189,11 @@ def test_registered_memory_graph_executes_snapshot_job(monkeypatch):
         module_name, factory_name = config["graphs"]["pm_memory_agent"].split(":")
         module = importlib.import_module(module_name)
         model = ToolModel(responses=[AIMessage(content="unused")])
+        # 官方图现在核验来源的模型身份：替身补上 legacy 身份读取所需的公共属性。
+        object.__setattr__(model, "model_name", "stub-legacy")
+        object.__setattr__(model, "openai_api_base", "http://127.0.0.1:9/v1")
+        from src.middlewares.agent.user_configurable import legacy_model_identity
+
         monkeypatch.setitem(
             sys.modules,
             "src.models.llm",
@@ -199,13 +204,14 @@ def test_registered_memory_graph_executes_snapshot_job(monkeypatch):
             ),
         )
         store = InMemoryStore()
-        source = {"id": "snapshot-1", "project_id": "p"}
+        source = {"id": "snapshot-1", "project_id": "p",
+                  "model_profile": {"mode": "legacy", "identity": legacy_model_identity(model)}}
         memory = SimpleNamespace(
             store=store,
             source=AsyncMock(return_value=source),
             write=AsyncMock(return_value={"outcome": "written"}),
         )
-        monkeypatch.setattr(module, "PMMemory", lambda store, model: memory)
+        monkeypatch.setattr(module, "PMMemory", lambda store, model=None: memory)
         monkeypatch.setattr(
             module,
             "get_pm_memory_store",
@@ -214,7 +220,7 @@ def test_registered_memory_graph_executes_snapshot_job(monkeypatch):
         graph = await getattr(module, factory_name)()
         result = await graph.ainvoke({"project_id": "p", "source_id": "snapshot-1"})
         memory.source.assert_awaited_once_with("p", "snapshot-1")
-        memory.write.assert_awaited_once_with(source)
+        memory.write.assert_awaited_once_with(source, verify_consolidation_profile=True)
         assert result["outcome"] == "written" and result["source_id"] is None
 
     asyncio.run(scenario())
@@ -574,7 +580,7 @@ def test_consolidation_does_not_consume_evidence_arriving_during_write():
         store = InMemoryStore()
         memory = PMMemory(store)
 
-        async def write(source):
+        async def write(source, *, verify_consolidation_profile=False):
             await memory.capture("race", "pm", [], purpose="执行中到达的新来源")
             return {"outcome": "ignore", "outcome_origin": "model"}
 

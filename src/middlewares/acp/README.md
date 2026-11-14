@@ -21,10 +21,12 @@ PM 通过 `ACP_SUBAGENTS_JSON` 显式启用中间件。未配置时，保留原�
 
 ## 子代理工具
 
-- `spawn_agent(task_name, message, agent_type=None)`：立即返回 `agent_id`（官方线程 ID），后台执行。只有一个角色时默认使用该角色；多个角色时指定角色，或由部署方设置 `default_agent_type`。任务名使用小写 snake_case，当前父线程内不能重复使用；同一模型轮次并行同名创建会在发请求前拒绝。
-- `followup_task(target, message)`：同一会话开启下一轮；通过官方 Run 的 `enqueue` 排队。
+- `spawn_agent(task_name, message, agent_type=None)`：立即返回 `agent_id`（官方线程 ID），后台执行，返回 `next_action="yield_control"` 提示派工后交还控制权，不要立即阻塞等待。只有一个角色时默认使用该角色；多个角色时指定角色，或由部署方设置 `default_agent_type`。任务名使用小写 snake_case，当前父线程内不能重复使用；同一模型轮次并行同名创建会在发请求前拒绝。
+- `followup_task(target, message)`：同一会话开启下一轮；通过官方 Run 的 `enqueue` 排队。同样返回 `next_action="yield_control"`。
 - `send_message(target, message)`：普通 ACP 会话使用已协商的原生 steer；受 PM 商讨门禁治理的会话目前拒绝在途自由消息，需等待本轮结束后继续商讨或续问。
-- `wait_agent(timeout_ms=30000, targets=None, include_completed=False, run_id=None)`：默认等待所有子代理的新结果；`targets` 可选 1～8 个名称或 ID，`timeout_ms=0` 立即查询。默认不再返回已领取的 Run；历史重读须指定单个 target 和 `run_id`，`include_completed=True` 未指定 Run 时兼容归一化为未读模式，并返回 notice，不无差别重读旧结果。每次至多返回 8 轮；`has_more_results` 表示尚有未返回结果。超时只取消等待，不取消 Worker。
+- `wait_agent(timeout_ms=30000, targets=None, include_completed=False, run_id=None)`：领取未读结果，应在完成通知到达后调用（`timeout_ms=0` 立即查询）。`targets` 可选 1～8 个名称或 ID。默认不再返回已领取的 Run；历史重读须指定单个 target 和 `run_id`，`include_completed=True` 未指定 Run 时兼容归一化为未读模式，并返回 notice，不无差别重读旧结果。每次至多返回 8 轮；`has_more_results` 表示尚有未返回结果。超时只取消等待，不取消 Worker。
+
+完成通知的投递（官方 async-subagents 语义）：PM 忙时，`AsyncSubagentsMiddleware.abefore_model/aafter_model` 在下一次模型调用前拉取任务状态并注入通知 HumanMessage；PM 空闲时，官方只有 deep-agent 子代理才会唤醒 supervisor，而本项目的 acp_worker 是普通 StateGraph，因此由宿主补位——ACP server lifespan 启动 `src/workbench/claims.py` 的观察循环，发现"Worker Run 结束 + 结果未领取 + PM 线程 idle/error"时创建携带项目 configurable 的领取 Run。候选不只看缓存的未完成状态：官方忙时通知可能已把缓存标成终态而 wait_agent 尚未领取，这种任务同样触发（权威门槛是 fresh `runs.get` 终态，成功 Run 还核查 Worker 线程是否在等输入或有更新 Run 在工作）。busy 与等待人工决策的会话不动；每个 run_id 每个进程生命周期至多触发一次。
 
 角色描述应包含执行端实际能力（包括是否支持原生子代理）、职责和交接方式；运行时按已有官方状态注入负责人别名、角色、最新 Run、最后观察状态和结果是否领取，不将其描述为实时探测。默认中文沟通，续问只补变化。Worker 原生工具集独立于 PM，通过会话交付；项目级 Worker 对自己的内部子代理负责。Claude Code 原生子代理能力由部署角色说明声明，ACP 不新增控制内部子代理的第二层调度。
 - `list_agents(path_prefix=None, status=None)`：按任务名前缀和最新观测状态筛选。返回当前运行、排队的 Run ID、未读结果数和观测时间；刷新失败显示 `status_fresh=False`，并附错误。
@@ -38,12 +40,12 @@ PM 通过 `ACP_SUBAGENTS_JSON` 显式启用中间件。未配置时，保留原�
 
 可信构造参数 `request_timeout=15` 限制单次服务请求及中断收敛等待；`timeout_ms` 限制等待 Worker 完成的阶段，状态读取另受请求期限约束。写操作超时返回 `outcome_unknown=True` 且不建议直接重试，先查看服务状态与日志。中间件不自动重复启动 Worker。
 
-典型调用顺序：
+典型调用顺序（派工即回，通知到达再领取）：
 
 ```python
 spawn_agent(task_name="inspect", message="检查项目结构", agent_type="researcher")
-followup_task(target="inspect", message="继续检查测试入口")
-wait_agent(targets=["inspect"], timeout_ms=30000)
+# 立即结束本轮，向用户交代已派工；完成通知到达后：
+wait_agent(targets=["inspect"], timeout_ms=0)
 list_agents(path_prefix="ins")
 ```
 
@@ -278,7 +280,7 @@ asyncio.run(main())
 
 这些检查只约束传入控制请求和 adapter 发出的权限请求。cwd 不是 OS sandbox；原生 Worker 可能在自身模式/设置下自动运行部分工具，不逐次询问 ACP client。必须使用原生 sandbox/approval 设置或隔离环境满足部署策略，不能把 SDK 回调宣称为全部 shell/file 操作的强制沙箱。设置宽权限模式属于显式控制授权。
 
-session completion 不会修改 ProjectStore，也不把 Task 改为 DONE。compaction 可见性目前为 unknown；通用 ACP 本身不接管业务验收、语义监督或 MCP 业务服务器装配。可传官方 MCP server 配置给 new/resume，业务工具仍需显式 task/thread/message refs。
+session completion 不会修改 ProjectStore，也不把 Task 改为 DONE。compaction 可见性目前为 unknown——这是协议核对后的结论而非缺省占位：安装的 ACP SDK schema 中 session_update 共 13 种，没有任何 compaction 类型，`usage_update`（used/size/cost）是唯一用量信号并已接入工作台（cost 未上报时保持缺失）；通用 ACP 本身不接管业务验收、语义监督或 MCP 业务服务器装配。可传官方 MCP server 配置给 new/resume，业务工具仍需显式 task/thread/message refs。
 
 ## 验证
 

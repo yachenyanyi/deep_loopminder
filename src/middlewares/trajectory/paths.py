@@ -1,4 +1,4 @@
-"""Private application paths for project-scoped workbench artifacts."""
+"""Project-scoped paths for PM and Worker trajectory recordings."""
 
 import hashlib
 import os

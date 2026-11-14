@@ -20,10 +20,9 @@ async def pm_memory_agent(model=None):
         project_id = state["project_id"]
         source = await PMMemory(store).source(project_id, state["source_id"]) if state.get("source_id") else None
         profile = source.get("model_profile") if source else None
-        from src.middlewares.agent.model_catalog import ModelCatalog
-        from src.middlewares.agent.user_configurable import configured_pm_model, legacy_model_identity
+        from src.middlewares.agent.user_configurable import configured_pm_model, legacy_model_identity, pm_model_catalog
 
-        catalog = ModelCatalog(store)
+        catalog = pm_model_catalog(store)
         if source is None:
             profile = await PMMemory(store).consolidation_model_profile(project_id)
         elif profile is None:

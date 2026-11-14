@@ -15,6 +15,8 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from src.workbench import app as workbench
+from src.workbench import context as workbench_context
+from src.workbench import decisions as workbench_decisions
 
 PROJECT = "p-hitl"
 THREAD = "thread-hitl-1"
@@ -79,10 +81,11 @@ class FakeClient:
 @pytest.fixture
 def workbench_client(monkeypatch):
     store = InMemoryStore()
-    monkeypatch.setattr(workbench, "_injected_store", store)
+    monkeypatch.setattr(workbench_context, "_injected_store", store)
     runs = FakeRuns()
     threads = FakeThreads()
     monkeypatch.setattr(workbench, "get_client", lambda url=None: FakeClient(threads, runs))
+    monkeypatch.setattr(workbench_decisions, "get_client", lambda url=None: FakeClient(threads, runs))
     app = Starlette(routes=workbench.routes)
     with TestClient(app, base_url="http://127.0.0.1:2024", client=("127.0.0.1", 50000)) as client:
         with tempfile.TemporaryDirectory() as directory:
@@ -256,12 +259,12 @@ def test_lost_checkpoint_is_reported_not_faked(workbench_client):
     )
     seen = client.get(f"/workbench/api/pending-decision?project_id={project_id}")
     assert seen.status_code == 409
-    assert "检查点已不存在" in seen.json()["error"]
+    assert "无法恢复" in seen.json()["error"]
     resumed = client.post("/workbench/api/submit-decision", json={
         "project_id": project_id, "answers": ["允许"],
     })
     assert resumed.status_code == 409
-    assert "检查点已不存在" in resumed.json()["error"]
+    assert "无法恢复" in resumed.json()["error"]
     assert not runs.created
 
 
@@ -272,12 +275,12 @@ def test_empty_snapshot_after_dev_restart_is_checkpoint_lost(workbench_client):
     threads.state = {"values": {}, "next": [], "checkpoint": None, "tasks": [], "interrupts": []}
     seen = client.get(f"/workbench/api/pending-decision?project_id={project_id}")
     assert seen.status_code == 409
-    assert "检查点已不存在" in seen.json()["error"]
+    assert "无法恢复" in seen.json()["error"]
     resumed = client.post("/workbench/api/submit-decision", json={
         "project_id": project_id, "answers": ["允许"],
     })
     assert resumed.status_code == 409
-    assert "检查点已不存在" in resumed.json()["error"]
+    assert "无法恢复" in resumed.json()["error"]
     assert not runs.created
     client, store, threads, runs, project_id = workbench_client
 

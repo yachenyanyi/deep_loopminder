@@ -44,6 +44,13 @@ from langgraph.config import get_config
 from .model_catalog import ModelCatalog, validate_model_base_url
 
 
+def pm_model_catalog(store):
+    """Use PM settings in its dedicated runtime and preserve legacy callers."""
+    from .pm_settings import current
+
+    return ModelCatalog(store, settings=current())
+
+
 class UserConfigurableMiddleware(AgentMiddleware):
     """允许用户在每次调用时动态指定模型和系统提示词。
 
@@ -188,7 +195,7 @@ async def memory_model_profile(state, store, legacy_model):
         if state.get("pm_model_selection") is not None:
             raise ValueError("模型选择相互冲突")
         return legacy_profile()
-    catalog = ModelCatalog(store)
+    catalog = pm_model_catalog(store)
     selected = state.get("pm_model_selection")
     if selected is None:
         selected = await catalog.get_default()
@@ -227,7 +234,7 @@ class PMModelSelectionMiddleware(AgentMiddleware):
         if configured.get("model_use_default") is True:
             if provider or model_name:
                 raise ValueError("模型选择相互冲突")
-            default = await ModelCatalog(runtime.store).get_default() if runtime.store is not None else None
+            default = await pm_model_catalog(runtime.store).get_default() if runtime.store is not None else None
             if default is None:
                 raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
             return {"pm_model_selection": default, "pm_model_legacy": False,
@@ -236,7 +243,7 @@ class PMModelSelectionMiddleware(AgentMiddleware):
             raise ValueError("切换模型时必须同时提供模型服务和模型名称")
         if not provider:
             if state.get("pm_model_selection") is None and not state.get("pm_model_legacy") and runtime.store is not None:
-                default = await ModelCatalog(runtime.store).get_default()
+                default = await pm_model_catalog(runtime.store).get_default()
                 if default is not None:
                     return {"pm_model_selection": default, "pm_model_legacy": False, "pm_model_changed": False}
                 return {"pm_model_selection": None, "pm_model_legacy": True, "pm_model_changed": False}
@@ -260,7 +267,7 @@ class PMModelSelectionMiddleware(AgentMiddleware):
             return await handler(request)
         if request.runtime.store is None:
             raise ValueError("模型选择需要配置 Store")
-        catalog = ModelCatalog(request.runtime.store)
+        catalog = pm_model_catalog(request.runtime.store)
         model_instance = await configured_pm_model(catalog, selected)
         system = request.system_message
         if request.state.get("pm_model_changed"):

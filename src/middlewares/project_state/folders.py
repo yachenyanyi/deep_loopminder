@@ -43,6 +43,22 @@ _IGNORED_ANYWHERE = frozenset({
 _IGNORED_NESTED = frozenset({"dist", "build", ".next", ".nuxt", ".gradle", ".idea", ".vs"})
 
 
+def content_digest_scope() -> str:
+    """State exactly what the fingerprint covers, from the same constants.
+
+    商讨结论绑定这份声明：被排除的目录和项目外文件从未被检测，任何展示与
+    记录都不得声称它们已核对。
+    """
+    anywhere = "、".join(sorted(_IGNORED_ANYWHERE))
+    nested = "、".join(sorted(_IGNORED_NESTED))
+    return (
+        "内容指纹只覆盖项目文件夹内的目录结构与普通文件（文件名、文件类型、"
+        "链接目标、硬链接标记、内容哈希）；任何深度的 " + anywhere
+        + "，以及嵌套层的 " + nested + "（项目根下同名目录除外）不计入；"
+        "项目文件夹之外的文件不在检测范围。该指纹用于检测项目内容变化，不是访问控制。"
+    )
+
+
 def _directory_digest(directory: str) -> str:
     """Hash project content as a change detector, not an access control.
 

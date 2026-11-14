@@ -52,7 +52,7 @@ class Policy:
 
 
 def test_context_usage_is_only_taken_from_native_usage_update(tmp_path):
-    from acp.schema import UsageUpdate
+    from acp.schema import Cost, UsageUpdate
 
     async def scenario():
         async with worker(tmp_path) as instance:
@@ -63,6 +63,17 @@ def test_context_usage_is_only_taken_from_native_usage_update(tmp_path):
             assert observed["context_usage"]["remaining"] == 700
             assert observed["context_usage"]["source"] == "acp.session_update.usage_update"
             assert observed["compaction_visibility"] == "unknown"
+            # 适配器未上报 cost 时保持缺失，不猜。
+            assert "cost" not in observed["context_usage"]
+            # 同一协议事件的 cost 字段可靠，上报时随用量一起记录。
+            cost = Cost(currency="USD", amount=0.25)
+            instance._update_metadata(
+                ref.session_id,
+                UsageUpdate(sessionUpdate="usage_update", used=500, size=1000, cost=cost),
+            )
+            usage = instance.observe(ref)["context_usage"]
+            assert usage["remaining"] == 500
+            assert usage["cost"] == {"amount": 0.25, "currency": "USD"}
 
     asyncio.run(scenario())
 
@@ -194,6 +205,48 @@ def test_human_approval_rechecks_revoked_grants(tmp_path):
             ref = await new(instance)
             await instance.control(ref, "ask", {"text": "permission:read"})
             assert json.loads(updates[-1].update.content.text)["outcome"] == "cancelled"
+
+    asyncio.run(scenario())
+
+
+def test_live_worker_permission_can_be_approved_from_pm_workbench(tmp_path):
+    """Exercise ACP subprocess, host policy, HTTP approval and protocol reply."""
+    import httpx
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    from src.workbench.worker_reviews import (
+        WorkerReview,
+        pending_worker_reviews,
+        submit_worker_review,
+    )
+
+    async def scenario():
+        registry = WorkerReview(timeout=3)
+        app = Starlette(routes=[Route("/reviews", pending_worker_reviews, methods=["GET"]),
+                                Route("/reviews", submit_worker_review, methods=["POST"])])
+        app.state.worker_review = registry
+        updates = []
+
+        async def capture(notification):
+            updates.append(notification)
+
+        policy = Policy(ApprovalDecision.needs_approval(RiskLevel.MEDIUM, "Review"))
+        async with worker(tmp_path, approval=policy, review=registry.review, on_update=capture) as instance:
+            ref = await new(instance)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
+                                         base_url="http://127.0.0.1") as client:
+                turn = asyncio.create_task(instance.control(ref, "ask", {"text": "permission:read"}))
+                async with asyncio.timeout(3):
+                    while not registry.pending("project"):
+                        await asyncio.sleep(0.01)
+                request_id = (await client.get("/reviews?project_id=project")).json()["requests"][0]["request_id"]
+                result = await client.post("/reviews", json={"project_id": "project", "request_id": request_id,
+                                                              "approved": True})
+                assert result.status_code == 200
+                await turn
+            assert json.loads(updates[-1].update.content.text) == {"optionId": "once", "outcome": "selected"}
+            assert len(policy.requests) == 2
 
     asyncio.run(scenario())
 

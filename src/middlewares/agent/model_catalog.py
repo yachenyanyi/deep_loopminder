@@ -90,18 +90,29 @@ class WindowsCredentials:
 class ModelCatalog:
     """Manage provider metadata and enabled models in the official Store."""
 
-    def __init__(self, store: BaseStore, credentials=None):
+    def __init__(self, store: BaseStore, credentials=None, *, settings=None):
         """Bind to the host Store and credential service."""
         self.store = store
+        self.settings = settings
+        if settings is not None and credentials is None:
+            from .pm_settings import PMCredentials
+
+            credentials = PMCredentials("model", settings)
         self.credentials = credentials or WindowsCredentials()
 
     async def get(self, provider_id):
         """Return public endpoint metadata, without the credential."""
+        if self.settings is not None:
+            value = self.settings.read().get("models", {}).get("providers", {}).get(provider_id)
+            return dict(value) if value else None
         item = await self.store.aget(_NAMESPACE, provider_id)
         return dict(item.value) if item else None
 
     async def get_default(self):
         """Return the saved default selection, if any."""
+        if self.settings is not None:
+            value = self.settings.read().get("models", {}).get("default")
+            return dict(value) if value else None
         item = await self.store.aget(("deep_loopminder", "model_settings"), "default")
         return dict(item.value) if item else None
 
@@ -114,6 +125,8 @@ class ModelCatalog:
     async def get_credential(self, provider_id: str, provider: dict):
         """Read endpoint-bound credentials, with legacy fallback only for legacy records."""
         base_url = validate_model_base_url(provider.get("base_url"))
+        if self.settings is not None and provider.get("credential_env"):
+            return self.settings.secret(provider["credential_env"])
         if provider.get("credential_scope") == "endpoint":
             return await self.credentials.get(self.credential_identity(provider_id, base_url))
         if provider.get("credential_scope") is not None:
@@ -139,11 +152,16 @@ class ModelCatalog:
         if reasoning_effort and (levels is None or reasoning_effort not in levels):
             raise ValueError("模型未配置所选思考等级")
         value = {"provider_id": provider_id, "model_id": model_id, "reasoning_effort": reasoning_effort}
+        if self.settings is not None:
+            await self.settings.update(lambda values: values.setdefault("models", {}).__setitem__("default", value))
+            return value
         await self.store.aput(("deep_loopminder", "model_settings"), "default", value, index=False)
         return value
 
     async def list(self):
         """List configured endpoints."""
+        if self.settings is not None:
+            return [dict(value) for value in self.settings.read().get("models", {}).get("providers", {}).values()]
         records, offset = [], 0
         while True:
             page = await self.store.asearch(_NAMESPACE, limit=100, offset=offset)
@@ -179,6 +197,19 @@ class ModelCatalog:
         # Secrets supplied in arbitrary model metadata must never enter Store.
         value["models"] = [{"id": m["id"], "enabled": m["enabled"],
                             "reasoning_levels": m.get("reasoning_levels")} for m in value["models"]]
+        if self.settings is not None:
+            from .pm_settings import secret_name
+
+            identity = self.credential_identity(provider_id, normalized_url)
+            key = secret_name("model", identity)
+            if token is not None:
+                value["credential_env"] = key
+            elif previous and previous.get("credential_env") and previous.get("base_url") == normalized_url:
+                value["credential_env"] = previous["credential_env"]
+            def save_setting(values):
+                values.setdefault("models", {}).setdefault("providers", {})[provider_id] = value
+            await self.settings.update(save_setting, secrets={key: token} if token is not None else None)
+            return value
         if token is not None:
             await self.credentials.put(self.credential_identity(provider_id, normalized_url), token)
         await self.store.aput(_NAMESPACE, provider_id, value, index=False)

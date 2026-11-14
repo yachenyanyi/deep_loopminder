@@ -35,6 +35,7 @@ wait_agent 默认只领取未读结果。历史重读必须明确指定单个 ta
 _PM_INSTRUCTIONS = """项目开发先使用 begin_discussion 与负责人商讨，明确双方一致后调用 assess_discussion。
 只有当前任务版本通过 Clef 后，才用 followup_task 续接该负责人开发；执行指令按 PM 规则填写。
 独立审查使用 begin_codex_review；在途自由消息不可用。wait_agent 默认领取未读结果，超时不取消 Worker。
+派工或商讨发出后立即交还控制权，不要调用 wait_agent 阻塞等待：负责人完成时，官方后台通知会在下一次模型调用前送达，宿主也会在会话空闲时提示领取；收到通知后用 wait_agent 领取结果再推进。
 Worker 的能力与 PM 不同，材料由宿主交接；Run 成功不等于验收或人工批准。"""
 
 
@@ -220,7 +221,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                 {
                     **self._entry(runtime, key, tracked, fresh=False),
                     "task_name": task_name,
-                    "next_action": "wait_agent",
+                    "next_action": "yield_control",
                 },
             )
 
@@ -289,7 +290,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                 {
                     **self._entry(runtime, key, updated),
                     "queued": run["status"] == "pending",
-                    "next_action": "wait_agent",
+                    "next_action": "yield_control",
                 },
             )
 
@@ -385,7 +386,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
             include_completed: bool = False,
             run_id: str | None = None,
         ) -> dict | Command:
-            """等待并领取未读结果，每个Run默认返回一次。正常跟进不要设置include_completed；历史重读必须提供单个target和run_id。timeout_ms=0立即查询；超时不取消远端工作。"""
+            """领取未读结果（完成通知到达后调用，timeout_ms=0 立即查询）。每个Run默认返回一次；历史重读必须提供单个target和run_id。超时不取消远端工作。"""
             self._owner(runtime)
             history_notice = None
             if include_completed and run_id is None:

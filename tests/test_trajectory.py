@@ -305,7 +305,7 @@ def test_worker_notifications_join_the_project_trajectory(tmp_path, monkeypatch)
     the worker it delegated to.
     """
     import src.middlewares.acp.graph as graph_module
-    import src.workbench.paths as paths_module
+    import src.middlewares.trajectory.paths as paths_module
 
     monkeypatch.setattr(paths_module, "trajectory_directory", lambda project_id: tmp_path)
     recorder = graph_module.project_recorder("project-1")

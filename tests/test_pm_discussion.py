@@ -7,6 +7,7 @@ import httpx
 import pytest
 from langgraph.store.memory import InMemoryStore
 
+from src.deep_agents.agents.pm_agent.collaboration import PMWorkerGovernance
 from src.deep_agents.agents.pm_agent.discussion import DiscussionGate
 from src.middlewares.execution.security_policy import (
     EnforcementCapability,
@@ -159,6 +160,15 @@ def test_readonly_intent_binds_message_run_and_current_input(tmp_path, monkeypat
                 calls.append(payload["text"])
                 return SimpleNamespace(stop_reason="end_turn")
 
+            async def apply_mode(self, ref, mode_id):
+                # 测试替身提供 plan：默认商讨模式可确认，不拦截本测试的授权链路。
+                if mode_id == "plan":
+                    return {"requested_mode": mode_id, "reported_mode": mode_id,
+                            "reported_mode_source": "config_option_snapshot",
+                            "confirmed_at": "now", "matched": True}
+                from src.middlewares.acp.control import UnsupportedControl
+                raise UnsupportedControl("requested mode was not advertised")
+
         worker = Worker()
 
         class Pool:
@@ -172,7 +182,8 @@ def test_readonly_intent_binds_message_run_and_current_input(tmp_path, monkeypat
 
         monkeypatch.setattr(acp_graph, "get_store", lambda: store)
         candidate = WorkerCandidate("developer", "acp", frozenset({"developer"}), frozenset(), True)
-        graph = acp_graph.create_worker_graph({"developer": worker}, [candidate], project_workers=Pool())
+        graph = acp_graph.create_worker_graph({"developer": worker}, [candidate], project_workers=Pool(),
+                                              governance=PMWorkerGovernance(acp_graph.get_store))
         payload = {"operation": "spawn", "owner_thread_id": "owner", "project_id": "p", "task_id": "t", "agent_type": "developer", "message": "altered", "pm_governed": True, "pm_phase": "discussion", "pm_dispatch_id": intent["intent_id"], "pm_provider_id": "developer"}
         config = {"configurable": {"thread_id": "worker"}, "metadata": {"run_id": "run-one"}}
         with pytest.raises(PermissionError):

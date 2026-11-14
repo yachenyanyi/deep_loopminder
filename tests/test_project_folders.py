@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from langgraph.store.memory import InMemoryStore
 
+from src.deep_agents.agents.pm_agent.collaboration import PMWorkerGovernance
 from src.middlewares.project_state.folders import ProjectFolders
 
 
@@ -107,7 +108,8 @@ def test_acp_graph_resolves_project_folder_and_rejects_wrong_resume(tmp_path, mo
         await ProjectFolders(store).bind("project", str(tmp_path))
         monkeypatch.setattr(acp_graph, "get_store", lambda: store)
         candidate = WorkerCandidate("developer", "acp", frozenset({"developer"}), frozenset(), True)
-        graph = acp_graph.create_worker_graph({"developer": FakeWorker("unused")}, [candidate], project_workers=Pool())
+        graph = acp_graph.create_worker_graph({"developer": FakeWorker("unused")}, [candidate], project_workers=Pool(),
+                                              governance=PMWorkerGovernance(acp_graph.get_store))
         payload = {"operation": "spawn", "owner_thread_id": "parent", "project_id": "project", "task_id": "task", "agent_type": "developer", "message": "hello"}
         output = await graph.ainvoke({"messages": [HumanMessage(content=json.dumps(payload))]}, {"configurable": {"thread_id": "worker-thread"}})
         assert output["worker_ref"]["cwd"] == str(tmp_path)
@@ -211,7 +213,7 @@ def test_discussion_mode_is_applied_before_the_prompt_is_sent(tmp_path, monkeypa
         monkeypatch.setattr(acp_graph, "get_store", lambda: store)
         candidate = WorkerCandidate("claude", "acp", frozenset({"developer"}), frozenset(), True)
         graph = acp_graph.create_worker_graph({"claude": FakeWorker("unused")}, [candidate],
-                                              project_workers=Pool())
+                                              project_workers=Pool(), governance=PMWorkerGovernance(acp_graph.get_store))
         payload = {"operation": "spawn", "owner_thread_id": "parent", "project_id": "project",
                    "task_id": "task", "agent_type": "developer", "message": "discuss this",
                    "pm_governed": True, "pm_phase": "discussion", "pm_dispatch_id": intent_id,

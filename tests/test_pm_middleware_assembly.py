@@ -3,11 +3,11 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware
 
 from src.deep_agents.agents.pm_agent import PMProfile, default_pm_profile
 from src.deep_agents.agents.pm_agent.agent import assemble_pm_user_middleware
+from src.deep_agents.agents.pm_agent.discussion import PMDiscussionMiddleware
+from src.middlewares.agent.user_configurable import PMModelSelectionMiddleware
+from src.middlewares.approval import HumanDecisionRequestMiddleware
 from src.middlewares.memory.pm_agent_memory import PMAgentMemoryMiddleware
 from src.middlewares.project_state import ProjectStateMiddleware
-from src.middlewares.approval import HumanDecisionRequestMiddleware
-from src.middlewares.agent.user_configurable import PMModelSelectionMiddleware
-from src.deep_agents.agents.pm_agent.discussion import PMDiscussionMiddleware
 
 
 def test_pm_assembly_resolves_reviewed_owner_middleware() -> None:
@@ -90,3 +90,33 @@ def test_pm_assembly_explicitly_enables_role_based_acp_tools() -> None:
     assert "provider.select" not in profile.capabilities
     with pytest.raises(ValueError, match="exactly match the reviewed"):
         assemble_pm_user_middleware(default_pm_profile(), acp=acp)
+
+
+def test_resolve_compaction_settings_prefers_store_then_env_then_default(monkeypatch) -> None:
+    """工作台保存值优先；环境变量是免界面部署的回退；最后是内置默认。"""
+    from src.deep_agents.agents.pm_agent.agent import resolve_compaction_settings
+
+    monkeypatch.delenv("PM_COMPACTION_TOKEN_THRESHOLD", raising=False)
+    monkeypatch.delenv("PM_CONTEXT_TOKEN_LIMIT", raising=False)
+    assert resolve_compaction_settings({}) == (300000, 500000)
+
+    monkeypatch.setenv("PM_COMPACTION_TOKEN_THRESHOLD", "280000")
+    monkeypatch.setenv("PM_CONTEXT_TOKEN_LIMIT", "450000")
+    assert resolve_compaction_settings({}) == (280000, 450000)
+
+    assert resolve_compaction_settings(
+        {"compaction_token_threshold": 120000, "context_token_limit": 240000}
+    ) == (120000, 240000)
+
+
+def test_resolve_compaction_settings_survives_misconfigured_sources(monkeypatch) -> None:
+    """单一来源配错（非数字）时如实回退下一级，不让读取方崩溃。"""
+    from src.deep_agents.agents.pm_agent.agent import resolve_compaction_settings
+
+    monkeypatch.setenv("PM_COMPACTION_TOKEN_THRESHOLD", "nonsense")
+    monkeypatch.setenv("PM_CONTEXT_TOKEN_LIMIT", "450000")
+    assert resolve_compaction_settings({}) == (300000, 450000)
+    assert resolve_compaction_settings({"compaction_token_threshold": "bad"}) == (300000, 450000)
+    assert resolve_compaction_settings(
+        {"compaction_token_threshold": 120000, "context_token_limit": None}
+    ) == (120000, 450000)
