@@ -607,7 +607,6 @@ def test_live_mode_state_filters_by_provider_and_directory(monkeypatch):
     from types import SimpleNamespace
 
     from src.middlewares.acp import server
-    from src.workbench.app import _live_mode_state
 
     def worker(provider, cwd, modes):
         w = SimpleNamespace(provider_id=provider, cwd=cwd, _metadata={"s": None})
@@ -625,20 +624,20 @@ def test_live_mode_state_filters_by_provider_and_directory(monkeypatch):
 
     async def scenario():
         # 找到本项目的 claude 连接。
-        state = await _live_mode_state(server, "claude", r"C:\projects\a")
+        state = server.discover_live_modes("claude", r"C:\projects\a")
         assert state["modes"][0]["id"] == "plan"
         # 查询 claude 时，不能拿 codex 的会话充当结果。
         only_codex = SimpleNamespace(_readonly_connections={"x": codex},
                                      _execution_connections={}, _connections={})
         monkeypatch.setattr(server, "_project_workers", only_codex)
-        state = await _live_mode_state(server, "claude", r"C:\projects\a")
+        state = server.discover_live_modes("claude", r"C:\projects\a")
         assert state["available"] is False
         # 只找到其他提供方的连接，等同于本项目没有可用连接。
         assert state["reason"] == "worker_not_connected"
         # 其他项目的会话不得出现在本项目的结果里。
         monkeypatch.setattr(server, "_project_workers", SimpleNamespace(
             _readonly_connections={"y": other_project}, _execution_connections={}, _connections={}))
-        state = await _live_mode_state(server, "claude", r"C:\projects\a")
+        state = server.discover_live_modes("claude", r"C:\projects\a")
         assert state["available"] is False
 
     asyncio.run(scenario())

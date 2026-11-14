@@ -92,17 +92,9 @@ class PMWorkerGovernance:
 
     async def apply_discussion_mode(self, worker, ref, request):
         """Switch to the saved mode and return only what the adapter reported."""
-        from src.middlewares.project_state.worker_modes import pm_worker_modes
-
         if not request.get("pm_governed") or request.get("pm_phase") != "discussion":
             return None
-        # Only the two managed providers have saved preferences; any other
-        # adapter simply runs with its own default mode.
-        try:
-            saved = await pm_worker_modes(self.get_store()).get(ref.project_id, ref.provider_id)
-        except ValueError:
-            saved = None
-        requested = (saved or {}).get("mode_id")
+        requested = await self.readonly_mode(ref.project_id, ref.provider_id)
         # 需求默认商讨模式 plan：仅在适配器确实提供时使用；用户决定
         # （2026-11-14）默认 plan 不可用时不静默继续——明确报错，让用户
         # 在工作台为该项目选择可用模式后重新商讨。用户明确保存的目标

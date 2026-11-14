@@ -120,11 +120,14 @@ def create_worker_graph(
                 raise ValueError(
                     "A followup cannot change the session's project, task or role"
                 )
-            if governed and request["pm_phase"] == "execution":
+            execution_phase = governed and request["pm_phase"] == "execution"
+            if execution_phase:
                 await governance.authorize_execution(request, ref, config)
+            if project_workers is not None:
                 binding = await ProjectFolders(get_store()).verified_binding(ref.project_id)
                 if binding is None or binding["directory"] != ref.cwd:
                     raise ValueError("项目目录未绑定或与现有会话不一致")
+            if execution_phase:
                 # Never start a writable process in prepare: checkpoint failure
                 # between graph nodes must not leave one running unattended.
                 return {"worker_ref": ref.to_dict(), "owner_thread_id": request["owner_thread_id"],
@@ -132,9 +135,6 @@ def create_worker_graph(
             if project_workers is not None:
                 # 进程必须先于会话恢复启动：原生连接按提供方和目录持有，
                 # 不能用未启动的连接对象去 load_session。
-                binding = await ProjectFolders(get_store()).verified_binding(ref.project_id)
-                if binding is None or binding["directory"] != ref.cwd:
-                    raise ValueError("项目目录未绑定或与现有会话不一致")
                 if governed and request["pm_phase"] in {"discussion", "review"}:
                     if ref.isolation != READONLY_ISOLATION:
                         raise PermissionError("现有会话没有已声明的执行边界")

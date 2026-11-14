@@ -30,15 +30,6 @@ class ProjectWorkerModes:
         item = await self.store.aget(_NAMESPACE, f"{project_id}/{provider_id}")
         return dict(item.value) if item else None
 
-    async def all_for_project(self, project_id: str) -> dict:
-        """Return saved preferences keyed by provider."""
-        saved = {}
-        for provider_id in sorted(_PROVIDERS):
-            value = await self.get(project_id, provider_id)
-            if value is not None:
-                saved[provider_id] = value
-        return saved
-
     async def save(self, project_id: str, provider_id: str, mode_id: str) -> dict:
         """Save a target mode; only the ID is kept, never an inferred list."""
         if provider_id not in _PROVIDERS:

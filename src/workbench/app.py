@@ -36,7 +36,6 @@ from .context import local as _local
 from .decisions import pending_decision, submit_decision
 from .threads import project_thread
 from .settings_routes import (
-    _live_mode_state as _live_mode_state,
     clef_settings,
     default_model,
     discover,

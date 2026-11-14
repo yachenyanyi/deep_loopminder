@@ -177,7 +177,7 @@ async def worker_modes(request):
 
             binding = await ProjectFolders(store).get(project_id)
             directory = (binding or {}).get("directory")
-        live = await _live_mode_state(acp_server, provider, directory)
+        live = acp_server.discover_live_modes(provider, directory)
         from src.middlewares.acp.pool import mode_can_write
 
         saved_mode = (saved or {}).get("mode_id")
@@ -203,7 +203,7 @@ async def worker_modes(request):
         from src.middlewares.project_state.folders import ProjectFolders
 
         binding = await ProjectFolders(store).get(project_id)
-        live = await _live_mode_state(acp_server, provider, (binding or {}).get("directory"))
+        live = acp_server.discover_live_modes(provider, (binding or {}).get("directory"))
         advertised = {item.get("id") for item in live.get("modes", []) if isinstance(item, dict)}
         mode_id = data.get("mode_id")
         if live.get("available") and mode_id not in advertised:
@@ -215,19 +215,6 @@ async def worker_modes(request):
         return JSONResponse({"saved_mode": value["mode_id"], "provider_id": provider})
     except (ValueError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
-
-
-async def _live_mode_state(acp_server, provider, directory=None):
-    """Read the adapter-advertised mode option from a live session.
-
-    Project workers keep their sessions in ProjectWorkerPool, not in the
-    module-level bootstrap connection, so both are inspected. When a project
-    directory is known, only that project's connections are considered: the
-    advertised list is adapter-wide, but a session from another project must
-    never be presented as this project's state. Without a session the caller
-    is told modes are unknown rather than being given a guessed list.
-    """
-    return acp_server.discover_live_modes(provider, directory)
 
 
 async def workspace_settings(request):
