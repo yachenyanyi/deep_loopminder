@@ -28,14 +28,13 @@ from src.middlewares.trajectory.paths import trajectory_directory
 from src.middlewares.trajectory.web import read_events
 
 from .context import ROOT as _ROOT
-from .context import THREADS as _THREADS
 from .context import WRITE_LOCK as _write_lock
 from .context import forbidden as _forbidden
 from .context import get_store
 from .context import local as _local
 from .context import run_config
 from .decisions import pending_decision, submit_decision
-from .threads import project_thread
+from .threads import conversations, project_thread
 from .settings_routes import (
     clef_settings,
     default_model,
@@ -219,14 +218,8 @@ async def history(request):
     store = await get_store()
     if not project_id or await ProjectStore(store).load(project_id) is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
-    item = await store.aget(_THREADS, project_id)
-    if not item:
-        return JSONResponse({"messages": []})
-    thread_id = item.value.get("thread_id")
-    if not isinstance(thread_id, str) or not thread_id:
-        return JSONResponse({"error": "项目的 PM 会话记录不完整；请核对恢复，未创建新会话。"}, status_code=409)
     try:
-        thread_id = await project_thread(store, get_client(url=None), project_id, create_if_missing=False)
+        thread_id = await project_thread(store, get_client(url=None), project_id, request.query_params.get("thread_id"))
         async with asyncio.timeout(15):
             snapshot = await get_client(url=None).threads.get_state(thread_id)
     except ValueError as exc:
@@ -255,13 +248,11 @@ async def history(request):
         if (not isinstance(selected, dict) or not isinstance(selected.get("provider_id"), str)
                 or not isinstance(selected.get("model_id"), str)
                 or (selected.get("reasoning_effort") is not None
-                    and not isinstance(selected.get("reasoning_effort"), str))
-                or values.get("pm_model_legacy") is True):
+                    and not isinstance(selected.get("reasoning_effort"), str))):
             return JSONResponse({"error": "会话模型选择记录无效，请检查会话状态。"}, status_code=409)
         selected = {key: selected.get(key) for key in ("provider_id", "model_id", "reasoning_effort")}
     return JSONResponse({"messages": [TrajectoryRecorder.clean_public(message) for message in messages],
                          "model_selection": TrajectoryRecorder.clean_public(selected),
-                         "model_legacy": values.get("pm_model_legacy") is True,
                          "memory_model_error": TrajectoryRecorder.clean_public(values.get("pm_memory_model_error"))})
 
 
@@ -510,11 +501,11 @@ async def worker_usage(request):
     store = await get_store()
     if not project_id or await ProjectStore(store).load(project_id) is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
-    parent = await store.aget(_THREADS, project_id)
-    if not parent:
-        return JSONResponse({"workers": []})
-    owner = parent.value["thread_id"]
     client = get_client(url=None)
+    try:
+        owner = await project_thread(store, client, project_id, request.query_params.get("thread_id"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
     from src.middlewares.acp import server as acp_server
     from src.middlewares.acp.correlation import WorkerRef
 
@@ -702,7 +693,7 @@ async def chat(request):
         if await ProjectStore(store).load(project_id) is None:
             raise ValueError("项目不存在")
         client = get_client(url=None)
-        thread_id = await project_thread(store, client, project_id)
+        thread_id = await project_thread(store, client, project_id, data.get("thread_id"))
         config = run_config(project_id, data)
     except (ValueError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -740,7 +731,7 @@ async def trajectory(request):
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     html = await asyncio.to_thread((_ROOT.parent / "middlewares" / "trajectory" / "dashboard.html").read_text, encoding="utf-8")
-    query = "?project_id=" + quote(project_id, safe="")
+    query = "?project_id=" + quote(project_id, safe="") + "&thread_id=" + quote(request.query_params.get("thread_id", ""), safe="")
     html = html.replace('"/api/events?after="', json.dumps("/workbench/api/trace/events" + query + "&after="))
     html = html.replace('"/api/status"', json.dumps("/workbench/api/trace/status" + query))
     html = html.replace('"/api/export"', json.dumps("/workbench/api/trace/export" + query))
@@ -768,8 +759,9 @@ async def trajectory_status(request):
         return _forbidden()
     try:
         project_id = await _trace_project(request)
-        item = (await get_store()).aget(_THREADS, project_id)
-        runs = await get_client(url=None).runs.list(item.value["thread_id"], limit=1) if item else []
+        client = get_client(url=None)
+        thread_id = await project_thread(await get_store(), client, project_id, request.query_params.get("thread_id"))
+        runs = await client.runs.list(thread_id, limit=1)
         return JSONResponse({"run": {"status": runs[0]["status"]} if runs else None, "first_error": None, "stop_requested": False})
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -822,6 +814,7 @@ routes = [
     Route("/workbench/api/projects", projects, methods=["GET"]),
     Route("/workbench/api/projects", create_project, methods=["POST"]),
     Route("/workbench/api/projects/bind", bind_project, methods=["POST"]),
+    Route("/workbench/api/conversations", conversations, methods=["GET", "POST"]),
     Route("/workbench/api/select-folder", select_folder, methods=["POST"]),
     Route("/workbench/api/providers", providers, methods=["GET", "POST"]),
     Route("/workbench/api/providers/discover", discover, methods=["POST"]),

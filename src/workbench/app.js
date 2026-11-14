@@ -3,6 +3,10 @@ const $ = (s) => document.querySelector(s),
     projects: [],
     providers: [],
     project: null,
+    conversations: [],
+    conversation: null,
+    busyThreads: new Set(),
+    drafts: new Map(),
     busy: false,
     loadingView: false,
     discovered: [],
@@ -18,8 +22,9 @@ let workerReviewLoading = false,
   workerReviewAvailable = true;
 async function refreshWorkerReviews() {
   const project = state.project?.project_id,
+    thread = state.conversation?.thread_id,
     view = state.viewVersion;
-  if (!project) {
+  if (!project || !thread) {
     workerReviewPanel.replaceChildren();
     return;
   }
@@ -27,9 +32,12 @@ async function refreshWorkerReviews() {
   workerReviewLoading = true;
   try {
     const response = await fetch(
-      '/workbench/api/worker-reviews?project_id=' + encodeURIComponent(project),
+      '/workbench/api/worker-reviews?project_id=' +
+        encodeURIComponent(project) +
+        '&thread_id=' +
+        encodeURIComponent(thread),
     );
-    if (response.status === 404) {
+    if (response.status === 404 && state.viewVersion === view) {
       workerReviewAvailable = false;
       workerReviewPanel.replaceChildren();
       return;
@@ -75,6 +83,7 @@ async function refreshWorkerReviews() {
           try {
             await api('worker-reviews', {
               project_id: project,
+              thread_id: thread,
               request_id: item.request_id,
               approved,
             });
@@ -145,16 +154,48 @@ function paintProjects() {
     box.append(b);
   });
 }
+function paintConversations() {
+  const box = $('#conversations');
+  box.replaceChildren();
+  for (const conversation of state.conversations) {
+    const button = document.createElement('button');
+    button.className =
+      'project' + (state.conversation?.thread_id === conversation.thread_id ? ' active' : '');
+    button.textContent = conversation.title || '新会话';
+    button.title = conversation.title || '新会话';
+    button.onclick = () => openConversation(conversation);
+    box.append(button);
+  }
+}
+$('#newConversation').onclick = async () => {
+  const project = state.project?.project_id,
+    view = state.viewVersion;
+  if (!project) return;
+  const title = prompt('会话名称（可留空）', '');
+  if (title === null) return;
+  $('#newConversation').disabled = true;
+  try {
+    const body = { project_id: project };
+    if (title.trim()) body.title = title.trim();
+    const conversation = await api('conversations', body);
+    if (state.project?.project_id !== project) return;
+    state.conversations.push(conversation);
+    paintConversations();
+    if (state.viewVersion !== view) return;
+    await openConversation(conversation);
+  } catch (e) {
+    if (state.viewVersion === view) showError(e.message);
+  } finally {
+    if (state.project?.project_id === project) $('#newConversation').disabled = false;
+  }
+};
 async function loadProjects() {
   state.projects = await api('projects');
   paintProjects();
 }
 function paintModels() {
   const previous = $('#model').value;
-  $('#model').replaceChildren(
-    new Option('工作台默认模型', ''),
-    new Option('现有 EasyCLI 配置', '__legacy__'),
-  );
+  $('#model').replaceChildren(new Option('工作台默认模型', ''));
   state.providers.forEach((p) =>
     (p.models || [])
       .filter((m) => m.enabled)
@@ -176,7 +217,7 @@ function paintEffort(keepUnknown = false) {
   const s = $('#model').value,
     previous = $('#effort').value;
   $('#effort').replaceChildren(new Option('默认思考等级', ''));
-  if (s && s !== '__legacy__') {
+  if (s) {
     const v = JSON.parse(s),
       p = state.providers.find((x) => x.provider_id === v.provider),
       m = p?.models?.find((x) => x.id === v.model);
@@ -190,14 +231,20 @@ async function loadProviders() {
   state.providers = await api('providers');
   paintModels();
 }
-async function loadProject(p) {
+async function loadProject(p, conversation) {
   const view = ++state.viewVersion;
   workerReviewPanel.replaceChildren();
   let loaded = false;
+  if (state.conversation) state.drafts.set(state.conversation.thread_id, $('#message').value);
   state.project = p;
+  state.conversation = conversation;
+  $('#message').value = state.drafts.get(conversation.thread_id) || '';
+  state.busy = state.busyThreads.has(conversation.thread_id);
   state.loadingView = true;
   paintProjects();
-  $('#traceFrame').src = '/workbench/trajectory?project_id=' + encodeURIComponent(p.project_id);
+  paintConversations();
+  $('#traceFrame').src = '/workbench/trajectory?project_id=' + encodeURIComponent(p.project_id) +
+    '&thread_id=' + encodeURIComponent(conversation.thread_id);
   $('#traceFrame').classList.remove('hidden');
   $('#traceEmpty').classList.add('hidden');
   $('#title').textContent = p.goal;
@@ -213,12 +260,16 @@ async function loadProject(p) {
   $('#messages').replaceChildren();
   showError('项目管理已启用；商讨和开发需要可验证的负责人环境与门禁。');
   try {
-    const h = await api('history?project_id=' + encodeURIComponent(p.project_id));
+    const h = await api(
+      'history?project_id=' +
+        encodeURIComponent(p.project_id) +
+        '&thread_id=' +
+        encodeURIComponent(conversation.thread_id),
+    );
     if (state.viewVersion !== view) return;
     if (h.memory_model_error) showError('后台记忆暂不可用：' + h.memory_model_error);
     const selection = h.model_selection;
-    if (h.model_legacy) $('#model').value = '__legacy__';
-    else if (selection) {
+    if (selection) {
       const value = JSON.stringify({ provider: selection.provider_id, model: selection.model_id });
       if (![...$('#model').options].some((o) => o.value === value))
         $('#model').add(new Option('会话已选模型（不可用或未加载）', value));
@@ -311,7 +362,6 @@ document.querySelectorAll('.tab').forEach(
 );
 function selectedModelParams() {
   const value = $('#model').value;
-  if (value === '__legacy__') return { model_use_legacy: true };
   if (!value) return { model_use_default: true };
   const selected = JSON.parse(value);
   const params = { model_provider: selected.provider, model_name: selected.model };
@@ -321,16 +371,23 @@ function selectedModelParams() {
 async function sendMessage() {
   const input = $('#message'),
     text = input.value.trim();
-  if (!text || !state.project || state.busy || state.loadingView) return;
+  if (!text || !state.project || !state.conversation || state.busy || state.loadingView) return;
   const project = state.project.project_id,
+    thread = state.conversation.thread_id,
     view = state.viewVersion;
   state.busy = true;
+  state.busyThreads.add(thread);
   $('#send').disabled = true;
   input.value = '';
   msg('user', text);
   let response = false;
   try {
-    const body = { project_id: project, message: text, ...selectedModelParams() };
+    const body = {
+      project_id: project,
+      thread_id: thread,
+      message: text,
+      ...selectedModelParams(),
+    };
     const r = await fetch('/workbench/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -375,10 +432,12 @@ async function sendMessage() {
   } catch (e) {
     if (state.viewVersion === view) showError(e.message);
   } finally {
-    state.busy = false;
-    $('#send').disabled = !state.project || state.loadingView;
-    if (state.project?.project_id === project && state.viewVersion !== view)
-      showError('上一轮已结束；重新打开项目可查看最新结果。');
+    state.busyThreads.delete(thread);
+    if (state.conversation?.thread_id === thread) {
+      state.busy = false;
+      $('#send').disabled = !state.project || state.loadingView;
+      if (state.viewVersion !== view) showError('上一轮已结束；重新打开会话可查看最新结果。');
+    }
   }
 }
 $('#message').onkeydown = (e) => {
@@ -628,7 +687,12 @@ $('#usageButton').onclick = async () => {
   const project = state.project.project_id,
     view = state.viewVersion;
   try {
-    const data = await api('worker-usage?project_id=' + encodeURIComponent(project));
+    const data = await api(
+      'worker-usage?project_id=' +
+        encodeURIComponent(project) +
+        '&thread_id=' +
+        encodeURIComponent(state.conversation?.thread_id || ''),
+    );
     if (state.viewVersion !== view) return;
     out.textContent = data.workers.length
       ? data.workers
@@ -1146,11 +1210,17 @@ function clearPending() {
 }
 async function checkPending() {
   const project = state.project,
+    thread = state.conversation?.thread_id,
     view = state.viewVersion;
-  if (!project) return;
+  if (!project || !thread) return;
   let d;
   try {
-    d = await api('pending-decision?project_id=' + encodeURIComponent(project.project_id));
+    d = await api(
+      'pending-decision?project_id=' +
+        encodeURIComponent(project.project_id) +
+        '&thread_id=' +
+        encodeURIComponent(thread),
+    );
   } catch (e) {
     if (state.viewVersion === view) {
       clearPending();
@@ -1218,6 +1288,7 @@ async function checkPending() {
   status.className = 'notice';
   status.textContent = '提交普通聊天消息不会恢复该决策；恢复只能在这里进行。';
   submit.onclick = async () => {
+    if (state.viewVersion !== view || state.busyThreads.has(thread)) return;
     const answers = boxes.map((b) => b.value.trim());
     if (answers.some((x) => !x)) {
       status.textContent = '请先填写全部答复。';
@@ -1226,10 +1297,12 @@ async function checkPending() {
     submit.disabled = true;
     boxes.forEach((b) => (b.disabled = true));
     state.busy = true;
+    state.busyThreads.add(thread);
     $('#send').disabled = true;
     try {
       const body = {
         project_id: project.project_id,
+        thread_id: thread,
         answers,
         fingerprint,
         ...binding,
@@ -1245,7 +1318,8 @@ async function checkPending() {
         boxes.forEach((b) => (b.disabled = false));
       }
     } finally {
-      if (state.viewVersion === view) {
+      state.busyThreads.delete(thread);
+      if (state.conversation?.thread_id === thread) {
         state.busy = false;
         $('#send').disabled = !state.project || state.loadingView;
       }
@@ -1257,13 +1331,53 @@ async function checkPending() {
   $('#messages').scrollTop = $('#messages').scrollHeight;
 }
 async function openProject(p) {
+  const view = ++state.viewVersion;
   resetProjectControls();
-  await loadProject(p);
-  await checkPending();
+  workerReviewPanel.replaceChildren();
+  clearPending();
+  if (state.conversation) state.drafts.set(state.conversation.thread_id, $('#message').value);
+  $('#message').value = '';
+  state.project = p;
+  state.conversation = null;
+  state.conversations = [];
+  state.loadingView = true;
+  $('#message').disabled = true;
+  $('#send').disabled = true;
+  $('#model').disabled = true;
+  $('#effort').disabled = true;
+  $('#newConversation').disabled = true;
+  $('#messages').replaceChildren();
+  paintProjects();
+  paintConversations();
+  try {
+    const result = await api('conversations?project_id=' + encodeURIComponent(p.project_id));
+    if (state.viewVersion !== view) return;
+    state.conversations = result.conversations;
+    if (!state.conversations.length) {
+      const conversation = await api('conversations', { project_id: p.project_id });
+      if (state.viewVersion !== view) return;
+      state.conversations.push(conversation);
+    }
+    $('#newConversation').disabled = false;
+    await openConversation(state.conversations[0]);
+  } catch (e) {
+    if (state.viewVersion === view) showError('无法加载项目会话：' + e.message);
+  }
+}
+async function openConversation(conversation) {
+  const project = state.project;
+  if (!project) return;
+  clearPending();
+  await loadProject(project, conversation);
+  if (state.conversation?.thread_id === conversation.thread_id && !state.loadingView) {
+    await checkPending();
+    await refreshWorkerReviews();
+  }
 }
 async function send() {
+  const view = state.viewVersion;
   await sendMessage();
-  await checkPending();
+  if (state.viewVersion === view) await checkPending();
 }
 $('#send').onclick = send;
 const memoryRollback = document.createElement('button');

@@ -420,7 +420,7 @@ class PMAgentMemoryMiddleware(AgentMiddleware):
             investigation_model = jobs.model
             if self.model_profile_enabled:
                 from src.middlewares.agent.user_configurable import memory_model_profile
-                _, configured_model = await memory_model_profile(runtime.state, jobs.store, jobs.model)
+                _, configured_model = await memory_model_profile(runtime.state, jobs.store)
                 if configured_model is not None:
                     investigation_model = configured_model
             worker = create_agent(
@@ -530,7 +530,7 @@ class PMAgentMemoryMiddleware(AgentMiddleware):
             return None
         from src.middlewares.agent.user_configurable import memory_model_profile
 
-        profile, _ = await memory_model_profile(state, store or self.jobs.store, self.jobs.model)
+        profile, _ = await memory_model_profile(state, store or self.jobs.store)
         return profile
 
     async def awrap_tool_call(self, request, handler):

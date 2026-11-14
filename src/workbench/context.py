@@ -20,7 +20,7 @@ def run_config(project_id, data):
         "project_state_single_writer": True,
         "workbench_trace": True,
     }
-    for key in ("model_use_default", "model_use_legacy"):
+    for key in ("model_use_default",):
         if data.get(key) is True:
             configurable[key] = True
     for key in ("model_provider", "model_name", "reasoning_effort"):

@@ -45,10 +45,10 @@ from .model_catalog import ModelCatalog, validate_model_base_url
 
 
 def pm_model_catalog(store):
-    """Use PM settings in its dedicated runtime and preserve legacy callers."""
-    from .pm_settings import current
+    """Use the PM settings file for every PM model selection."""
+    from .pm_settings import PMSettings
 
-    return ModelCatalog(store, settings=current())
+    return ModelCatalog(store, settings=PMSettings())
 
 
 class UserConfigurableMiddleware(AgentMiddleware):
@@ -115,7 +115,6 @@ class PMModelSelectionState(AgentState):
 
     pm_model_selection: NotRequired[dict | None]
     pm_model_changed: NotRequired[bool]
-    pm_model_legacy: NotRequired[bool]
 
 
 async def configured_pm_model(catalog: ModelCatalog, selected: dict, *, expected_endpoint_hash: str | None = None):
@@ -161,46 +160,14 @@ async def configured_pm_model(catalog: ModelCatalog, selected: dict, *, expected
     return ChatOpenAI(**kwargs)
 
 
-def legacy_model_identity(model) -> dict:
-    """Capture public legacy model identity without copying credentials."""
-    name = getattr(model, "model_name", None)
-    base = getattr(model, "openai_api_base", None)
-    effort = getattr(model, "reasoning_effort", None)
-    if (not isinstance(name, str) or not name or not isinstance(base, str)
-            or (effort is not None and not isinstance(effort, str))):
-        raise ValueError("无法确认现有模型配置，不能提交后台记忆")
-    try:
-        url = urlsplit(base)
-        _ = url.port
-    except ValueError as exc:
-        raise ValueError("现有模型服务地址无效") from exc
-    if (url.scheme not in {"http", "https"} or not url.hostname or url.username
-            or url.password or url.query or url.fragment):
-        raise ValueError("现有模型服务地址无效")
-    return {"model_id": name, "endpoint_hash": sha256(base.rstrip("/").encode("utf-8")).hexdigest(),
-            "reasoning_effort": effort}
-
-
-async def memory_model_profile(state, store, legacy_model):
+async def memory_model_profile(state, store):
     """Freeze a session's public model identity before queuing its messages."""
-    def legacy_profile():
-        from src.models.llm import get_easycli_model
-
-        identity = legacy_model_identity(legacy_model)
-        if identity != legacy_model_identity(get_easycli_model()):
-            raise ValueError("当前模型无法在后台恢复，请在工作台配置并选择模型")
-        return {"mode": "legacy", "identity": identity}, None
-
-    if state.get("pm_model_legacy") is True:
-        if state.get("pm_model_selection") is not None:
-            raise ValueError("模型选择相互冲突")
-        return legacy_profile()
     catalog = pm_model_catalog(store)
     selected = state.get("pm_model_selection")
     if selected is None:
         selected = await catalog.get_default()
     if selected is None:
-        return legacy_profile()
+        raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
     if not isinstance(selected, dict) or not isinstance(selected.get("provider_id"), str):
         raise ValueError("模型配置记录无效")
     provider = await catalog.get(selected["provider_id"])
@@ -224,36 +191,29 @@ class PMModelSelectionMiddleware(AgentMiddleware):
         configured = get_config().get("configurable", {})
         provider = configured.get("model_provider")
         model_name = configured.get("model_name")
-        if configured.get("model_use_legacy") is True:
-            if configured.get("model_use_default") is True or provider or model_name:
-                raise ValueError("模型选择相互冲突")
-            changed = bool(state.get("pm_model_selection")) or (
-                "pm_model_legacy" in state and not state.get("pm_model_legacy")
-            )
-            return {"pm_model_selection": None, "pm_model_legacy": True, "pm_model_changed": changed}
         if configured.get("model_use_default") is True:
             if provider or model_name:
                 raise ValueError("模型选择相互冲突")
             default = await pm_model_catalog(runtime.store).get_default() if runtime.store is not None else None
             if default is None:
                 raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
-            return {"pm_model_selection": default, "pm_model_legacy": False,
-                    "pm_model_changed": bool(state.get("pm_model_legacy")) or default != state.get("pm_model_selection")}
+            return {"pm_model_selection": default,
+                    "pm_model_changed": default != state.get("pm_model_selection")}
         if bool(provider) != bool(model_name):
             raise ValueError("切换模型时必须同时提供模型服务和模型名称")
         if not provider:
-            if state.get("pm_model_selection") is None and not state.get("pm_model_legacy") and runtime.store is not None:
+            if state.get("pm_model_selection") is None and runtime.store is not None:
                 default = await pm_model_catalog(runtime.store).get_default()
-                if default is not None:
-                    return {"pm_model_selection": default, "pm_model_legacy": False, "pm_model_changed": False}
-                return {"pm_model_selection": None, "pm_model_legacy": True, "pm_model_changed": False}
+                if default is None:
+                    raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
+                return {"pm_model_selection": default, "pm_model_changed": False}
             return {"pm_model_changed": False}
         if not isinstance(provider, str) or not isinstance(model_name, str):
             raise ValueError("模型服务或名称无效")
         selected = {"provider_id": provider, "model_id": model_name,
                     "reasoning_effort": configured.get("reasoning_effort")}
-        return {"pm_model_selection": selected, "pm_model_legacy": False,
-                "pm_model_changed": bool(state.get("pm_model_legacy")) or selected != state.get("pm_model_selection")}
+        return {"pm_model_selection": selected,
+                "pm_model_changed": selected != state.get("pm_model_selection")}
 
     async def awrap_model_call(self, request: ModelRequest, handler):
         """Resolve the enabled model; do not silently fall back on errors."""

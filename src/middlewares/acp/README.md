@@ -26,7 +26,7 @@ PM 通过 `ACP_SUBAGENTS_JSON` 显式启用中间件。未配置时，保留原�
 - `send_message(target, message)`：普通 ACP 会话使用已协商的原生 steer；受 PM 商讨门禁治理的会话目前拒绝在途自由消息，需等待本轮结束后继续商讨或续问。
 - `wait_agent(timeout_ms=30000, targets=None, include_completed=False, run_id=None)`：领取未读结果，应在完成通知到达后调用（`timeout_ms=0` 立即查询）。`targets` 可选 1～8 个名称或 ID。默认不再返回已领取的 Run；历史重读须指定单个 target 和 `run_id`，`include_completed=True` 未指定 Run 时兼容归一化为未读模式，并返回 notice，不无差别重读旧结果。每次至多返回 8 轮；`has_more_results` 表示尚有未返回结果。超时只取消等待，不取消 Worker。
 
-完成通知的投递（官方 async-subagents 语义）：PM 忙时，`AsyncSubagentsMiddleware.abefore_model/aafter_model` 在下一次模型调用前拉取任务状态并注入通知 HumanMessage；PM 空闲时，官方只有 deep-agent 子代理才会唤醒 supervisor，而本项目的 acp_worker 是普通 StateGraph，因此由宿主补位——ACP server lifespan 启动 `src/workbench/claims.py` 的观察循环，发现"Worker Run 结束 + 结果未领取 + PM 线程 idle/error"时创建携带项目 configurable 的领取 Run。候选不只看缓存的未完成状态：官方忙时通知可能已把缓存标成终态而 wait_agent 尚未领取，这种任务同样触发（权威门槛是 fresh `runs.get` 终态，成功 Run 还核查 Worker 线程是否在等输入或有更新 Run 在工作）。busy 与等待人工决策的会话不动；每个 run_id 每个进程生命周期至多触发一次。
+完成通知的投递（官方 async-subagents 语义）：PM 忙时，`AsyncSubagentsMiddleware.abefore_model/aafter_model` 在下一次模型调用前拉取任务状态并注入通知 HumanMessage；PM 空闲时，官方只有 deep-agent 子代理才会唤醒 supervisor，而本项目的 acp_worker 是普通 StateGraph，因此由宿主补位——PM server lifespan 启动 `src/workbench/claims.py` 的观察循环，发现"Worker Run 结束 + 结果未领取 + PM 线程 idle/error"时创建携带项目 configurable 的领取 Run。候选不只看缓存的未完成状态：官方忙时通知可能已把缓存标成终态而 wait_agent 尚未领取，这种任务同样触发（权威门槛是 fresh `runs.get` 终态，成功 Run 还核查 Worker 线程是否在等输入或有更新 Run 在工作）。busy 与等待人工决策的会话不动；每个 run_id 每个进程生命周期至多触发一次。
 
 角色描述应包含执行端实际能力（包括是否支持原生子代理）、职责和交接方式；运行时按已有官方状态注入负责人别名、角色、最新 Run、最后观察状态和结果是否领取，不将其描述为实时探测。默认中文沟通，续问只补变化。Worker 原生工具集独立于 PM，通过会话交付；项目级 Worker 对自己的内部子代理负责。Claude Code 原生子代理能力由部署角色说明声明，ACP 不新增控制内部子代理的第二层调度。
 - `list_agents(path_prefix=None, status=None)`：按任务名前缀和最新观测状态筛选。返回当前运行、排队的 Run ID、未读结果数和观测时间；刷新失败显示 `status_fresh=False`，并附错误。
@@ -56,7 +56,7 @@ list_agents(path_prefix="ins")
 ## 后台部署配置
 
 安装项目的 ACP 依赖和官方开发服务器：`pip install -e '.[acp]' 'langgraph-cli[inmem]'`。
-`langgraph.json` 注册 `acp_worker`、`acp_control` 并装配官方 Starlette lifespan。模块路径保证图工厂与 lifespan 复用同一份 SDK 连接。
+`langgraph.json` 注册 `acp_worker`、`acp_control`，由 PM 服务装配工作台、协作门禁和官方 Starlette lifespan；ACP server 管理 SDK 连接，图工厂与 lifespan 复用同一份连接。
 
 `ACP_WORKERS_JSON` 是部署方配置的 JSON 数组，例如：
 
@@ -114,7 +114,7 @@ await agent.ainvoke(
 )
 ```
 
-Windows 启动官方开发服务器前设置 `$env:PYTHONUTF8 = '1'`，再运行 `langgraph dev --n-jobs-per-worker 4`。线程、Run、checkpoint 的可靠性取决于官方持久化部署；强制终止开发服务器可能丢失尚未落盘的 checkpoint。缺少原生会话引用时，followup 明确失败，不新建会话冒充恢复。
+当前 PM 分支使用 `python scripts/run_pm_server.py` 启动；脚本启用 PM 设置、隔离运行目录并传递 PostgreSQL 检查点配置。线程、Run、checkpoint 的可靠性取决于实际部署；强制终止开发服务器可能丢失尚未落盘的 checkpoint。缺少原生会话引用时，followup 明确失败，不新建会话冒充恢复。
 
 依据：[官方中间件工具与状态](https://docs.langchain.com/oss/python/langchain/middleware/custom)、[AsyncSubAgent](https://docs.langchain.com/oss/python/deepagents/async-subagents)、[官方资源 lifespan](https://docs.langchain.com/langsmith/custom-lifespan)。
 

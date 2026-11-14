@@ -19,7 +19,10 @@ from src.workbench.worker_reviews import (
 
 def test_acp_permission_requires_matching_live_human_decision():
     async def scenario():
-        registry = WorkerReview(timeout=2)
+        async def owner(_ref):
+            return "owner"
+
+        registry = WorkerReview(timeout=2, owner_for_worker=owner)
         app = Starlette(routes=[Route("/reviews", pending_worker_reviews, methods=["GET"]),
                                 Route("/reviews", submit_worker_review, methods=["POST"])])
         app.state.worker_review = registry
@@ -45,23 +48,23 @@ def test_acp_permission_requires_matching_live_human_decision():
                                      base_url="http://127.0.0.1") as client:
             waiting = asyncio.create_task(_Client(worker).request_permission("session", call, options))
             await asyncio.sleep(0)
-            rows = (await client.get("/reviews?project_id=project")).json()["requests"]
+            rows = (await client.get("/reviews?project_id=project&thread_id=owner")).json()["requests"]
             assert len(rows) == 1 and rows[0]["tool_input"] == {"path": "file.py"}
             request_id = rows[0]["request_id"]
-            wrong = await client.post("/reviews", json={"project_id": "other", "request_id": request_id, "approved": True})
+            wrong = await client.post("/reviews", json={"project_id": "project", "thread_id": "other", "request_id": request_id, "approved": True})
             assert wrong.status_code == 409 and not waiting.done()
-            good = await client.post("/reviews", json={"project_id": "project", "request_id": request_id, "approved": True})
+            good = await client.post("/reviews", json={"project_id": "project", "thread_id": "owner", "request_id": request_id, "approved": True})
             assert good.status_code == 200
             assert (await waiting).outcome.option_id == "once"
             assert policy.calls == 2
-            assert (await client.post("/reviews", json={"project_id": "project", "request_id": request_id,
+            assert (await client.post("/reviews", json={"project_id": "project", "thread_id": "owner", "request_id": request_id,
                                                         "approved": True})).status_code == 409
 
             waiting = asyncio.create_task(_Client(worker).request_permission("session", call, options))
             await asyncio.sleep(0)
-            request_id = (await client.get("/reviews?project_id=project")).json()["requests"][0]["request_id"]
+            request_id = (await client.get("/reviews?project_id=project&thread_id=owner")).json()["requests"][0]["request_id"]
             policy.blocked = True
-            await client.post("/reviews", json={"project_id": "project", "request_id": request_id, "approved": True})
+            await client.post("/reviews", json={"project_id": "project", "thread_id": "owner", "request_id": request_id, "approved": True})
             assert (await waiting).outcome.outcome == "cancelled"
 
     asyncio.run(scenario())
@@ -73,13 +76,16 @@ def test_worker_review_times_out_and_shutdown_denies():
     async def scenario():
         request = ApprovalRequest("acp.edit", {}, context={"worker_ref": {"project_id": "p"}})
         decision = ApprovalDecision.needs_approval(RiskLevel.MEDIUM, "review")
-        registry = WorkerReview(timeout=0.01)
+        async def owner(_ref):
+            return "owner"
+
+        registry = WorkerReview(timeout=0.01, owner_for_worker=owner)
         assert not await registry.review(request, decision)
-        assert not registry.pending("p")
+        assert not registry.pending("p", "owner")
         waiting = asyncio.create_task(registry.review(request, decision))
         await asyncio.sleep(0)
         registry.close()
         assert not await waiting
-        assert not registry.pending("p")
+        assert not registry.pending("p", "owner")
 
     asyncio.run(scenario())

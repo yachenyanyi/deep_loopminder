@@ -1,8 +1,11 @@
 """PM-specific authorization and mode rules for ACP Worker turns."""
 
+from datetime import UTC, datetime
+
 from langgraph.config import get_store
 
 from src.middlewares.acp.control import UnsupportedControl
+from src.middlewares.acp.pool import mode_can_write
 from src.middlewares.project_state.artifacts import content_hash
 
 
@@ -90,7 +93,29 @@ class PMWorkerGovernance:
                 or (value.get("status") == "confirmed" and value.get("run_id") != run_id)):
             raise PermissionError("只读请求与持久化意图不匹配")
 
-    async def apply_discussion_mode(self, worker, ref, request):
+    async def apply_execution_mode(self, worker, ref):
+        """Leave a confirmed read-only mode before sending development work."""
+        try:
+            mode_snapshot = worker.mode_state(ref.session_id)
+        except Exception:
+            mode_snapshot = {}
+        current_id = (mode_snapshot or {}).get("current")
+        if current_id is not None and not mode_can_write(ref.provider_id, current_id):
+            offered = [item["id"] for item in (mode_snapshot or {}).get("modes", [])
+                       if isinstance(item, dict) and item.get("id")]
+            writable = [item for item in offered if mode_can_write(ref.provider_id, item)]
+            if not writable:
+                raise PermissionError(
+                    f"负责人会话停留在只读模式 {current_id}，适配器未提供可写模式；未发送开发内容。"
+                )
+            target = "default" if "default" in writable else writable[0]
+            applied = await worker.apply_mode(ref, target)
+            if not applied.get("matched"):
+                raise PermissionError(
+                    f"执行模式切换未获适配器确认：请求 {target}，适配器报告 {applied.get('reported_mode')}。"
+                )
+
+    async def apply_discussion_mode(self, worker, ref, request, config):
         """Switch to the saved mode and return only what the adapter reported."""
         if not request.get("pm_governed") or request.get("pm_phase") != "discussion":
             return None
@@ -120,5 +145,13 @@ class PMWorkerGovernance:
         if not applied["matched"]:
             raise PermissionError(
                 f"目标模式 {requested}，适配器报告 {applied['reported_mode']}；未发送商讨内容。"
+            )
+        run_id = str(config.get("metadata", {}).get("run_id", ""))
+        if run_id:
+            await self.get_store().aput(
+                ("deep_loopminder", "project_run_modes", ref.project_id), run_id,
+                {**record, "run_id": run_id, "provider_id": ref.provider_id,
+                 "session_id": ref.session_id, "recorded_at": datetime.now(UTC).isoformat()},
+                index=False,
             )
         return record

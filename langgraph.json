@@ -6,29 +6,20 @@
     "langchain-ollama>=0.1.0"
   ],
   "graphs": {
-    "acp_worker": "src.middlewares.acp.server:acp_worker",
+    "acp_worker": "src.deep_agents.agents.pm_agent.server:acp_worker",
     "acp_control": "src.middlewares.acp.server:acp_control",
     "pm_agent": "./src/deep_agents/agents/pm_agent/agent.py:pm_agent_server",
-    "pm_memory_agent": "src.middlewares.memory.pm_agent_memory.graph:pm_memory_agent_server",
-    "tools_Assistant": "./src/agents/agent.py:tools_Assistant",
-    "Intelligent_Assistant": "./src/agents/agent.py:Intelligent_Assistant",
-    "intelligent_deep_agent": "./src/deep_agents/agents/intelligent_local.py:create_intelligent_deep_agent",
-    "chat_agent": "./src/deep_agents/agents/collaborative_agents.py:create_chat_agent",
-    "coordinator_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coordinator_agent",
-    "coder_agent": "./src/deep_agents/agents/collaborative_agents.py:create_coder_agent",
-    "researcher_agent": "./src/deep_agents/agents/collaborative_agents.py:create_researcher_agent",
-    "assistant_agent": "./src/deep_agents/agents/collaborative_agents.py:create_assistant_agent",
-    "teacher_agent": "./src/deep_agents/agents/teacher_agent.py:create_teacher_agent"
+    "pm_memory_agent": "src.middlewares.memory.pm_agent_memory.graph:pm_memory_agent_server"
   },
   "env": ".env",
   "store": {
-    "path": "./src/middlewares/memory/pm_agent_memory/provider.py:generate_pm_store"
+    "path": "src.middlewares.persistence.pm_runtime.generate_pm_store"
   },
   "http": {
-    "app": "src.middlewares.acp.server:app"
+    "app": "src.deep_agents.agents.pm_agent.server:app"
   },
   "checkpointer": {
-    "path": "./src/middlewares/persistence/checkpointer.py:generate_pm_checkpointer"
+    "path": "src.middlewares.persistence.pm_runtime.generate_pm_checkpointer"
   },
   "watch": {
     "exclude": [

@@ -1,5 +1,6 @@
 """Dedicated PM workbench assembly using the existing official ACP server."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from starlette.applications import Starlette
@@ -8,9 +9,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from src.deep_agents.agents.pm_agent.collaboration import PMWorkerGovernance
 from src.middlewares.acp import server as acp_server
 from src.middlewares.persistence.pm_runtime import status
 from src.workbench.app import routes
+from src.workbench.claims import watch_claims
 from src.workbench.worker_reviews import (
     WorkerReview,
     pending_worker_reviews,
@@ -27,10 +30,19 @@ async def lifespan(app):
     app.state.worker_review = WorkerReview()
     app.state.pm_execution_review = app.state.worker_review.review
     async with acp_server.lifespan(app):
+        claims_task = asyncio.create_task(watch_claims()) if app.state.acp_enabled else None
         try:
             yield
         finally:
+            if claims_task is not None:
+                claims_task.cancel()
+                await asyncio.gather(claims_task, return_exceptions=True)
             app.state.worker_review.close()
+
+
+def acp_worker():
+    """Assemble the ACP bridge with PM collaboration rules."""
+    return acp_server.acp_worker(governance=PMWorkerGovernance())
 
 
 async def setup_only_when_unavailable(request, call_next):

@@ -1,76 +1,85 @@
-"""Resolve and preserve one official PM thread per project."""
+"""Project-owned PM conversations backed by official LangGraph threads."""
 
 import asyncio
 import uuid
 
 import httpx
+from langgraph_sdk import get_client
+from starlette.responses import JSONResponse
 
-from src.middlewares.project_state.scope import project_write_lock
-
-from .context import THREADS as _THREADS
-from .context import WRITE_LOCK as _write_lock
-
-_PROJECT_THREAD_NAMESPACE = uuid.UUID("55483b1a-700f-41b2-9f18-c75a557e224c")
-
-async def project_thread(store, client, project_id, *, create_if_missing=True):
-    """Use one official PM thread per project in this local workbench."""
-    async with _write_lock, project_write_lock(project_id):
-        item = await store.aget(_THREADS, project_id)
-        if item:
-            thread_id = item.value.get("thread_id")
-            if not isinstance(thread_id, str) or not thread_id:
-                raise ValueError("项目的 PM 会话记录不完整；请核对恢复，未创建新会话。")
-            offset = 0
-            while True:
-                bindings = await store.asearch(_THREADS, limit=100, offset=offset)
-                if any(binding.key != project_id and binding.value.get("thread_id") == thread_id
-                       for binding in bindings):
-                    raise ValueError("多个项目指向同一 PM 会话；请人工核对，暂不能读取或续接。")
-                if len(bindings) < 100:
-                    break
-                offset += len(bindings)
-            try:
-                async with asyncio.timeout(15):
-                    thread = await client.threads.get(thread_id)
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 404:
-                    raise ValueError(
-                        "已关联的 PM 会话在官方服务中不存在；原服务和当前服务可能使用不同的线程注册表。"
-                        "请先在原服务核对会话及未完成运行；数据库中存在检查点并不代表线程可以恢复。"
-                        "未修改项目绑定，也未创建新会话。"
-                    ) from exc
-                raise ValueError("无法核对已关联的 PM 会话，请检查官方服务。") from exc
-            except (httpx.HTTPError, TimeoutError) as exc:
-                raise ValueError("无法核对已关联的 PM 会话，请检查官方服务。") from exc
-            metadata = thread.get("metadata") or {}
-            if (thread.get("thread_id") != thread_id
-                    or not isinstance(metadata, dict)
-                    or metadata.get("loopminder_project_id") not in (None, project_id)
-                    or metadata.get("loopminder_purpose") not in (None, "pm_workbench")
-                    or (item.value.get("identity_version") == 1
-                        and (metadata.get("loopminder_project_id") != project_id
-                             or metadata.get("loopminder_purpose") != "pm_workbench"))):
-                raise ValueError("已关联的 PM 会话身份不匹配，请人工核对。")
-            return thread_id
-        if not create_if_missing:
-            raise ValueError("项目的 PM 会话记录已变化，请重新核对。")
-        # A lost create response must not leave an untraceable second PM
-        # thread. The official API supports caller-supplied UUIDs and
-        # if_exists=do_nothing; verify ownership even when it already exists.
-        thread_id = str(uuid.uuid5(_PROJECT_THREAD_NAMESPACE, project_id))
-        try:
-            async with asyncio.timeout(15):
-                thread = await client.threads.create(
-                    thread_id=thread_id, if_exists="do_nothing",
-                    metadata={"loopminder_project_id": project_id, "loopminder_purpose": "pm_workbench"},
-                )
-        except (httpx.HTTPError, TimeoutError) as exc:
-            raise ValueError("无法确认 PM 会话创建结果；请检查官方服务后重试核对同一会话。") from exc
-        metadata = thread.get("metadata") or {}
-        if (thread.get("thread_id") != thread_id or metadata.get("loopminder_project_id") != project_id
-                or metadata.get("loopminder_purpose") != "pm_workbench"):
-            raise ValueError("现有官方会话身份不匹配，请人工核对；未创建新的项目绑定。")
-        await store.aput(_THREADS, project_id, {"thread_id": thread["thread_id"], "identity_version": 1}, index=False)
-        return thread["thread_id"]
+from src.middlewares.project_state.persistence import ProjectStore
+from .context import THREADS, get_store, local, forbidden
 
 
+async def list_conversations(store, project_id):
+    """List conversations without activating or modifying their threads."""
+    found, offset = [], 0
+    while True:
+        page = await store.asearch(THREADS, filter={"project_id": project_id}, limit=100, offset=offset)
+        found.extend(dict(item.value) for item in page)
+        if len(page) < 100:
+            return sorted(found, key=lambda value: value.get("created_at", ""))
+        offset += len(page)
+
+
+async def create_conversation(store, client, project_id, title=None):
+    """Create an official thread and bind it to one project."""
+    from datetime import datetime, timezone
+
+    if title is not None and (not isinstance(title, str) or len(title.strip()) > 120):
+        raise ValueError("会话名称无效")
+    thread_id = str(uuid.uuid4())
+    metadata = {"loopminder_project_id": project_id, "loopminder_purpose": "pm_workbench"}
+    async with asyncio.timeout(15):
+        thread = await client.threads.create(thread_id=thread_id, if_exists="do_nothing", metadata=metadata)
+    returned_metadata = thread.get("metadata") or {}
+    if thread.get("thread_id") != thread_id or any(returned_metadata.get(k) != v for k, v in metadata.items()):
+        raise ValueError("官方会话身份不匹配")
+    record = {"thread_id": thread_id, "project_id": project_id, "title": (title or "").strip() or "新会话",
+              "created_at": datetime.now(timezone.utc).isoformat()}
+    await store.aput(THREADS, thread_id, record, index=False)
+    return record
+
+
+async def project_thread(store, client, project_id, thread_id):
+    """Validate that an existing official thread belongs to this project."""
+    if not isinstance(thread_id, str) or not thread_id:
+        raise ValueError("请选择会话")
+    item = await store.aget(THREADS, thread_id)
+    if item is None or item.value.get("project_id") != project_id or item.value.get("thread_id") != thread_id:
+        raise ValueError("会话不存在或不属于当前项目")
+    try:
+        async with asyncio.timeout(15):
+            thread = await client.threads.get(thread_id)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise ValueError("官方服务中找不到该会话，请检查当前服务。") from exc
+        raise ValueError("无法核对会话，请检查官方服务。") from exc
+    except (httpx.HTTPError, TimeoutError) as exc:
+        raise ValueError("无法核对会话，请检查官方服务。") from exc
+    metadata = thread.get("metadata") or {}
+    if (thread.get("thread_id") != thread_id or metadata.get("loopminder_project_id") != project_id
+            or metadata.get("loopminder_purpose") != "pm_workbench"):
+        raise ValueError("官方会话与项目不匹配")
+    return thread_id
+
+
+async def conversations(request):
+    """List or create conversations belonging to a project."""
+    if not local(request):
+        return forbidden()
+    try:
+        data = await request.json() if request.method == "POST" else request.query_params
+        project_id = data.get("project_id")
+        if not isinstance(project_id, str) or not project_id:
+            raise ValueError("请选择项目")
+        store = await get_store()
+        if await ProjectStore(store).load(project_id) is None:
+            return JSONResponse({"error": "项目不存在"}, status_code=404)
+        if request.method == "GET":
+            return JSONResponse({"conversations": await list_conversations(store, project_id)})
+        return JSONResponse(await create_conversation(store, get_client(url=None), project_id, data.get("title")))
+    except (ValueError, TypeError, AttributeError) as exc:
+        return JSONResponse({"error": str(exc) or "会话请求无效"}, status_code=400)
+    except (httpx.HTTPError, TimeoutError):
+        return JSONResponse({"error": "无法创建会话，请检查官方服务。"}, status_code=503)

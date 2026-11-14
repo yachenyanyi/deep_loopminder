@@ -1,5 +1,8 @@
 # Deep Loopminder
 
+> `pm-continue` 分支当前以 PM Agent 和专属工作台为入口；其他 Agent 实例代码保留，
+> 但不在默认 LangGraph 图中注册。下文多 Agent 架构和示例供参考，不是当前启动入口。
+
 > 基于 LangGraph DeepAgents 的企业级多智能体协作系统
 
 一个模拟"AI公司"运作模式的智能体框架——每个代理像公司员工一样各司其职，通过标准化的 A2A 协议相互通信协作，完成复杂任务。
@@ -383,51 +386,22 @@ PM 的普通设置保存在项目根目录 `settings.json`，密钥、Clef 账�
 设置中的模型和商讨模式在后续调用中使用；Worker、数据库和中间件装配的修改需要
 重启 PM 服务。数据库不可用时仍可打开设置页，但不能创建临时项目冒充持久化项目。
 
-PM 专属开发服务的线程/Run 注册表与原多 Agent 服务分开。PostgreSQL 中有检查点
-不代表另一个服务的线程元数据也可用；旧会话无法读取时工作台会明确提示，不会
-自动新建会话冒充恢复。开发服务与生产部署的恢复能力仍需分别验证。
+一个项目可创建多个会话。会话各自保存对话、模型选择、运行和人工决策；同一项目的
+会话共享项目任务、制品与绑定的工作目录。Worker 结果返回发起会话，轨迹页面目前
+汇总当前项目的事件。项目状态的本机写入由现有项目锁协调。
 
-### 原多 Agent 开发服务启动
+PM 开发服务使用独立的线程/Run 注册目录。PostgreSQL 中有检查点不代表其他
+服务的线程元数据也可用；开发服务与生产部署的恢复能力仍需分别验证。
 
-**必须用项目自带的启动脚本，不要直接用 `langgraph dev`。**
-原因：本机安装的 langgraph-cli 在 `dev` 命令里构造 `run_server(...)` 调用时
-不转发 langgraph.json 的 `checkpointer` 键（只转发 store/http/auth/ui/
-webhooks），PM 会话检查点会静默退回内存——重启后人工决策中断、派工意图等
-全部丢失，工作台只会给出"检查点已不存在"的提示而不是恢复原 Run。
-`scripts/run_dev_server.py` 直接调用官方 `run_server(checkpointer=…)`，
-其余行为与 `langgraph dev` 一致：
-
-```bash
-# PM 会阻塞在 wait_agent 上等待开发负责人子代理，同一条链上的子代理 run
-# 必须能在父 run 等待期间被调度。dev 服务每个 worker 进程默认只跑
-# 1 个 job（cli.py 把 N_JOBS_PER_WORKER 设为 1，与 --help 文案不符），
-# 父 run 占满唯一的槽，子代理 run 就永远停在 pending，直到父 run 的等待
-# 超时结束才被调度。必须提高并发，否则商讨/开发/审查链路全部走不通。
-# --no-reload 同理必须保留：reload 会让 uvicorn 在 Windows 退回
-# SelectorEventLoop，create_subprocess_exec 抛 NotImplementedError，
-# ACP 适配器无法启动。
-python scripts/run_dev_server.py --port 2030 --n-jobs-per-worker 10
-# （脚本固定 reload=False；Windows 下无需再加 --no-reload）
-
-# API: http://localhost:2030
-# Studio: https://smith.langchain.com/studio/?baseUrl=http://localhost:2030
-```
-
-**数据库回退提示**：`LANGGRAPH_POSTGRES_URI` 未配置时服务仍能启动，但
-Store 与检查点都退回进程内存——数据在重启后全部丢失，且启动日志会打印
-`[warning] LANGGRAPH_POSTGRES_URI is not set; PM Store and session
-checkpoints fall back to in-memory storage ... (ephemeral)` 明确告知。
-看到该警告仍继续使用，等于接受数据不持久；需要持久化时先在 `.env` 配好
-URI 再启动。
-
-已实测的持久化范围：**本机 dev 服务的单次重启恢复**（中断→重启→读回原
-中断→提交答复→原 Run 恢复成功，checkpoint 落 PostgreSQL）。`langgraph up`
-/ 生产部署（Docker + 持久 checkpointer、ops 元数据落库）**尚未验证**；生产
-环境请另行验证后再依赖。
+`scripts/run_dev_server.py` 是历史开发入口，当前 PM 请使用上方的
+`scripts/run_pm_server.py`。本机安装的 `langgraph dev` 未转发自定义
+checkpointer 配置，在验证官方入口支持该配置前不要用它替代 PM 启动脚本。
 
 ---
 
 ## 使用示例
+
+以下示例描述保留的其他 Agent 实例，需要重新注册对应图后才能通过服务调用。
 
 ### 本地助手模式
 

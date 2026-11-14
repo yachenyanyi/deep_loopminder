@@ -1,4 +1,4 @@
-"""本机开发服务启动入口。
+"""历史开发服务启动脚本；当前分支的 PM 入口为 scripts/run_pm_server.py。
 
 为什么不用 ``langgraph dev``：本机安装的 langgraph-cli 在 ``dev`` 命令里构造
 ``run_server(...)`` 调用时没有传 ``checkpointer``（langgraph_cli/cli.py 的 dev

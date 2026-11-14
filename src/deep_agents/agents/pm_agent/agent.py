@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import os
 from dataclasses import dataclass
@@ -349,7 +348,7 @@ def assemble_pm_user_middleware(
 # 5. 创建主图：读取模型和运行配置，调用官方 create_agent 完成组装。
 
 
-async def pm_agent(model=None, *, studio=False, trace_project_id=None):
+async def pm_agent(*, studio=False, trace_project_id=None):
     """创建 PM 主图，运行与检查点生命周期交给官方 Server。"""
     from src.middlewares.agent.pm_settings import current
 
@@ -366,25 +365,15 @@ async def pm_agent(model=None, *, studio=False, trace_project_id=None):
     acp_enabled = switches.get("acp", True)
     trajectory_enabled = switches.get("trajectory", True)
     # 先确定模型与共享存储，项目状态和历史记忆使用同一个 Store。
-    # Every PM session may switch models through middleware, including when
-    # the host supplied the graph's initial model explicitly.
     dynamic_memory_model = True
     store = (await get_pm_memory_store()).store
-    if model is None:
-        if pm_settings is not None:
-            from src.middlewares.agent.user_configurable import (
-                configured_pm_model,
-                pm_model_catalog,
-            )
+    from src.middlewares.agent.user_configurable import configured_pm_model, pm_model_catalog
 
-            catalog = pm_model_catalog(store)
-            selected = await catalog.get_default()
-            if selected is None:
-                raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
-            model = await configured_pm_model(catalog, selected)
-        else:
-            model_module = await asyncio.to_thread(importlib.import_module, "src.models.llm")
-            model = model_module.get_easycli_model()
+    catalog = pm_model_catalog(store)
+    selected = await catalog.get_default()
+    if selected is None:
+        raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
+    model = await configured_pm_model(catalog, selected)
     memory = None if studio or not memory_enabled else PMMemory(store, model)
     from src.middlewares.project_state.workflow import ProjectWorkflow
 

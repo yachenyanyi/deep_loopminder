@@ -20,7 +20,7 @@ from src.runtime.routing import RoleRequirement, WorkerCandidate, route_worker
 
 from .control import ACPWorker, UnsupportedControl
 from .correlation import WorkerRef
-from .pool import READONLY_ISOLATION, mode_can_write
+from .pool import READONLY_ISOLATION
 
 
 def project_recorder(project_id):
@@ -296,30 +296,7 @@ def create_worker_graph(
                 elif execution_phase:
                     worker = await project_workers.get_execution(ref, request["pm_dispatch_id"])
                     await worker.resume(ref)
-                    # 续接的负责人会话带着商讨时的只读模式（plan/read-only），
-                    # 开发前必须切回可写模式，否则适配器按只读边界中止写入
-                    # （真实 E2E 发现：人工授权后仍"写入被工具中止"）。
-                    # 模式列表以适配器实际上报为准，不猜测；切换结果以
-                    # config_option 快照确认为准，未确认则不带病写入。
-                    try:
-                        mode_snapshot = worker.mode_state(ref.session_id)
-                    except Exception:
-                        mode_snapshot = {}
-                    current_id = (mode_snapshot or {}).get("current")
-                    if current_id is not None and not mode_can_write(ref.provider_id, current_id):
-                        offered = [item["id"] for item in (mode_snapshot or {}).get("modes", [])
-                                   if isinstance(item, dict) and item.get("id")]
-                        writable = [item for item in offered if mode_can_write(ref.provider_id, item)]
-                        if not writable:
-                            raise PermissionError(
-                                f"负责人会话停留在只读模式 {current_id}，适配器未提供可写模式；未发送开发内容。"
-                            )
-                        target = "default" if "default" in writable else writable[0]
-                        applied = await worker.apply_mode(ref, target)
-                        if not applied.get("matched"):
-                            raise PermissionError(
-                                f"执行模式切换未获适配器确认：请求 {target}，适配器报告 {applied.get('reported_mode')}。"
-                            )
+                    await governance.apply_execution_mode(worker, ref)
                     await governance.authorize_execution(request, ref, config)
                 else:
                     worker = await project_workers.get(ref.provider_id, ref.cwd)
@@ -331,19 +308,7 @@ def create_worker_graph(
             # The mode is set and confirmed here, immediately before the prompt
             # leaves the host. A mismatch raises and no discussion content is
             # ever processed by the adapter under the wrong mode.
-            mode_record = await governance.apply_discussion_mode(worker, ref, request) if governance is not None else None
-            # Persist the adapter-reported mode under this Run so the PM side
-            # can read it back after dispatch. The worker checkpoint is not
-            # visible to the dispatching tool result.
-            if mode_record is not None and request.get("pm_governed"):
-                run_id = str(config.get("metadata", {}).get("run_id", ""))
-                if run_id:
-                    await get_store().aput(
-                        ("deep_loopminder", "project_run_modes", ref.project_id), run_id,
-                        {**mode_record, "run_id": run_id, "provider_id": ref.provider_id,
-                         "session_id": ref.session_id, "recorded_at": datetime.now(UTC).isoformat()},
-                        index=False,
-                    )
+            mode_record = await governance.apply_discussion_mode(worker, ref, request, config) if governance is not None else None
             # Bracket the ask so the workbench can group this worker's native
             # notifications into one turn instead of a flat stream.
             if recorder is not None:

@@ -17,7 +17,6 @@ from src.middlewares.agent.model_catalog import WindowsCredentials
 from src.middlewares.approval.config import ApprovalProviderConfig, resolve_provider
 from src.middlewares.execution.security_policy import SecurityGrant
 from src.runtime.routing.models import WorkerCandidate
-from src.workbench.app import routes as workbench_routes
 
 from .capabilities import worker_candidate
 from .control import ACPWorker
@@ -186,6 +185,7 @@ async def lifespan(app):
         pm_settings = current()
         runtime = pm_settings.read().get("runtime", {}) if pm_settings else {}
         acp_enabled = runtime.get("middleware", {}).get("acp", True)
+        app.state.acp_enabled = acp_enabled
         configured_workers = (runtime.get("acp_workers", []) if pm_settings and acp_enabled
                               else [] if pm_settings
                               else json.loads(os.getenv("ACP_WORKERS_JSON") or "[]"))
@@ -284,20 +284,10 @@ async def lifespan(app):
                     business_capabilities=frozenset(settings.get("capabilities", ())),
                 )
             )
-        # 完成通知的宿主补位：Worker Run 结束而 PM 空闲时触发领取 Run（详见
-        # workbench/claims.py）。随生命周期启停，观察失败不影响服务。
-        from src.workbench.claims import watch_claims
-
-        claims_task = asyncio.create_task(watch_claims()) if acp_enabled else None
-        try:
-            yield
-        finally:
-            if claims_task is not None:
-                claims_task.cancel()
-                await asyncio.gather(claims_task, return_exceptions=True)
+        yield
 
 
-app = Starlette(routes=workbench_routes, lifespan=lifespan)
+app = Starlette(lifespan=lifespan)
 
 
 def worker_catalog():
@@ -349,12 +339,10 @@ def discover_live_modes(provider_id, directory=None):
     return {"available": False, "reason": "worker_has_no_session", "modes": [], "current": None}
 
 
-def acp_worker():
-    """Return the role-routed ACP worker graph registered in langgraph.json."""
-    from src.deep_agents.agents.pm_agent.collaboration import PMWorkerGovernance
-
+def acp_worker(governance=None):
+    """Return the role-routed ACP worker graph with optional host governance."""
     return create_worker_graph(_workers, _candidates, project_workers=_project_workers,
-                               governance=PMWorkerGovernance())
+                               governance=governance)
 
 
 def acp_control():

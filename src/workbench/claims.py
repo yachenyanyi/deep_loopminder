@@ -162,7 +162,7 @@ class ClaimWatcher:
         return True
 
     async def poll_once(self, client) -> list[tuple[str, str]]:
-        """One pass over the project bindings; returns (thread_id, run_id) pairs it woke PM for."""
+        """Observe every conversation; return (thread_id, run_id) pairs it woke PM for."""
         if self.store is None:
             self.store = await get_store()
         woken = []
@@ -171,13 +171,14 @@ class ClaimWatcher:
             bindings = await self.store.asearch(_THREADS, limit=100, offset=offset)
             for binding in bindings:
                 thread_id = (binding.value or {}).get("thread_id")
-                if not isinstance(thread_id, str) or not thread_id:
+                project_id = (binding.value or {}).get("project_id")
+                if not isinstance(thread_id, str) or not thread_id or not isinstance(project_id, str) or not project_id:
                     continue
                 values = await self._thread_values(client, thread_id)
                 entries = await self._claimable(client, thread_id, values)
                 if entries:
                     names = values.get("acp_task_names") or {}
-                    if await self._wake(client, binding.key, thread_id, entries, names):
+                    if await self._wake(client, project_id, thread_id, entries, names):
                         woken.extend((thread_id, task["run_id"]) for _, task, _ in entries)
             if len(bindings) < 100:
                 return woken

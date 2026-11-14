@@ -222,7 +222,10 @@ def test_live_worker_permission_can_be_approved_from_pm_workbench(tmp_path):
     )
 
     async def scenario():
-        registry = WorkerReview(timeout=3)
+        async def owner(_ref):
+            return "conversation"
+
+        registry = WorkerReview(timeout=3, owner_for_worker=owner)
         app = Starlette(routes=[Route("/reviews", pending_worker_reviews, methods=["GET"]),
                                 Route("/reviews", submit_worker_review, methods=["POST"])])
         app.state.worker_review = registry
@@ -238,10 +241,10 @@ def test_live_worker_permission_can_be_approved_from_pm_workbench(tmp_path):
                                          base_url="http://127.0.0.1") as client:
                 turn = asyncio.create_task(instance.control(ref, "ask", {"text": "permission:read"}))
                 async with asyncio.timeout(3):
-                    while not registry.pending("project"):
+                    while not registry.pending("project", "conversation"):
                         await asyncio.sleep(0.01)
-                request_id = (await client.get("/reviews?project_id=project")).json()["requests"][0]["request_id"]
-                result = await client.post("/reviews", json={"project_id": "project", "request_id": request_id,
+                request_id = (await client.get("/reviews?project_id=project&thread_id=conversation")).json()["requests"][0]["request_id"]
+                result = await client.post("/reviews", json={"project_id": "project", "thread_id": "conversation", "request_id": request_id,
                                                               "approved": True})
                 assert result.status_code == 200
                 await turn

@@ -47,9 +47,9 @@ def main():
         n_jobs_per_worker=args.n_jobs_per_worker or runtime.get("n_jobs_per_worker", 10),
         open_browser=False,
         env=str(settings.env_path) if settings.env_path.exists() else {},
-        store={"path": "src.middlewares.persistence.pm_runtime.generate_pm_store"},
-        checkpointer={"path": "src.middlewares.persistence.pm_runtime.generate_pm_checkpointer"},
-        http={"app": "src.deep_agents.agents.pm_agent.server:app"},
+        store=config["store"],
+        checkpointer=config["checkpointer"],
+        http=config["http"],
         allow_blocking=True,
         runtime_edition="inmem",
     )

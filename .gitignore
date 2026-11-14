@@ -323,3 +323,4 @@ test.jsonl
 !/tests/test_trajectory_projection.cjs
 !/tests/test_trajectory_snapshot.py
 !/tests/test_pm_worker_review.py
+!/tests/test_pm_conversations.py

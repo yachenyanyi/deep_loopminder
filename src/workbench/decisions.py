@@ -62,7 +62,9 @@ async def _thread_interrupts(client, thread_id):
         state = await client.threads.get_state(thread_id)
     checkpoint = state.get("checkpoint")
     if checkpoint is None and not (state.get("values") or {}):
-        raise CheckpointLostError()
+        if await client.runs.list(thread_id, limit=1):
+            raise CheckpointLostError()
+        return [], 0, {"interrupt_id": None, "checkpoint_id": None}
     interrupts = []
     for task in state.get("tasks") or []:
         if isinstance(task, dict):
@@ -109,7 +111,7 @@ async def pending_decision(request):
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     client = get_client(url=None)
     try:
-        thread_id = await project_thread(store, client, project_id, create_if_missing=False)
+        thread_id = await project_thread(store, client, project_id, request.query_params.get("thread_id"))
         actions, interrupt_count, occurrence = await _thread_interrupts(client, thread_id)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
@@ -157,12 +159,8 @@ async def submit_decision(request):
     if await ProjectStore(store).load(project_id) is None:
         return JSONResponse({"error": "项目不存在"}, status_code=404)
     client = get_client(url=None)
-    # No outer project_write_lock here: project_thread already takes it and
-    # the asyncio.Lock is not reentrant. The check-then-resume gap is closed by
-    # the official server itself — a resume without a pending interrupt is
-    # rejected there and surfaced as an error, never silently lost.
     try:
-        thread_id = await project_thread(store, client, project_id, create_if_missing=False)
+        thread_id = await project_thread(store, client, project_id, data.get("thread_id"))
         actions, interrupt_count, occurrence = await _thread_interrupts(client, thread_id)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)

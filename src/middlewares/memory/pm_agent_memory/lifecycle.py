@@ -57,7 +57,7 @@ class PMMemorySummarizationMiddleware(SummarizationMiddleware):
             if self.model_profile_enabled:
                 from src.middlewares.agent.user_configurable import memory_model_profile
 
-                model_profile, session_model = await memory_model_profile(state, runtime.store, self.jobs.model)
+                model_profile, session_model = await memory_model_profile(state, runtime.store)
                 if self.dynamic_model:
                     selected_model = session_model
             if model_profile is None:
