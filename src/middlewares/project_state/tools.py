@@ -288,7 +288,7 @@ def make_project_command(
                 ):
                     raise ProjectStateError(
                         "evidence_required",
-                        "当前版本缺少有效验收或人工批准，不能完成任务",
+                        "缺少有效的人工验收或批准记录，不能完成任务",
                         "request_human_decision",
                     )
                 candidate = apply_project_command(

@@ -128,7 +128,7 @@ class ProjectStateMiddleware(AgentMiddleware):
             review_facts = await self.workflow.review_status(snapshot)
             if self.pm_discussion_gate:
                 for fact in review_facts:
-                    fact["independent_codex_review"] = await self.workflow.codex_review_status(
+                    fact["independent_review"] = await self.workflow.independent_review_status(
                         project_id, fact["task_id"]
                     )
             content += (
@@ -177,7 +177,7 @@ class ProjectStateMiddleware(AgentMiddleware):
             return await self._execute_tool_call(request, handler)
         if request.tool_call["name"] in {
             "project_command", "project_create_artifact", "spawn_agent",
-            "followup_task", "wait_agent", "send_message", "assess_discussion", "begin_discussion", "begin_codex_review", "recover_dispatched_session",
+            "followup_task", "wait_agent", "send_message", "assess_discussion", "begin_discussion", "begin_review", "recover_dispatched_session",
         }:
             try:
                 project_id = resolve_project_id(request.runtime.config)
@@ -192,13 +192,17 @@ class ProjectStateMiddleware(AgentMiddleware):
     async def _execute_tool_call(self, request, handler):
         """允许独立制品并行，拒绝多次快照写或混合写，避免快照覆盖与依赖竞态。"""
         name = request.tool_call["name"]
-        if (self.pm_discussion_gate
-                and request.runtime.config.get("configurable", {}).get("_pm_claim_event") is True
-                and name in {"spawn_agent", "followup_task", "begin_discussion", "begin_codex_review"}):
+        configured = request.runtime.config.get("configurable", {})
+        if (self.pm_discussion_gate and configured.get("_pm_claim_event") is True
+                and (name in {"spawn_agent", "followup_task", "begin_discussion"} or (
+                    name == "begin_review" and not (
+                        configured.get("_pm_claim_successful_runs") and request.tool_call["args"].get("task_id")
+                    )
+                ))):
             return ToolMessage(
                 content=json.dumps({"ok": False, "error": {
                     "code": "claim_event_dispatch_blocked",
-                    "message": "结果领取通知不能启动新的 Worker；请向用户汇报结果并等待新指示。",
+                    "message": "结果领取通知只允许按需审查本轮领取的当前开发交付，其他派工请在普通对话中处理。",
                 }}, ensure_ascii=False),
                 tool_call_id=request.tool_call["id"], name=name, status="error",
                 additional_kwargs={"recoverable_business_rejection": True},
@@ -216,7 +220,7 @@ class ProjectStateMiddleware(AgentMiddleware):
         writes = {"project_command", "project_create_artifact"}
         if self.workflow:
             writes |= {"spawn_agent", "followup_task", "wait_agent", "assess_discussion",
-                       "begin_discussion", "begin_codex_review", "recover_dispatched_session"}
+                       "begin_discussion", "begin_review", "recover_dispatched_session"}
         if name not in writes and name != "project_read":
             return await handler(request)
         dispatched = False
@@ -283,17 +287,6 @@ class ProjectStateMiddleware(AgentMiddleware):
                     raise ProjectStateError(
                         "worker_active_or_unconfirmed", "项目 Worker 尚未确认停止，暂不能更改项目状态。", "wait_agent"
                     )
-                if (self.pm_discussion_gate and name == "project_command"
-                        and args.get("action") == "transition_task"
-                        and args.get("target_status") in {"passed", "approved", "done"}
-                        and isinstance(args.get("task_id"), str)):
-                    review = await self.workflow.codex_review_status(project_id, args["task_id"])
-                    if review["status"] != "pass":
-                        raise ProjectStateError(
-                            "independent_review_unavailable",
-                            "当前交付缺少通过的独立 Codex 审查，不能推进验收、批准或完成。",
-                            "inspect_review_status",
-                        )
                 if name in {"spawn_agent", "followup_task", "wait_agent"}:
                     require_writer(runtime)
                 if name == "spawn_agent":
@@ -449,11 +442,11 @@ class ProjectStateMiddleware(AgentMiddleware):
                             if approved_materials:
                                 message += "\n任务说明引用的材料：\n" + approved_materials
                             if requested == "按照已确认方案处理审查问题":
-                                review = await self.workflow.codex_review_status(project_id, task_id)
+                                review = await self.workflow.independent_review_status(project_id, task_id)
                                 if review.get("status") != "fail":
                                     raise ProjectStateError(
                                         "current_failed_review_required", "当前交付没有有效的不通过审查记录。",
-                                        "begin_codex_review",
+                                        "begin_review",
                                     )
                                 message += ("\n请仅在已确认范围内处理这份独立审查的发现：\n"
                                             + json.dumps({"summary": review.get("summary"),
@@ -530,14 +523,14 @@ class ProjectStateMiddleware(AgentMiddleware):
                                     )
                                     if source and source.value.get("phase") == "review":
                                         try:
-                                            review = await self.workflow.record_codex_review(
+                                            review = await self.workflow.record_independent_review(
                                                 project_id, source.value["task_id"], review_run_id=completed["run_id"]
                                             )
-                                            completed["codex_review"] = {
+                                            completed["independent_review"] = {
                                                 "decision": review["decision"], "review_id": review["review_id"]
                                             }
                                         except ValueError as exc:
-                                            completed["codex_review"] = {"decision": "unknown", "reason": str(exc)}
+                                            completed["independent_review"] = {"decision": "unknown", "reason": str(exc)}
                                 result.update["messages"][index] = message.model_copy(
                                     update={"content": json.dumps(payload, ensure_ascii=False)}
                                 )

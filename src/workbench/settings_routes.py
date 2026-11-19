@@ -70,7 +70,8 @@ async def clef_settings(request):
     store = await get_store()
     if pm_settings is not None:
         if request.method == "GET":
-            return JSONResponse({"account_id": "", "account_configured": bool(pm_settings.secret("PM_CLEF_ACCOUNT_ID")),
+            return JSONResponse({"account_id": pm_settings.secret("PM_CLEF_ACCOUNT_ID") or "",
+                                 "account_configured": bool(pm_settings.secret("PM_CLEF_ACCOUNT_ID")),
                                  "token_configured": bool(pm_settings.secret("PM_CLEF_API_KEY"))})
         try:
             data = await request.json()

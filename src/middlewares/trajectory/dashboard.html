@@ -94,6 +94,9 @@
       #app.sidebar-closed {
         grid-template-columns: 0 minmax(0, 1fr);
       }
+      #app.workbench.sidebar-closed > .sidebar {
+        visibility: hidden;
+      }
       .sidebar {
         background: var(--sidebar);
         border-right: 1px solid var(--line);
@@ -865,6 +868,21 @@
         .brand {
           display: none;
         }
+        #app.workbench {
+          position: relative;
+          grid-template-columns: minmax(0, 1fr);
+        }
+        #app.workbench > .sidebar {
+          position: absolute;
+          inset: 0 auto 0 0;
+          width: min(240px, 85%);
+          z-index: 16;
+          box-shadow: 5px 0 20px #0003;
+        }
+        #app.workbench .brand {
+          display: flex;
+          padding-inline: 10px;
+        }
         .page-header {
           padding-left: 10px;
         }
@@ -1608,6 +1626,11 @@
       // 视图层单独消费轨迹快照；DSH的紧凑账本、按需检查器、时间线保留本项目数据契约。
       if (typeof document !== "undefined") {
         const $ = (id) => document.getElementById(id);
+        if (new URLSearchParams(location.search).get("layout") === "workbench") {
+          document.documentElement.classList.add("light");
+          $("app").classList.add("workbench", "sidebar-closed");
+          $("show-sidebar").hidden = false;
+        }
         const names = {
           system: "系统",
           user: "用户",

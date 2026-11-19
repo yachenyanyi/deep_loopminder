@@ -375,6 +375,8 @@ LANGGRAPH_POSTGRES_URI=postgresql://user:pass@localhost:5432/db
 
 PM 使用独立的服务装配和线程运行目录，不改变下面的多 Agent 启动入口：
 
+Windows 双击 `start_pm.bat` 会在工作台就绪后用默认浏览器打开页面，服务按设置中的端口启动并关闭热重载。
+
 ```powershell
 python scripts/run_pm_server.py
 # 工作台：http://127.0.0.1:2031/workbench

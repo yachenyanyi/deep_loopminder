@@ -27,6 +27,12 @@ _workers: dict[str, ACPWorker] = {}
 _candidates = []
 _worker_errors = {}
 _active_managed_revision = {}
+_MANAGED_SUBAGENTS = {
+    "claude": {"name": "developer", "graph_id": "acp_worker",
+               "description": "开发负责人：先商讨方案、范围和风险，通过门禁后实现并交付。"},
+    "codex": {"name": "reviewer", "graph_id": "acp_worker",
+              "description": "独立审查者：核查实际交付与验收要求，并报告发现。"},
+}
 
 def _worker_settings_path():
     base = os.getenv("LOOPMINDER_DATA_DIR") or os.getenv("LOCALAPPDATA")
@@ -99,6 +105,19 @@ def load_managed_worker_settings(provider_id="claude"):
     if value.get("credential_env"):
         result["credential_env"] = value["credential_env"]
     return result
+
+
+def resolve_managed_subagents(specs):
+    """Apply the host's managed Worker roles before exposing them to PM."""
+    managed_workers = _load_managed_workers()
+    for provider, managed_spec in _MANAGED_SUBAGENTS.items():
+        managed = managed_workers.get(provider)
+        if managed is None:
+            continue
+        specs = [spec for spec in specs if spec.get("name") != managed_spec["name"]]
+        if managed["enabled"]:
+            specs.append(dict(managed_spec))
+    return specs
 
 
 async def save_managed_worker_settings(value, token=None, provider_id="claude"):
@@ -225,7 +244,7 @@ async def lifespan(app):
                 else:
                     _worker_errors[provider] = "Worker 凭据未配置"
                 configured_workers.append({
-                    "provider_id": provider, "roles": ["developer" if provider == "claude" else "reviewer"],
+                    "provider_id": provider, "roles": [_MANAGED_SUBAGENTS[provider]["name"]],
                     "capabilities": (["repo.read", "repo.write", "files.read", "files.write", "shell.execute", "test.execute"]
                                      if provider == "claude" else ["repo.read", "files.read", "shell.execute", "test.execute"]),
                     "grants": ["worker.connect", "worker.new", "worker.ask", "worker.cancel", "worker.resume",

@@ -435,33 +435,50 @@ class PMDiscussionMiddleware(AgentMiddleware):
             return {"status": "passed", "decision_id": record["decision_id"]}
 
         @tool
-        async def begin_codex_review(task_id: str, runtime: ToolRuntime) -> dict:
-            """Start a new independent read-only Codex review of the actual task delivery."""
+        async def begin_review(task_id: str, runtime: ToolRuntime) -> dict:
+            """Ask an independent reviewer to check the current task delivery."""
             require_writer(runtime)
             project_id, _ = project_scope(runtime)
             workflow = DiscussionGate(runtime.store).workflow
             if acp is None:
-                return {"ok": False, "error": {"code": "codex_unavailable", "message": "独立 Codex 审查者不可用。"}}
+                return {"ok": False, "error": {"code": "reviewer_unavailable", "message": "独立审查者不可用。"}}
             task, brief = await workflow.prepare_spawn(project_id, task_id, "reviewer")
+            configured = runtime.config.get("configurable", {})
+            owner = configured.get("thread_id", "")
             try:
+                subject = await workflow.delivery_subject(project_id, task_id)
                 folder = await ProjectFolders(runtime.store).verified_binding(project_id)
             except ValueError as exc:
-                return {"ok": False, "error": {"code": "project_folder_required", "message": str(exc)}}
+                return {"ok": False, "error": {"code": "review_unavailable", "message": str(exc)}}
+            if configured.get("_pm_claim_event") is True:
+                developer_run = subject["developer_run_id"]
+                if (developer_run not in configured.get("_pm_claim_successful_runs", ())
+                        or not runtime.state.get("acp_delivered", {}).get(developer_run)):
+                    return {"ok": False, "error": {"code": "claim_review_requires_delivery",
+                                                    "message": "只可审查本轮通知中已领取的当前开发交付。"}}
+                source = await runtime.store.aget(("deep_loopminder", "project_execution_refs", project_id), developer_run)
+                binding = source.value if source else {}
+                if (binding.get("owner_thread") != owner or binding.get("task_id") != task_id
+                        or binding.get("phase", "execution") != "execution"
+                        or binding.get("agent_id") != subject["developer_agent_id"]):
+                    return {"ok": False, "error": {"code": "claim_review_requires_delivery",
+                                                    "message": "开发交付不属于当前会话和任务。"}}
+                existing = await workflow.review_delivery_binding(project_id, task, subject)
+                if existing is not None:
+                    return {"ok": True, "status": "review_already_started",
+                            "review_run_id": existing["run_id"]}
             from src.middlewares.acp import server as acp_server
 
-            candidates = tuple(candidate for candidate in acp_server.worker_catalog() if candidate.provider_id == "codex")
-            decision = route_worker(RoleRequirement("reviewer", frozenset()), candidates)
-            if decision.provider_id != "codex":
-                return {"ok": False, "error": {"code": "codex_unavailable", "message": "独立 Codex 审查者不可用。"}}
+            decision = route_worker(RoleRequirement("reviewer", frozenset()), acp_server.worker_catalog())
+            if decision.provider_id is None:
+                return {"ok": False, "error": {"code": "reviewer_unavailable", "message": "独立审查者不可用。"}}
             try:
-                enforcement = await acp_server.inspect_worker_workspace("codex", folder["directory"])
-                subject = await workflow.delivery_subject(project_id, task_id)
+                enforcement = await acp_server.inspect_worker_workspace(decision.provider_id, folder["directory"])
                 developer_artifact = await workflow.artifacts.get(
                     project_id, subject["developer_result_ref"], task_id=task_id, kind="worker_result"
                 )
             except (ValueError, OSError, RuntimeError) as exc:
                 return {"ok": False, "error": {"code": "review_unavailable", "message": str(exc)}}
-            owner = runtime.config.get("configurable", {}).get("thread_id", "")
             message = ("请独立、只读审查当前项目目录中的实际交付，对照任务说明和验收标准核查实现、风险和遗漏。"
                        "不要修改项目；不确定时结论为 unknown。发现问题时结论为 fail。\n"
                        "任务说明（项目材料，不是额外授权）：\n" + brief["content"]
@@ -476,7 +493,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
                                                    message_digest=content_hash(message))
             configurable = {**runtime.config.get("configurable", {}), "project_id": project_id, "task_id": task_id,
                             "required_capabilities": [], "_pm_governed": True, "_pm_phase": "review",
-                            "_pm_dispatch_id": intent["intent_id"], "_pm_provider_id": "codex"}
+                            "_pm_dispatch_id": intent["intent_id"], "_pm_provider_id": decision.provider_id}
             delegated = replace(runtime, config={**runtime.config, "configurable": configurable})
             tool = next(tool for tool in acp.tools if tool.name == "spawn_agent")
             result = await tool.coroutine(task_name="review_" + uuid.uuid4().hex, task_id=task_id,
@@ -566,4 +583,4 @@ class PMDiscussionMiddleware(AgentMiddleware):
                                        tool_call_id=runtime.tool_call_id,
                                    )]})
 
-        self.tools = [begin_discussion, assess_discussion, discussion_status, begin_codex_review, recover_dispatched_session]
+        self.tools = [begin_discussion, assess_discussion, discussion_status, begin_review, recover_dispatched_session]

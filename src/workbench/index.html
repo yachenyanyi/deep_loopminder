@@ -1,15 +1,150 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Loopminder · 项目工作台</title><link rel="icon" href="data:,">
-<style>
-:root{font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;color:#20232b;background:#fff;font-size:14px}*{box-sizing:border-box}body{margin:0}button,input,textarea,select{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}.app{display:flex;height:100vh}.sidebar{width:280px;min-width:240px;background:#f7f8fa;border-right:1px solid #e5e7eb;display:flex;flex-direction:column;padding:18px 12px}.brand{font-size:17px;font-weight:750;display:flex;align-items:center;gap:9px;padding:4px 6px 20px}.mark{width:22px;height:22px;display:grid;place-items:center;background:#161b29;color:white;border-radius:7px;font-size:13px}.new{border:1px solid #dcdfe4;background:#fff;border-radius:8px;padding:10px;width:100%}.sidehead{color:#9299a3;margin:30px 7px 10px;display:flex;justify-content:space-between;align-items:center}.list{overflow:auto;flex:1}.project{width:100%;border:0;border-radius:7px;background:transparent;text-align:left;padding:10px;display:flex;gap:9px;align-items:center;color:#3d4654}.project.active,.project:hover{background:#e9ebee}.project span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sidefoot{border-top:1px solid #e6e8eb;padding-top:10px}.link{border:0;background:none;padding:9px;color:#5b6573;width:100%;text-align:left}.main{min-width:0;flex:1;display:flex;flex-direction:column}.header{height:70px;border-bottom:1px solid #f0f1f3;display:flex;align-items:center;justify-content:space-between;padding:0 28px}.headline{font-weight:650}.tabs{display:flex;gap:20px}.tab{border:0;background:none;color:#7a8491;padding:10px 0}.tab.active{color:#1e293b;border-bottom:2px solid #557fea}.body{flex:1;display:flex;flex-direction:column;overflow:hidden}.welcome{margin:auto;text-align:center;color:#313b4a}.welcome h1{font-size:26px;font-weight:650;letter-spacing:-.04em}.muted{color:#8b95a3}.messages{flex:1;overflow:auto;padding:24px max(28px,calc((100% - 950px)/2))}.message{margin:18px 0;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}.message.user{background:#f1f4f9;border-radius:14px;padding:12px 16px;margin-left:auto;max-width:80%;width:fit-content}.message.assistant{padding:8px 0}.composer{width:min(950px,calc(100% - 48px));margin:0 auto 28px;border:1px solid #e2e5ea;border-radius:18px;box-shadow:0 4px 16px #1623380b;padding:12px}.composer textarea{border:0;resize:none;outline:none;width:100%;min-height:54px}.bar{display:flex;align-items:center;justify-content:space-between;gap:10px}.bar select{border:0;background:white;color:#667282;max-width:250px}.send{background:#668de8;color:white;border:0;border-radius:50%;width:34px;height:34px;font-size:19px}.banner{padding:8px 28px;background:#fff8ec;color:#94621b}.error{color:#b42318}.overlay{position:fixed;inset:0;background:#11182760;display:grid;place-items:center}.overlay[hidden],.view[hidden],.banner[hidden]{display:none}.dialog{background:white;width:min(540px,calc(100% - 32px));border-radius:14px;padding:24px;box-shadow:0 20px 55px #0003}.dialog h2{margin:0 0 20px;font-size:19px}.field{display:block;margin:15px 0;color:#475467}.field input,.field select{display:block;width:100%;border:1px solid #d6dce4;border-radius:7px;padding:10px;margin-top:6px}.row{display:flex;gap:8px}.row input{flex:1}.row button,.secondary{border:1px solid #d9dfe6;background:#fff;border-radius:7px;padding:9px 12px}.primary{border:0;background:#386bd8;color:white;border-radius:7px;padding:10px 16px}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}.notice{font-size:12px;color:#798493;line-height:1.6}.settings{max-height:65vh;overflow:auto}.view{height:100%;overflow:auto}.empty{margin:80px auto;text-align:center;color:#8b95a3}.hidden{display:none!important}@media(max-width:700px){.sidebar{width:210px;min-width:180px}.header{padding:0 15px}.composer{width:calc(100% - 24px)}}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loopminder · 项目工作台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/workbench/assets/workbench.css">
 </head>
-<body><div class="app">
-<aside class="sidebar"><div class="brand"><span class="mark">L</span>loopminder <span class="muted" style="font-size:11px;font-weight:500">WORKSPACE</span></div><button class="new" id="newProject">＋ 新建项目</button><div class="sidehead"><span>项目</span><button class="link" id="refresh" style="width:auto;padding:2px">↻</button></div><div class="list" id="projects"></div><div class="sidehead" style="margin-top:12px"><span>项目会话</span><button class="link" id="newConversation" style="width:auto;padding:2px" disabled>＋ 新建</button></div><div class="list" id="conversations" aria-label="项目会话"></div><div class="sidefoot"><button class="link" id="settingsButton">⚙ &nbsp;设置</button></div></aside>
-<main class="main"><header class="header"><span id="title" class="headline">项目工作台</span><nav class="tabs"><button class="tab active" data-tab="chat">对话</button><button class="tab" data-tab="activity">协作与轨迹</button></nav></header><div id="banner" class="banner" hidden></div><div class="body"><section class="view" id="activityView" hidden><div id="reconcilePanel" class="hidden" style="padding:12px 24px;border-bottom:1px solid #e5e7eb"><label>任务编号 <input id="reconcileTask" placeholder="输入任务编号"></label> <button class="secondary" id="reconcileButton">核对待确认派工</button> <button class="secondary" id="usageButton">查看负责人上下文</button><div id="reconcileResult" class="notice"></div><div id="usageResult" class="notice"></div></div><div class="empty" id="traceEmpty">选择项目后查看运行轨迹。</div><iframe id="traceFrame" title="项目运行轨迹" class="hidden" style="width:100%;height:calc(100% - 80px);border:0"></iframe></section><section id="chatView" class="body"><div class="welcome" id="welcome"><h1>从目标开始，协作向前</h1><div class="muted">选择一个项目，与 PM 讨论需求与下一步。</div></div><div class="messages hidden" id="messages"></div><div class="composer"><textarea id="message" placeholder="描述你的目标，或提出想讨论的问题" disabled></textarea><div class="bar"><span class="notice" id="projectLabel">先创建或选择项目</span><div><select id="model" aria-label="模型"><option value="">默认模型</option></select><select id="effort" aria-label="思考等级"><option value="">默认思考等级</option></select><button class="send" id="send" disabled aria-label="发送">↑</button></div></div></div></section></div></main></div>
-<div class="overlay" id="projectDialog" hidden><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="projectHeading"><h2 id="projectHeading">新建项目</h2><label class="field">项目文件夹<div class="row"><input id="directory" placeholder="输入绝对路径或选择文件夹"><button id="chooseFolder">选择</button></div></label><label class="field">项目目标<input id="goal" placeholder="例如：帮助团队管理项目进度"></label><div class="notice">项目绑定到所选目录；不同项目的状态和会话分别保存。目录不能与其他项目、宿主或应用数据重叠。开发与审查前会检查整个目录；指纹记录链接目标、按内容检查硬链接；大目录检查可能耗时。</div><div id="projectError" class="error"></div><div class="actions"><button class="secondary" data-close="projectDialog">取消</button><button class="primary" id="createProject">创建项目</button></div></div></div>
-<div class="overlay" id="settingsDialog" hidden><div class="dialog settings" role="dialog" aria-modal="true" aria-labelledby="settingsHeading"><h2 id="settingsHeading">模型设置</h2><label class="field">服务编号<input id="providerId" placeholder="例如 easycli"></label><label class="field">API 地址<input id="baseUrl" placeholder="http://127.0.0.1:8317/v1"></label><label class="field">API 凭据<input id="token" type="password" autocomplete="off" placeholder="留空则保留已有凭据"></label><div class="notice">凭据不会回显。PM 专属服务将其保存在本机 .env 文件中；远程地址使用 HTTPS。</div><div class="actions"><button class="secondary" id="saveProvider">保存服务</button><button class="secondary" id="discover">获取模型</button></div><div id="modelList"></div><div class="notice">每个模型可填写逗号分隔的思考等级；留空表示未知。</div><label class="field">默认模型<select id="defaultModel"><option value="">请选择</option></select></label><label class="field">默认思考等级<select id="defaultEffort"><option value="">默认</option></select></label><button class="secondary" id="saveDefault">保存默认模型</button><h2>Clef 设置</h2><label class="field">Cloudflare Account ID<input id="clefAccount"></label><label class="field">API 令牌<input id="clefToken" type="password" autocomplete="off" placeholder="留空则保留已有凭据"></label><button class="secondary" id="saveClef">保存 Clef 设置</button><div id="settingsError" class="error"></div><div class="actions"><button class="secondary" data-close="settingsDialog">关闭</button><button class="primary" id="saveModels">保存模型选择</button></div></div></div>
-<script src="/workbench/assets/app.js"></script></body></html>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="workspaceSidebar" aria-label="工作区">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">L</span> Loopminder
+        <button class="icon-button sidebar-close" id="sidebarClose" aria-label="关闭工作区菜单">×</button>
+      </div>
+      <button class="new" id="newProject"><span aria-hidden="true">＋</span> 新建项目</button>
+      <div class="sidehead">
+        <span>项目</span>
+        <button class="link icon-button" id="refresh" title="刷新项目" aria-label="刷新项目">↻</button>
+      </div>
+      <ul class="project-list" id="projects" aria-label="项目"></ul>
+      <div class="sidefoot"><button class="link" id="settingsButton"><span aria-hidden="true">⚙</span> 设置</button></div>
+    </aside>
+    <button class="sidebar-backdrop" id="sidebarBackdrop" aria-label="关闭工作区菜单" tabindex="-1"></button>
+    <main class="main">
+      <header class="header">
+        <div class="title-group">
+          <button class="icon-button sidebar-toggle" id="sidebarToggle" aria-expanded="false" aria-controls="workspaceSidebar" aria-label="工作区菜单">☰</button>
+          <span id="title" class="headline">项目工作台</span>
+        </div>
+        <nav class="tabs" aria-label="工作台视图">
+          <button class="tab active" data-tab="chat" aria-current="page">对话</button>
+          <button class="tab" data-tab="activity">协作与轨迹</button>
+        </nav>
+      </header>
+      <div id="banner" class="banner" role="status" hidden></div>
+      <div class="body">
+        <section class="view" id="activityView" hidden>
+          <details id="reconcilePanel" class="collaboration hidden">
+            <summary>任务与协作</summary>
+            <div id="reconcileControls" class="collaboration-controls">
+              <label class="task-field">任务编号 <input id="reconcileTask" placeholder="输入任务编号"></label>
+              <button class="secondary" id="reconcileButton">核对待确认派工</button>
+              <button class="secondary" id="usageButton">查看负责人上下文</button>
+              <div id="reconcileResult" class="notice"></div>
+              <div id="usageResult" class="notice"></div>
+            </div>
+          </details>
+          <div class="empty" id="traceEmpty">选择项目后查看运行轨迹。</div>
+          <iframe id="traceFrame" title="项目运行轨迹" class="hidden"></iframe>
+        </section>
+        <section id="chatView" class="body">
+          <div class="welcome" id="welcome">
+            <span class="welcome-mark" aria-hidden="true">L</span>
+            <h1>项目工作台</h1>
+            <p class="muted">选择一个项目，或新建项目与 PM 开始讨论。</p>
+          </div>
+          <div class="messages hidden" id="messages" aria-label="对话记录"></div>
+          <div class="composer">
+            <textarea id="message" aria-label="描述你的目标，或提出想讨论的问题" placeholder="描述你的目标，或提出想讨论的问题" disabled></textarea>
+            <div class="bar">
+              <button type="button" class="notice project-label" id="projectLabel" disabled>先创建或选择项目</button>
+              <div class="composer-controls">
+                <select id="model" aria-label="模型"><option value="">默认模型</option></select>
+                <select id="effort" aria-label="思考等级"><option value="">默认思考等级</option></select>
+                <button class="send" id="send" disabled aria-label="发送">↑</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <dialog class="dialog" id="projectDialog" aria-labelledby="projectHeading">
+    <h2 id="projectHeading">新建项目</h2>
+    <label class="field" for="directory">项目文件夹</label>
+    <div class="row">
+      <input id="directory" placeholder="输入绝对路径或选择文件夹" autofocus>
+      <button class="secondary" id="chooseFolder">选择</button>
+    </div>
+    <label class="field">项目目标
+      <input id="goal" placeholder="例如：帮助团队管理项目进度">
+    </label>
+    <p class="notice">每个项目绑定一个本机目录。请使用独立目录，避免与其他项目、宿主目录或应用数据重叠。</p>
+    <div id="projectError" class="error" role="status"></div>
+    <div class="actions">
+      <button class="secondary" data-close="projectDialog">取消</button>
+      <button class="primary" id="createProject">创建项目</button>
+    </div>
+  </dialog>
+
+  <dialog class="dialog settings" id="settingsDialog" aria-labelledby="settingsHeading">
+    <header class="settings-header">
+      <h2 id="settingsHeading">工作台设置</h2>
+      <button class="icon-button" data-close="settingsDialog" aria-label="关闭设置" title="关闭设置">×</button>
+    </header>
+    <div class="settings-layout">
+      <nav class="settings-nav" aria-label="设置分类">
+        <button class="tab active" data-settings="models" aria-pressed="true" autofocus>模型</button>
+        <button class="tab" data-settings="collaboration" aria-pressed="false">协作与审查</button>
+        <button class="tab" data-settings="runtime" aria-pressed="false">运行环境</button>
+      </nav>
+      <div id="settingsContent" class="settings-content">
+        <div id="modelSettings" data-settings-panel="models">
+          <section>
+            <h3>模型服务</h3>
+            <label class="field">选择模型服务<select id="providerSelect"><option value="">新增模型服务</option></select></label>
+            <label class="field">服务编号<input id="providerId" placeholder="例如 easycli"></label>
+            <label class="field">显示名称<input id="providerName" placeholder="默认使用服务编号"></label>
+            <label class="field">API 地址<input id="baseUrl" placeholder="http://127.0.0.1:8317/v1"></label>
+            <label class="field">API 凭据<input id="token" type="password" autocomplete="off" placeholder="留空则保留已有凭据"></label>
+            <p class="notice">凭据保存在本机 .env，远程地址使用 HTTPS。</p>
+            <div class="actions settings-actions">
+              <button class="secondary" id="saveProvider">保存服务</button>
+              <button class="secondary" id="discover">获取模型</button>
+            </div>
+            <div id="modelList"></div>
+            <div class="actions settings-actions" id="modelActions" hidden>
+              <button class="primary" id="saveModels">保存模型选择</button>
+            </div>
+            <div id="settingsError" class="notice" role="status"></div>
+          </section>
+          <section>
+            <h3>默认模型</h3>
+            <div class="fields-grid">
+              <label class="field">默认模型<select id="defaultModel"><option value="">请选择</option></select></label>
+              <label class="field">默认思考等级<select id="defaultEffort"><option value="">默认</option></select></label>
+            </div>
+            <button class="secondary" id="saveDefault">保存默认模型</button>
+            <div id="defaultStatus" class="notice" role="status"></div>
+          </section>
+        </div>
+        <div id="collaborationSettings" data-settings-panel="collaboration" hidden>
+          <section>
+            <h3>Clef 设置</h3>
+            <label class="field">Cloudflare Account ID<input id="clefAccount"></label>
+            <label class="field">API 令牌<input id="clefToken" type="password" autocomplete="off" placeholder="留空则保留已有凭据"></label>
+            <button class="secondary" id="saveClef">保存 Clef 设置</button>
+            <div id="clefStatus" class="notice" role="status"></div>
+          </section>
+        </div>
+        <div id="runtimeSettings" data-settings-panel="runtime" hidden></div>
+      </div>
+    </div>
+  </dialog>
+  <script src="/workbench/assets/app.js"></script>
+</body>
+</html>

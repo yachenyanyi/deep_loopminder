@@ -3,10 +3,33 @@
 import argparse
 import json
 import os
+import socket
 import sys
+import time
+import webbrowser
 from pathlib import Path
+from threading import Thread
+from urllib.request import urlopen
 
 _ROOT = Path(__file__).resolve().parents[1]
+_HOST = "127.0.0.1"
+
+
+def _open_workbench(url):
+    """Wait for the local workbench before opening the default browser."""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(url, timeout=1) as response:
+                if response.status == 200:
+                    break
+        except OSError:
+            pass
+        time.sleep(0.2)
+    else:
+        return
+    if not webbrowser.open(url):
+        print(f"Open the workbench in your browser: {url}", flush=True)
 
 
 def main():
@@ -14,6 +37,7 @@ def main():
     parser = argparse.ArgumentParser(description="PM-only local workbench")
     parser.add_argument("--port", type=int)
     parser.add_argument("--n-jobs-per-worker", type=int)
+    parser.add_argument("--open-workbench", action="store_true", help="Open the local workbench after startup")
     args = parser.parse_args()
     os.environ["LOOPMINDER_PM_SETTINGS"] = "1"
     sys.path.insert(0, str(_ROOT))
@@ -39,9 +63,19 @@ def main():
     os.chdir(runtime_home)
     from langgraph_api.cli import run_server
 
+    port = args.port or runtime.get("port", 2031)
+    url = f"http://{_HOST}:{port}/workbench"
+    print(f"PM workbench: {url}", flush=True)
+    if args.open_workbench:
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            port_in_use = probe.connect_ex((_HOST, port)) == 0
+        if not port_in_use:
+            Thread(target=_open_workbench, args=(url,), daemon=True).start()
+
     run_server(
-        host="127.0.0.1",
-        port=args.port or runtime.get("port", 2031),
+        host=_HOST,
+        port=port,
         reload=False,
         graphs=graphs,
         n_jobs_per_worker=args.n_jobs_per_worker or runtime.get("n_jobs_per_worker", 10),

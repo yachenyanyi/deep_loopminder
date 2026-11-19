@@ -215,12 +215,12 @@ class ProjectFolders:
         await self.store.aput(_PROJECT_FOLDERS, project_id, binding, index=False)
         return binding
 
-    async def content_digest(self, project_id: str) -> str:
+    async def content_digest(self, project_id: str, *, allow_unreadable=False) -> str | None:
         """Fingerprint the bound folder without storing file contents."""
-        binding = await self.get(project_id)
-        if binding is None:
-            raise ValueError("项目尚未绑定文件夹")
-        path, identity = await asyncio.to_thread(_resolve_directory, binding["directory"])
-        if identity != binding.get("identity"):
-            raise ValueError("项目文件夹身份已变化")
-        return await asyncio.to_thread(_directory_digest, path)
+        try:
+            binding = await self.verified_binding(project_id)
+            return await asyncio.to_thread(_directory_digest, binding["directory"])
+        except ValueError:
+            if not allow_unreadable:
+                raise
+            return None

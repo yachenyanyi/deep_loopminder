@@ -232,8 +232,12 @@ class ModelCatalog:
             if not isinstance(data, dict) or not isinstance(data.get("data"), list):
                 raise ValueError("模型服务返回格式无效")
             return list(dict.fromkeys(item["id"] for item in data["data"] if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]))
+        except httpx.HTTPStatusError as exc:
+            raise ValueError(
+                f"模型列表请求返回 HTTP {exc.response.status_code}，请检查模型服务凭据"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise ValueError("模型列表获取失败，请检查服务地址与凭据") from exc
+            raise ValueError("模型列表连接失败，请检查服务地址") from exc
         finally:
             if own:
                 await client.aclose()

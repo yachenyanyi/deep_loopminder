@@ -158,6 +158,7 @@ def test_claim_event_marks_run_and_blocks_worker_dispatch():
         assert await watcher._wake(client, "project", "owner", entries, {})
         config = created[0][1]["config"]
         assert config["configurable"]["_pm_claim_event"] is True
+        assert config["configurable"]["_pm_claim_successful_runs"] == ["worker-run"]
         assert created[0][0][0] == "owner"
         assert await watcher._already_triggered(client, "owner", "worker-run")
         async def thread_get(_thread_id):
@@ -176,7 +177,7 @@ def test_claim_event_marks_run_and_blocks_worker_dispatch():
             calls.append(request.tool_call["name"])
             return "delivered"
 
-        for name in ("spawn_agent", "followup_task", "begin_discussion", "begin_codex_review"):
+        for name in ("spawn_agent", "followup_task", "begin_discussion", "begin_review"):
             request = SimpleNamespace(tool_call={"name": name, "id": "call", "args": {}},
                                       runtime=SimpleNamespace(config=config))
             result = await middleware._execute_tool_call(request, handler)
@@ -190,6 +191,148 @@ def test_claim_event_marks_run_and_blocks_worker_dispatch():
         request = SimpleNamespace(tool_call={"name": "followup_task", "id": "call", "args": {}},
                                   runtime=SimpleNamespace(config=user_config))
         assert await middleware._execute_tool_call(request, handler) == "delivered"
+
+    asyncio.run(scenario())
+
+
+async def _reviewable_delivery(store, directory):
+    from src.middlewares.project_state.folders import ProjectFolders
+    from src.middlewares.project_state.models import Task, TaskStatus
+    from src.middlewares.project_state.workflow import ProjectWorkflow
+
+    await ProjectFolders(store).bind("p", str(directory))
+    workflow = ProjectWorkflow(store)
+    brief = await workflow.artifacts.create("p", "t", "task_brief", "Verify the delivery.")
+    task = Task("t", "Delivery", TaskStatus.REVIEW, "developer", frozenset(), frozenset(),
+                ("works",), artifact_refs=(brief["reference"],))
+    await ProjectStore(store).save(ProjectSnapshot("p", "goal", (), (task,)))
+    await workflow.record_start("p", "t", "owner", "developer", "development")
+    await workflow.record_result("p", "owner", {
+        "agent_id": "developer", "run_id": "development", "status": "success", "result": "Delivered.",
+        "worker_ref": {"project_id": "p", "task_id": "t", "thread_id": "developer",
+                       "role": "developer", "provider_id": "claude", "session_id": "development-session"},
+    })
+    return workflow
+
+
+def test_human_acceptance_survives_passive_task_and_directory_changes(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from src.middlewares.project_state.commands import TransitionTaskCommand
+    from src.middlewares.project_state.models import TaskStatus
+    from src.middlewares.project_state.service import apply_project_command
+    from src.workbench import app as workbench, context
+
+    async def scenario():
+        store = InMemoryStore()
+        workflow = await _reviewable_delivery(store, tmp_path)
+        monkeypatch.setattr(context, "_injected_store", store)
+        dialogs = []
+        change_criteria_during_confirm = False
+
+        async def update_criteria():
+            snapshot, task = await workflow.task("p", "t")
+            amended = replace(task, acceptance_criteria=(*task.acceptance_criteria, "new criterion"))
+            await ProjectStore(store).save(replace(snapshot, tasks=(amended,)))
+
+        def confirm(_title, message):
+            dialogs.append(message)
+            if change_criteria_during_confirm:
+                asyncio.run(update_criteria())
+            return True
+
+        monkeypatch.setattr(workbench, "_confirm_local", confirm)
+        app = Starlette(routes=workbench.routes)
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 3000))
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as http:
+            keys = {"project_id": "p", "task_id": "t"}
+            original, _ = await workflow.task("p", "t")
+            change_criteria_during_confirm = True
+            stale_form = await http.post("/workbench/api/human-validation", json={**keys, "criteria": {"works": True}})
+            assert stale_form.status_code == 409
+            assert "验收标准已变化" in stale_form.json()["error"]
+            change_criteria_during_confirm = False
+            await ProjectStore(store).save(original)
+            validation = await http.post("/workbench/api/human-validation", json={**keys, "criteria": {"works": True}})
+            assert validation.status_code == 200, validation.text
+            assert "未发起审查" in dialogs[-1]
+            snapshot, _ = await workflow.task("p", "t")
+            facts = await workflow.facts(snapshot, "t", TaskStatus.PASSED)
+            assert facts.validation_accepted and not facts.human_approved
+            report = await workflow.artifacts.create("p", "t", "review_note", "Additional evidence.")
+            await workflow.attach("p", "t", artifacts=(report["reference"],))
+            await update_criteria()
+            snapshot, _ = await workflow.task("p", "t")
+            passed = apply_project_command(snapshot, TransitionTaskCommand("p", "t", TaskStatus.PASSED,
+                                           validation_accepted=facts.validation_accepted))
+            await ProjectStore(store).save(passed)
+            (tmp_path / "README.md").write_text("Minor unrelated change", encoding="utf-8")
+            approval = await http.post("/workbench/api/human-approval", json={**keys, "approved": True})
+            assert approval.status_code == 200, approval.text
+            assert "项目目录自验收后有变化" in dialogs[-1]
+            facts = await workflow.facts(passed, "t", TaskStatus.APPROVED)
+            assert facts.validation_accepted and facts.human_approved
+            status = (await workflow.review_status(passed))[0]
+            assert status["validated_criteria"] == {"works": True}
+            assert status["approval_state"] == "approved"
+
+    asyncio.run(scenario())
+
+
+def test_claim_review_is_scoped_to_received_delivery_and_skips_existing_review(tmp_path, monkeypatch):
+    import json
+    from dataclasses import dataclass
+    from unittest.mock import AsyncMock
+
+    from langgraph.types import Command
+
+    from src.deep_agents.agents.pm_agent.discussion import PMDiscussionMiddleware
+    from src.middlewares.acp import server
+    from src.middlewares.execution.security_policy import EnforcementCapability, EnforcementFact
+    from src.runtime.routing import WorkerCandidate
+
+    @dataclass
+    class Runtime:
+        store: InMemoryStore
+        config: dict
+        state: dict
+
+    async def scenario():
+        store = InMemoryStore()
+        workflow = await _reviewable_delivery(store, tmp_path)
+        worker = WorkerCandidate("claude", "acp", frozenset({"reviewer"}), frozenset(), True)
+        readonly = EnforcementFact("worker", EnforcementCapability.PARTIAL, frozenset(),
+                                   mechanism="fixture", gap="mode unconfirmed")
+        monkeypatch.setattr(server, "worker_catalog", lambda: (worker,))
+        monkeypatch.setattr(server, "inspect_worker_workspace", AsyncMock(return_value=readonly))
+        spawn = AsyncMock(return_value=Command(update={"async_tasks": {"reviewer": {"run_id": "review"}}}))
+        middleware = PMDiscussionMiddleware(SimpleNamespace(tools=[SimpleNamespace(name="spawn_agent", coroutine=spawn)]))
+        review = next(tool.coroutine for tool in middleware.tools if tool.name == "begin_review")
+        config = {"project_id": "p", "thread_id": "owner", "project_state_single_writer": True,
+                  "_pm_claim_event": True, "_pm_claim_successful_runs": ["development", "other"]}
+        receipts = {"acp_delivered": {"development": True, "other": True}}
+        for settings, state in (
+            ({**config, "_pm_claim_successful_runs": ["other"]}, receipts),
+            ({**config, "thread_id": "other-owner"}, receipts),
+            (config, {"acp_delivered": {"other": True}}),
+        ):
+            assert (await review("t", Runtime(store, {"configurable": settings}, state)))["ok"] is False
+        runtime = Runtime(store, {"configurable": config}, receipts)
+        assert isinstance(await review("t", runtime), Command)
+        assert (await review("t", runtime))["status"] == "review_already_started"
+        spawn.assert_awaited_once()
+        assert spawn.await_args.kwargs["runtime"].config["configurable"]["_pm_provider_id"] == "claude"
+        delivery = await workflow.delivery_subject("p", "t")
+        await workflow.record_result("p", "owner", {
+            "agent_id": "reviewer", "run_id": "review", "status": "success",
+            "result": json.dumps({"decision": "pass", "subject": delivery["subject"],
+                                  "summary": "Verified.", "findings": []}),
+            "worker_ref": {"project_id": "p", "task_id": "t", "thread_id": "reviewer",
+                           "role": "reviewer", "provider_id": "claude", "session_id": "review-session"},
+        })
+        receipt = await workflow.record_independent_review("p", "t", review_run_id="review")
+        assert receipt["review_provider_id"] == "claude"
+        assert (await workflow.independent_review_status("p", "t"))["status"] == "pass"
 
     asyncio.run(scenario())
 
@@ -224,7 +367,7 @@ def test_project_status_exposes_worker_recovery_without_inventing_status(monkeyp
         monkeypatch.setattr(collaboration, "reconcile_verified_jobs", nothing)
         monkeypatch.setattr(discussion.DiscussionGate, "latest", nothing)
         monkeypatch.setattr(ProjectWorkflow, "review_status", empty)
-        monkeypatch.setattr(ProjectWorkflow, "codex_review_status", review)
+        monkeypatch.setattr(ProjectWorkflow, "independent_review_status", review)
         app = Starlette(routes=workbench.routes)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 3000)),
                                      base_url="http://127.0.0.1") as client:

@@ -81,7 +81,7 @@ def transition_rejection(
     }:
         return ProjectStateError(
             "validation_required",
-            "当前版本缺少有效可信验收记录，需由宿主核验写入，不能凭Worker自述通过",
+            "缺少有效的人工验收记录，需要逐项核验后记录结果",
             "request_human_decision",
         )
     if command.target_status is TaskStatus.APPROVED and task.status in {
@@ -91,7 +91,7 @@ def transition_rejection(
     }:
         return ProjectStateError(
             "approval_required",
-            "当前版本缺少认证人工批准，请请求人工决定",
+            "缺少对这份验收记录的人工批准，请请求人工决定",
             "request_human_decision",
         )
     return ProjectStateError(
@@ -226,12 +226,12 @@ def task_controls(snapshot: ProjectSnapshot, task_id: str) -> dict:
     gates = {}
     if task.status in {TaskStatus.REVIEW, TaskStatus.TESTING}:
         gates["passed"] = (
-            "需要宿主写入当前版本的可信验收；PM/Worker文字不能代替。缺少记录时请求宿主处理，不能反复猜状态。"
+            "需要宿主记录人工逐项验收。缺少记录时，请用户核对并提交验收。"
         )
     if task.status in {TaskStatus.PASSED, TaskStatus.WAITING_HUMAN}:
-        gates["approved"] = "需要当前版本的有效验收和认证人工批准；请求人工决定。"
+        gates["approved"] = "需要已通过的人工验收以及对该验收记录作出的人工批准。"
     if task.status is TaskStatus.APPROVED:
-        gates["done"] = "完成前仍需复核当前版本的验收和人工批准。"
+        gates["done"] = "完成前需核对人工验收和批准记录。"
     blockers = [
         {"task_id": item.task_id, "status": item.status.value}
         for item in snapshot.tasks

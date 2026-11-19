@@ -482,11 +482,8 @@ class PMAgentMemoryMiddleware(AgentMiddleware):
         if self.jobs and any(message.type == "human" for message in state["messages"]):
             project_id, thread_id = self._scope(get_config(), runtime.store)
             if self.model_profile_enabled:
-                from src.middlewares.agent.user_configurable import PMModelSelectionMiddleware
-
                 try:
-                    changes = await PMModelSelectionMiddleware().abefore_model(state, runtime) or {}
-                    profile = await self._memory_profile({**state, **changes}, runtime.store)
+                    profile = await self._memory_profile(state, runtime.store)
                 except ValueError as exc:
                     await self.jobs.observe(project_id, thread_id, state["messages"],
                                             model_profile={"mode": "unavailable"})

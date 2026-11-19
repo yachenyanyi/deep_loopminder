@@ -3,13 +3,14 @@ const $ = (s) => document.querySelector(s),
     projects: [],
     providers: [],
     project: null,
-    conversations: [],
+    expandedProjects: new Set(),
+    projectConversations: new Map(),
     conversation: null,
     busyThreads: new Set(),
     drafts: new Map(),
     busy: false,
     loadingView: false,
-    discovered: [],
+    modelFormProvider: null,
     ephemeral: false,
     localDev: false,
     viewVersion: 0,
@@ -117,10 +118,75 @@ function showError(text) {
 function msg(role, text) {
   const e = document.createElement('div');
   e.className = 'message ' + role;
-  e.textContent = text;
+  if (role === 'assistant') renderReply(e, text);
+  else e.textContent = text;
   $('#messages').append(e);
   $('#messages').scrollTop = $('#messages').scrollHeight;
   return e;
+}
+function appendInlineText(parent, text) {
+  for (const part of text.split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/)) {
+    if (!part) continue;
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      const strong = document.createElement('strong');
+      strong.textContent = part.slice(2, -2);
+      parent.append(strong);
+    } else if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      const code = document.createElement('code');
+      code.textContent = part.slice(1, -1);
+      parent.append(code);
+    } else parent.append(part);
+  }
+}
+
+function renderReply(container, text) {
+  container.classList.add('formatted');
+  let block, code;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trimStart().startsWith('```')) {
+      if (code) code = null;
+      else {
+        const pre = document.createElement('pre');
+        code = document.createElement('code');
+        pre.append(code);
+        container.append(pre);
+      }
+      block = null;
+      continue;
+    }
+    if (code) {
+      code.append(line + '\n');
+      continue;
+    }
+    if (!line.trim()) {
+      block = null;
+      continue;
+    }
+    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/);
+    const item = line.match(/^\s*(\d+\.|[-*+])\s+(.+)$/);
+    if (heading) {
+      const element = document.createElement(heading[1].length < 3 ? 'h3' : 'h4');
+      appendInlineText(element, heading[2]);
+      container.append(element);
+      block = null;
+    } else if (item) {
+      const type = item[1].endsWith('.') ? 'ol' : 'ul';
+      if (block?.localName !== type) {
+        block = document.createElement(type);
+        if (type === 'ol') block.start = parseInt(item[1], 10);
+        container.append(block);
+      }
+      const entry = document.createElement('li');
+      appendInlineText(entry, item[2]);
+      block.append(entry);
+    } else {
+      if (block?.localName !== 'p') {
+        block = document.createElement('p');
+        container.append(block);
+      } else block.append('\n');
+      appendInlineText(block, line);
+    }
+  }
 }
 async function api(path, body) {
   const r = await fetch(
@@ -144,51 +210,141 @@ async function api(path, body) {
 }
 function paintProjects() {
   const box = $('#projects');
+  const focusKey = box.contains(document.activeElement) ? document.activeElement.dataset.sidebarKey : null;
   box.replaceChildren();
-  state.projects.forEach((p) => {
-    const b = document.createElement('button');
-    b.className = 'project' + (state.project?.project_id === p.project_id ? ' active' : '');
-    b.title = p.directory || '需要绑定文件夹';
-    b.textContent = '▱  ' + p.goal;
-    b.onclick = () => openProject(p);
-    box.append(b);
-  });
-}
-function paintConversations() {
-  const box = $('#conversations');
-  box.replaceChildren();
-  for (const conversation of state.conversations) {
-    const button = document.createElement('button');
-    button.className =
-      'project' + (state.conversation?.thread_id === conversation.thread_id ? ' active' : '');
-    button.textContent = conversation.title || '新会话';
-    button.title = conversation.title || '新会话';
-    button.onclick = () => openConversation(conversation);
-    box.append(button);
+  for (const project of state.projects) {
+    const id = project.project_id;
+    const expanded = state.expandedProjects.has(id);
+    const entry = state.projectConversations.get(id);
+    const group = document.createElement('li');
+    const header = document.createElement('div');
+    header.className = 'project-header';
+    const toggle = document.createElement('button');
+    toggle.className = 'project project-toggle';
+    toggle.classList.toggle('current-project', state.project?.project_id === id);
+    toggle.dataset.sidebarKey = id;
+    toggle.title = project.goal;
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.setAttribute('aria-controls', 'sessions-' + id);
+    for (const className of ['project-chevron', 'folder-icon']) {
+      const icon = document.createElement('span');
+      icon.className = className;
+      icon.setAttribute('aria-hidden', 'true');
+      toggle.append(icon);
+    }
+    const title = document.createElement('span');
+    title.className = 'project-name';
+    title.textContent = project.goal;
+    toggle.append(title);
+    toggle.onclick = () => {
+      if (state.expandedProjects.delete(id)) paintProjects();
+      else {
+        state.expandedProjects.add(id);
+        browseProjectSessions(project);
+      }
+    };
+    header.append(toggle);
+    if (expanded && entry?.items) {
+      const add = document.createElement('button');
+      add.className = 'link project-add';
+      add.dataset.sidebarKey = id + '/new';
+      add.textContent = '＋';
+      add.title = '新建会话';
+      add.setAttribute('aria-label', '在「' + project.goal + '」中新建会话');
+      add.disabled = entry.creating;
+      add.onclick = () => newProjectConversation(project, entry);
+      header.append(add);
+    }
+    group.append(header);
+
+    const sessions = document.createElement('ul');
+    sessions.className = 'project-sessions';
+    sessions.id = 'sessions-' + id;
+    sessions.hidden = !expanded;
+    sessions.setAttribute('aria-label', project.goal + '的会话');
+    if (expanded && entry?.items?.length) {
+      for (const conversation of entry.items.slice().reverse()) {
+        const row = document.createElement('li');
+        const button = document.createElement('button');
+        button.className = 'project conversation';
+        button.dataset.sidebarKey = id + '/' + conversation.thread_id;
+        button.textContent = conversation.title || '新会话';
+        button.title = button.textContent;
+        if (state.conversation?.thread_id === conversation.thread_id) {
+          button.classList.add('active');
+          button.setAttribute('aria-current', 'true');
+        }
+        button.onclick = () => {
+          setSidebarOpen(false, true);
+          openConversation(conversation, project);
+        };
+        row.append(button);
+        sessions.append(row);
+      }
+    } else if (expanded) {
+      const item = document.createElement('li');
+      item.className = 'project-list-status';
+      item.setAttribute('role', 'status');
+      item.textContent = entry?.loading ? '正在读取会话…'
+        : entry?.error ? '会话读取失败。收起后展开可重试。' : '暂无会话';
+      sessions.append(item);
+    }
+    group.append(sessions);
+    box.append(group);
+  }
+  if (focusKey) {
+    const focus = Array.from(box.querySelectorAll('[data-sidebar-key]')).find(
+      (button) => button.dataset.sidebarKey === focusKey && !button.disabled,
+    );
+    focus?.focus({ preventScroll: true });
   }
 }
-$('#newConversation').onclick = async () => {
-  const project = state.project?.project_id,
-    view = state.viewVersion;
-  if (!project) return;
+
+function browseProjectSessions(project, reload = false) {
+  const id = project.project_id;
+  let entry = state.projectConversations.get(id);
+  if (!entry) {
+    entry = { items: null, loading: null, error: null, creating: false };
+    state.projectConversations.set(id, entry);
+  }
+  if (!entry.loading && !entry.creating && (reload || !entry.items)) {
+    entry.error = null;
+    entry.loading = api('conversations?project_id=' + encodeURIComponent(id))
+      .then((result) => { entry.items = result.conversations; })
+      .catch((error) => { entry.error = error; })
+      .finally(() => {
+        entry.loading = null;
+        paintProjects();
+      });
+  }
+  paintProjects();
+  return entry;
+}
+
+async function newProjectConversation(project, entry) {
+  const view = state.viewVersion;
   const title = prompt('会话名称（可留空）', '');
   if (title === null) return;
-  $('#newConversation').disabled = true;
+  entry.creating = true;
+  paintProjects();
   try {
-    const body = { project_id: project };
+    await entry.loading;
+    const body = { project_id: project.project_id };
     if (title.trim()) body.title = title.trim();
     const conversation = await api('conversations', body);
-    if (state.project?.project_id !== project) return;
-    state.conversations.push(conversation);
-    paintConversations();
+    entry.items.push(conversation);
     if (state.viewVersion !== view) return;
-    await openConversation(conversation);
+    state.expandedProjects.add(project.project_id);
+    setSidebarOpen(false, true);
+    await openConversation(conversation, project);
   } catch (e) {
     if (state.viewVersion === view) showError(e.message);
   } finally {
-    if (state.project?.project_id === project) $('#newConversation').disabled = false;
+    entry.creating = false;
+    paintProjects();
   }
-};
+}
+
 async function loadProjects() {
   state.projects = await api('projects');
   paintProjects();
@@ -265,6 +421,8 @@ async function watchRestoredRun(project, thread, view, previous = null) {
 }
 async function loadProject(p, conversation) {
   const view = ++state.viewVersion;
+  const projectChanged = state.project?.project_id !== p.project_id;
+  if (projectChanged) resetProjectControls();
   workerReviewPanel.replaceChildren();
   let loaded = false;
   let baseline = null;
@@ -275,13 +433,15 @@ async function loadProject(p, conversation) {
   state.busy = state.busyThreads.has(conversation.thread_id);
   state.loadingView = true;
   paintProjects();
-  paintConversations();
   $('#traceFrame').src = '/workbench/trajectory?project_id=' + encodeURIComponent(p.project_id) +
-    '&thread_id=' + encodeURIComponent(conversation.thread_id);
+    '&thread_id=' + encodeURIComponent(conversation.thread_id) + '&layout=workbench';
   $('#traceFrame').classList.remove('hidden');
   $('#traceEmpty').classList.add('hidden');
   $('#title').textContent = p.goal;
+  $('#title').title = p.goal;
   $('#projectLabel').textContent = p.directory || '项目未绑定文件夹（点击绑定）';
+  $('#projectLabel').title = p.directory || '点击绑定本机项目文件夹';
+  $('#projectLabel').disabled = !!p.directory;
   $('#message').disabled = false;
   $('#send').disabled = true;
   $('#model').disabled = true;
@@ -345,12 +505,41 @@ async function loadProject(p, conversation) {
 }
 $('#newProject').onclick = () => {
   $('#projectError').textContent = '';
-  $('#projectDialog').hidden = false;
+  $('#projectDialog').showModal();
 };
 document
   .querySelectorAll('[data-close]')
-  .forEach((b) => (b.onclick = () => ($('#' + b.dataset.close).hidden = true)));
-$('#refresh').onclick = () => loadProjects().catch((e) => showError(e.message));
+  .forEach((b) => (b.onclick = () => $('#' + b.dataset.close).close()));
+const sidebarMedia = window.matchMedia('(max-width: 860px)');
+function setSidebarOpen(open, restoreFocus = false) {
+  const app = $('.app');
+  const wasOpen = app.classList.contains('sidebar-open');
+  app.classList.toggle('sidebar-open', open);
+  $('#sidebarToggle').setAttribute('aria-expanded', String(open));
+  $('.main').inert = open;
+  if (open) $('#newProject').focus();
+  if (!open && wasOpen && restoreFocus && sidebarMedia.matches) $('#sidebarToggle').focus();
+}
+$('#sidebarToggle').onclick = () => setSidebarOpen(true);
+$('#sidebarClose').onclick = () => setSidebarOpen(false, true);
+$('#sidebarBackdrop').onclick = () => setSidebarOpen(false, true);
+sidebarMedia.addEventListener('change', () => setSidebarOpen(false));
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || document.querySelector('dialog[open]') ||
+      !$('.app').classList.contains('sidebar-open')) return;
+  event.preventDefault();
+  setSidebarOpen(false, true);
+});
+$('#refresh').onclick = async () => {
+  try {
+    await loadProjects();
+    for (const project of state.projects) {
+      if (state.expandedProjects.has(project.project_id)) browseProjectSessions(project, true);
+    }
+  } catch (e) {
+    showError(e.message);
+  }
+};
 $('#chooseFolder').onclick = async () => {
   try {
     const x = await api('select-folder', {});
@@ -362,7 +551,8 @@ $('#chooseFolder').onclick = async () => {
 $('#createProject').onclick = async () => {
   try {
     const p = await api('projects', { directory: $('#directory').value, goal: $('#goal').value });
-    $('#projectDialog').hidden = true;
+    $('#projectDialog').close();
+    setSidebarOpen(false, true);
     await loadProjects();
     await openProject(p);
   } catch (e) {
@@ -370,7 +560,8 @@ $('#createProject').onclick = async () => {
       await loadProjects();
       const p = state.projects.find((x) => x.project_id === e.project_id);
       if (p) {
-        $('#projectDialog').hidden = true;
+        $('#projectDialog').close();
+        setSidebarOpen(false, true);
         await openProject(p);
         return;
       }
@@ -379,26 +570,37 @@ $('#createProject').onclick = async () => {
     $('#projectError').textContent = e.message;
   }
 };
+function settingsFeedback(id, text, error = false) {
+  const feedback = $(id);
+  feedback.classList.toggle('error', error);
+  feedback.textContent = text;
+}
 $('#saveProvider').onclick = async () => {
   try {
-    await api('providers', {
-      provider_id: $('#providerId').value,
+    const saved = await api('providers', {
+      provider_id: $('#providerId').value.trim(),
+      name: $('#providerName').value.trim() || undefined,
       base_url: $('#baseUrl').value,
       token: $('#token').value || undefined,
     });
-    $('#token').value = '';
     await loadProviders();
-    $('#settingsError').textContent = '已保存';
+    loadProviderForm(saved.provider_id);
+    await refreshDefaults();
+    settingsFeedback('#settingsError', '服务已保存');
   } catch (e) {
-    $('#settingsError').textContent = e.message;
+    settingsFeedback('#settingsError', e.message, true);
   }
 };
 
 $('#model').onchange = () => paintEffort();
-document.querySelectorAll('.tab').forEach(
+document.querySelectorAll('[data-tab]').forEach(
   (t) =>
     (t.onclick = () => {
-      document.querySelectorAll('.tab').forEach((x) => x.classList.remove('active'));
+      document.querySelectorAll('[data-tab]').forEach((x) => {
+        x.classList.toggle('active', x === t);
+        if (x === t) x.setAttribute('aria-current', 'page');
+        else x.removeAttribute('aria-current');
+      });
       t.classList.add('active');
       $('#chatView').hidden = t.dataset.tab !== 'chat';
       $('#activityView').hidden = t.dataset.tab !== 'activity';
@@ -529,22 +731,47 @@ async function refreshDefaults() {
         ),
       ),
   );
-  if (current)
-    select.value = JSON.stringify({ provider: current.provider_id, model: current.model_id });
+  if (current) {
+    const saved = JSON.stringify({ provider: current.provider_id, model: current.model_id });
+    if (![...select.options].some((option) => option.value === saved))
+      select.add(new Option(current.provider_id + ' · ' + current.model_id + '（当前不可用）', saved));
+    select.value = saved;
+  }
   defaultEfforts();
-  if (current?.reasoning_effort) $('#defaultEffort').value = current.reasoning_effort;
+  if (current?.reasoning_effort) {
+    const effort = $('#defaultEffort');
+    if (![...effort.options].some((option) => option.value === current.reasoning_effort))
+      effort.add(new Option(current.reasoning_effort + '（当前不可用）', current.reasoning_effort));
+    effort.value = current.reasoning_effort;
+  }
+  return current;
 }
 $('#defaultModel').onchange = defaultEfforts;
 async function loadBaseSettings() {
+  const previousProvider = $('#providerSelect').value;
   try {
-    await refreshDefaults();
+    await loadProviders();
+    loadProviderForm(previousProvider || state.providers[0]?.provider_id);
+  } catch (e) {
+    settingsFeedback('#settingsError', e.message, true);
+  }
+  try {
+    const current = await refreshDefaults();
+    if (!previousProvider && current && state.providers.some((entry) => entry.provider_id === current.provider_id))
+      loadProviderForm(current.provider_id);
+  } catch (e) {
+    settingsFeedback('#defaultStatus', e.message, true);
+  }
+  try {
     const c = await api('clef');
     $('#clefAccount').value = c.account_id || '';
+    $('#clefToken').value = '';
     $('#clefAccount').placeholder = c.account_configured
       ? '已配置，留空保持不变'
       : 'Cloudflare Account ID';
+    $('#clefToken').placeholder = c.token_configured ? '已配置，留空保持不变' : '输入 API 令牌';
   } catch (e) {
-    $('#settingsError').textContent = e.message;
+    settingsFeedback('#clefStatus', e.message, true);
   }
 }
 $('#saveDefault').onclick = async () => {
@@ -556,9 +783,9 @@ $('#saveDefault').onclick = async () => {
       model_id: s.model,
       reasoning_effort: $('#defaultEffort').value || null,
     });
-    $('#settingsError').textContent = '默认模型已保存';
+    settingsFeedback('#defaultStatus', '默认模型已保存');
   } catch (e) {
-    $('#settingsError').textContent = e.message;
+    settingsFeedback('#defaultStatus', e.message, true);
   }
 };
 $('#saveClef').onclick = async () => {
@@ -568,67 +795,115 @@ $('#saveClef').onclick = async () => {
       token: $('#clefToken').value || undefined,
     });
     $('#clefToken').value = '';
-    $('#settingsError').textContent = 'Clef 设置已保存';
+    settingsFeedback('#clefStatus', 'Clef 设置已保存');
   } catch (e) {
-    $('#settingsError').textContent = e.message;
+    settingsFeedback('#clefStatus', e.message, true);
   }
 };
-$('#discover').onclick = async () => {
-  try {
-    const p = $('#providerId').value;
-    state.discovered = (await api('providers/discover', { provider_id: p })).models;
-    const previous = state.providers.find((x) => x.provider_id === p)?.models || [];
+function paintProviderModels(provider, models) {
+    state.modelFormProvider = provider;
     const box = $('#modelList');
     box.replaceChildren();
-    state.discovered.forEach((id) => {
+    models.forEach((model) => {
+      const id = model.id;
       const row = document.createElement('div'),
         label = document.createElement('label'),
         check = document.createElement('input'),
-        levels = document.createElement('input'),
-        old = previous.find((x) => x.id === id);
-      row.className = 'field';
+        levels = document.createElement('input');
+      row.className = 'model-row';
       check.type = 'checkbox';
       check.dataset.model = id;
-      check.checked = !!old?.enabled;
+      check.checked = !!model.enabled;
       levels.placeholder = '思考等级，例如 low, medium, high';
-      levels.value = (old?.reasoning_levels || []).join(', ');
+      levels.setAttribute('aria-label', id + ' 的思考等级');
+      levels.value = (model.reasoning_levels || []).join(', ');
       levels.dataset.levels = id;
       label.append(check, document.createTextNode(' ' + id));
       row.append(label, levels);
       box.append(row);
     });
-    $('#settingsError').textContent = '请选择启用的模型';
+    $('#modelActions').hidden = !models.length;
+}
+function loadProviderForm(providerId) {
+  const select = $('#providerSelect');
+  const provider = state.providers.find((entry) => entry.provider_id === providerId);
+  select.replaceChildren(new Option('新增模型服务', ''));
+  state.providers.forEach((entry) => select.add(
+    new Option(entry.name === entry.provider_id ? entry.provider_id : entry.name + ' · ' + entry.provider_id,
+      entry.provider_id),
+  ));
+  select.value = provider?.provider_id || '';
+  $('#providerId').value = provider?.provider_id || '';
+  $('#providerName').value = provider?.name || '';
+  $('#baseUrl').value = provider?.base_url || '';
+  $('#token').value = '';
+  paintProviderModels(provider?.provider_id || null, provider?.models || []);
+}
+function readProviderModels() {
+  const efforts = new Map(
+    Array.from(document.querySelectorAll('#modelList input[data-levels]'),
+      (input) => [input.dataset.levels, input.value]),
+  );
+  return Array.from(document.querySelectorAll('#modelList input[type=checkbox]'), (checkbox) => {
+    const levels = efforts.get(checkbox.dataset.model).split(',').map((value) => value.trim()).filter(Boolean);
+    return { id: checkbox.dataset.model, enabled: checkbox.checked, reasoning_levels: levels.length ? levels : null };
+  });
+}
+$('#providerSelect').onchange = () => {
+  loadProviderForm($('#providerSelect').value);
+  settingsFeedback('#settingsError', '');
+};
+$('#discover').onclick = async () => {
+  const provider = $('#providerId').value.trim();
+  settingsFeedback('#settingsError', '');
+  try {
+    const saved = state.providers.find((entry) => entry.provider_id === provider);
+    if (!saved || $('#baseUrl').value.trim().replace(/\/+$/, '') !== saved.base_url || $('#token').value)
+      throw Error('请先保存模型服务，再获取模型');
+    const { models } = await api('providers/discover', { provider_id: provider });
+    if ($('#providerId').value.trim() !== provider) return;
+    const current = state.modelFormProvider === provider ? readProviderModels() : saved.models || [];
+    const known = new Map(current.map((model) => [model.id, model]));
+    for (const id of models) if (!known.has(id)) known.set(id, { id, enabled: false });
+    paintProviderModels(provider, [...known.values()]);
+    settingsFeedback('#settingsError', models.length ? '已获取模型，可编辑后保存' : '服务未返回可用模型。');
   } catch (e) {
-    $('#settingsError').textContent = e.message;
+    if ($('#providerId').value === provider) {
+      const saved = state.providers.find((entry) => entry.provider_id === provider);
+      if (saved?.models?.length) {
+        loadProviderForm(provider);
+        settingsFeedback(
+          '#settingsError',
+          '远程模型列表获取失败，已保留 settings.json 中的模型，可直接编辑和保存。',
+        );
+      } else {
+        settingsFeedback('#settingsError', e.message, true);
+      }
+    }
   }
 };
 $('#saveModels').onclick = async () => {
   try {
-    const id = $('#providerId').value,
+    const id = $('#providerId').value.trim(),
       p = state.providers.find((x) => x.provider_id === id);
     if (!p) throw Error('请先保存模型服务');
-    const checked = [...$('#modelList input[type=checkbox]')];
-    if (!checked.length) throw Error('请先获取模型');
-    const models = checked.map((c) => {
-      const levels = [...$('#modelList input[data-levels]')]
-        .find((x) => x.dataset.levels === c.dataset.model)
-        .value.split(',')
-        .map((x) => x.trim())
-        .filter(Boolean);
-      return {
-        id: c.dataset.model,
-        enabled: c.checked,
-        reasoning_levels: levels.length ? levels : null,
-      };
-    });
+    if (state.modelFormProvider !== id) throw Error('请先选择模型服务');
+    const models = readProviderModels();
+    if (!models.length) throw Error('当前服务没有已配置模型，请先获取模型');
     await api('providers', { provider_id: id, base_url: p.base_url, name: p.name, models });
     await loadProviders();
     await refreshDefaults();
-    $('#settingsError').textContent = '模型选择已保存';
+    settingsFeedback('#settingsError', '模型选择已保存');
   } catch (e) {
-    $('#settingsError').textContent = e.message;
+    settingsFeedback('#settingsError', e.message, true);
   }
 };
+$('#providerId').addEventListener('input', () => {
+  const id = $('#providerId').value.trim();
+  if (state.modelFormProvider === id) return;
+  const provider = state.providers.find((entry) => entry.provider_id === id);
+  paintProviderModels(provider?.provider_id || null, provider?.models || []);
+});
 $('#projectLabel').onclick = async () => {
   if (!state.project || state.project.directory) return;
   const project = state.project.project_id,
@@ -640,7 +915,7 @@ $('#projectLabel').onclick = async () => {
     await loadProjects();
     if (state.viewVersion !== view) return;
     const updated = state.projects.find((p) => p.project_id === project);
-    if (updated) await openProject(updated);
+    if (updated) await openConversation(state.conversation, updated);
   } catch (e) {
     if (state.viewVersion === view) showError(e.message);
   }
@@ -654,7 +929,7 @@ $('#reconcileButton').before(candidateAgent);
 const attachButton = document.createElement('button');
 attachButton.className = 'secondary hidden';
 attachButton.textContent = '关联已找到的 Run';
-$('#reconcilePanel').append(attachButton);
+$('#reconcileControls').append(attachButton);
 $('#reconcileButton').onclick = async () => {
   const out = $('#reconcileResult'),
     task = $('#reconcileTask').value.trim();
@@ -770,6 +1045,8 @@ $('#usageButton').onclick = async () => {
 };
 function resetProjectControls() {
   $('#reconcilePanel').classList.remove('hidden');
+  $('#reconcilePanel').open = false;
+  $('#reconcileTask').value = '';
   $('#reconcileResult').textContent = '';
   $('#usageResult').textContent = '';
   candidateAgent.value = '';
@@ -787,7 +1064,7 @@ const taskStatusResult = document.createElement('div');
 taskStatusResult.className = 'notice';
 taskStatusResult.style.whiteSpace = 'pre-wrap';
 const workerRecovery = document.createElement('div');
-$('#reconcilePanel').append(taskStatusButton, taskStatusResult, workerRecovery);
+$('#reconcileControls').append(taskStatusButton, taskStatusResult, workerRecovery);
 taskStatusButton.onclick = async () => {
   if (!state.project) return;
   const project = state.project.project_id,
@@ -801,7 +1078,7 @@ taskStatusButton.onclick = async () => {
       ? data.tasks
           .map((t) => {
             const d = t.discussion,
-              r = t.independent_codex_review;
+              r = t.independent_review;
             return (
               t.task_id +
               ' · ' +
@@ -826,7 +1103,7 @@ taskStatusButton.onclick = async () => {
               (t.validation?.validation_state || '尚无当前验收状态') +
               '；人工决定：' +
               (t.validation?.approval_state || 'not_recorded') +
-              '；独立 Codex 审查：' +
+              '；独立审查：' +
               (r?.status || '未知') +
               (r?.summary ? '（' + r.summary + '）' : '')
             );
@@ -879,23 +1156,20 @@ taskStatusButton.onclick = async () => {
 const workerSection = document.createElement('section');
 workerSection.innerHTML =
   '<h2>开发负责人</h2><label class="field"><input id="workerEnabled" type="checkbox" style="display:inline;width:auto"> 启用 Claude 负责人</label><label class="field">Node 可执行文件（可选）<input id="workerNode" placeholder="node"></label><label class="field">负责人 API 地址<input id="workerEndpoint" placeholder="https://openrouter.ai/api"></label><label class="field">负责人模型<input id="workerModel" placeholder="模型名称"></label><label class="field">ACP 适配器目录<input id="workerRuntime" placeholder="本机绝对路径"></label><label class="field">负责人 API 凭据<input id="workerToken" type="password" autocomplete="off" placeholder="留空保留已有凭据"></label><div class="notice">PM 专属服务的凭据保存在 .env；保存后重启服务加载。</div><button class="secondary" id="saveWorker">保存负责人设置</button><div id="workerStatus" class="notice"></div>';
-$('#settingsError').before(workerSection);
+$('#collaborationSettings').append(workerSection);
 async function loadWorkerSettings() {
   try {
     const data = await api('worker-settings'),
-      v = data.settings,
-      custom = data.source === 'custom';
-    $('#workerEnabled').checked = custom || !!v.enabled;
-    $('#workerEnabled').disabled = custom;
-    $('#saveWorker').disabled = custom;
+      v = data.settings;
+    workerSection.hidden = data.source === 'custom';
+    if (workerSection.hidden) return;
+    $('#workerEnabled').checked = !!v.enabled;
     $('#workerNode').value = v.node || '';
     $('#workerEndpoint').value = v.endpoint || '';
     $('#workerModel').value = v.model || '';
     $('#workerRuntime').value = v.runtime_dir || '';
     $('#workerToken').value = '';
-    $('#workerStatus').textContent = custom
-      ? '此负责人由下方 PM 运行设置中的高级 Worker 配置管理；实际连接状态以运行情况为准。'
-      : data.restart_required
+    $('#workerStatus').textContent = data.restart_required
         ? '设置已更改，重启服务后生效。'
         : data.available
           ? '负责人已连接。'
@@ -924,24 +1198,21 @@ $('#saveWorker').onclick = async () => {
 };
 const reviewerSection = document.createElement('section');
 reviewerSection.innerHTML =
-  '<h2>独立 Codex 审查</h2><label class="field"><input id="reviewerEnabled" type="checkbox" style="display:inline;width:auto"> 启用 Codex 审查者</label><label class="field">Node 可执行文件（可选）<input id="reviewerNode" placeholder="node"></label><label class="field">Codex Responses API 地址<input id="reviewerEndpoint" placeholder="https://api.openai.com/v1"></label><label class="field">审查模型<input id="reviewerModel" placeholder="gpt-6-luna"></label><label class="field">ACP 适配器目录<input id="reviewerRuntime" placeholder="本机绝对路径"></label><label class="field">API 凭据<input id="reviewerToken" type="password" autocomplete="off" placeholder="留空保留已有凭据"></label><div class="notice">审查使用单独的只读 Codex 会话；所选服务需要支持 Responses API。保存后重启服务。</div><button class="secondary" id="saveReviewer">保存审查设置</button><div id="reviewerStatus" class="notice"></div>';
-$('#settingsError').before(reviewerSection);
+  '<h2>独立审查者</h2><label class="field"><input id="reviewerEnabled" type="checkbox" style="display:inline;width:auto"> 启用审查者</label><label class="field">Node 可执行文件（可选）<input id="reviewerNode" placeholder="node"></label><label class="field">Agent API 地址<input id="reviewerEndpoint" placeholder="https://api.openai.com/v1"></label><label class="field">审查模型<input id="reviewerModel" placeholder="模型名称"></label><label class="field">ACP 适配器目录<input id="reviewerRuntime" placeholder="本机绝对路径"></label><label class="field">API 凭据<input id="reviewerToken" type="password" autocomplete="off" placeholder="留空保留已有凭据"></label><div class="notice">审查者使用单独的只读 Worker 会话。保存后重启服务。</div><button class="secondary" id="saveReviewer">保存审查设置</button><div id="reviewerStatus" class="notice"></div>';
+$('#collaborationSettings').append(reviewerSection);
 async function loadReviewerSettings() {
   try {
     const data = await api('worker-settings?provider_id=codex'),
-      v = data.settings,
-      custom = data.source === 'custom';
-    $('#reviewerEnabled').checked = custom || !!v.enabled;
-    $('#reviewerEnabled').disabled = custom;
-    $('#saveReviewer').disabled = custom;
+      v = data.settings;
+    reviewerSection.hidden = data.source === 'custom';
+    if (reviewerSection.hidden) return;
+    $('#reviewerEnabled').checked = !!v.enabled;
     $('#reviewerNode').value = v.node || '';
     $('#reviewerEndpoint').value = v.endpoint || '';
     $('#reviewerModel').value = v.model || '';
     $('#reviewerRuntime').value = v.runtime_dir || '';
     $('#reviewerToken').value = '';
-    $('#reviewerStatus').textContent = custom
-      ? '此审查者由下方 PM 运行设置中的高级 Worker 配置管理；实际连接状态以运行情况为准。'
-      : data.restart_required
+    $('#reviewerStatus').textContent = data.restart_required
         ? '设置已更改，重启服务后生效。'
         : data.available
           ? '审查者已连接。'
@@ -974,11 +1245,11 @@ humanButton.className = 'secondary';
 humanButton.textContent = '人工验收与批准';
 const humanPanel = document.createElement('div');
 humanPanel.className = 'notice';
-$('#reconcilePanel').append(humanButton, humanPanel);
+$('#reconcileControls').append(humanButton, humanPanel);
 const modeSection = document.createElement('section');
 modeSection.innerHTML =
-  '<h2>商讨模式</h2><label class="field">Worker<select id="modeProvider"><option value="claude">Claude 负责人</option><option value="codex">Codex 审查者</option></select></label><label class="field">项目默认模式<select id="modeChoice"></select></label><div class="notice" id="modeStatus"></div><div class="notice">保存的是目标模式；每次商讨会记录适配器实际回报的模式。所选模式可能允许写入，商讨仍不能替代双方确认与 Clef 开发门禁。</div><div class="notice" id="modeWriteWarning"></div><button class="secondary" id="saveMode">保存项目默认模式</button>';
-$('#settingsError').before(modeSection);
+  '<h2>商讨模式</h2><label class="field">Worker<select id="modeProvider"><option value="claude">开发负责人</option><option value="codex">审查者</option></select></label><label class="field">项目默认模式<select id="modeChoice"></select></label><div class="notice" id="modeStatus"></div><div class="notice">保存的是目标模式；每次商讨会记录适配器实际回报的模式。所选模式可能允许写入，商讨仍不能替代双方确认与 Clef 开发门禁。</div><div class="notice" id="modeWriteWarning"></div><button class="secondary" id="saveMode">保存项目默认模式</button>';
+$('#collaborationSettings').append(modeSection);
 const loadModes = async () => {
   const project = state.project?.project_id,
     provider = $('#modeProvider').value,
@@ -1060,7 +1331,7 @@ discussionButton.textContent = '查看商讨记录';
 const discussionPanel = document.createElement('div');
 discussionPanel.className = 'notice';
 discussionPanel.style.whiteSpace = 'pre-wrap';
-$('#reconcilePanel').append(discussionButton, discussionPanel);
+$('#reconcileControls').append(discussionButton, discussionPanel);
 discussionButton.onclick = async () => {
   const taskId = $('#reconcileTask').value.trim(),
     project = state.project?.project_id,
@@ -1132,6 +1403,22 @@ humanButton.onclick = async () => {
     const title = document.createElement('p');
     title.textContent = task.title + '：勾选您确认通过的验收标准，未勾选项将记录为未通过。';
     humanPanel.append(title);
+    const recorded = task.validation?.validated_criteria;
+    if (recorded && (Object.keys(recorded).length !== task.acceptance_criteria.length ||
+        task.acceptance_criteria.some((criterion) => !Object.hasOwn(recorded, criterion)))) {
+      const previous = document.createElement('p');
+      previous.textContent = '已保存的验收对应当时的标准：' +
+        Object.entries(recorded).map(([criterion, passed]) => (passed ? '通过 ' : '未通过 ') + criterion).join('、');
+      humanPanel.append(previous);
+    }
+    const review = task.independent_review;
+    const reviewLine = document.createElement('p');
+    const reviewLabels = { pass: '通过', fail: '未通过', unknown: '结论未知' };
+    const reviewStatus = review?.review_id
+      ? reviewLabels[review.status]
+      : '暂无可核验结论';
+    reviewLine.textContent = '独立审查：' + reviewStatus + (review?.summary ? '。' + review.summary : '');
+    humanPanel.append(reviewLine);
     const checks = task.acceptance_criteria.map((criterion) => {
       const label = document.createElement('label'),
         check = document.createElement('input');
@@ -1193,7 +1480,7 @@ humanButton.onclick = async () => {
 const workspaceSection = document.createElement('section');
 workspaceSection.innerHTML =
   '<h2>验收与轨迹</h2><div class="notice">验收和批准由本机用户分别确认，不能关闭。</div><label class="field"><input id="traceEnabled" type="checkbox" style="display:inline;width:auto"> 记录后续运行轨迹</label><label class="field">PM 压缩启动阈值（token，默认 300000）<input id="compactionThreshold" type="number" min="1000"></label><label class="field">PM 上下文上限（token，默认 500000）<input id="contextLimit" type="number" min="1000"></label><div class="notice">阈值留空时沿用已保存值或默认值；保存后重启服务生效；已有轨迹保留。</div><button class="secondary" id="saveWorkspace">保存轨迹与压缩设置</button><div id="workspaceStatus" class="notice"></div>';
-$('#settingsError').before(workspaceSection);
+$('#runtimeSettings').append(workspaceSection);
 async function loadWorkspaceSettings() {
   try {
     const value = await api('workspace-settings');
@@ -1226,7 +1513,7 @@ memoryCheck.textContent = '核对记忆写回';
 memoryFix.textContent = '解除未发生写入的阻断';
 memoryStatus.className = 'notice';
 memoryStatus.style.whiteSpace = 'pre-wrap';
-$('#reconcilePanel').append(memoryCheck, memoryFix, memoryStatus);
+$('#reconcileControls').append(memoryCheck, memoryFix, memoryStatus);
 async function memoryRecovery(reconcile) {
   const project = state.project?.project_id,
     view = state.viewVersion;
@@ -1398,42 +1685,32 @@ async function checkPending() {
   $('#messages').scrollTop = $('#messages').scrollHeight;
 }
 async function openProject(p) {
-  const view = ++state.viewVersion;
-  resetProjectControls();
-  workerReviewPanel.replaceChildren();
-  clearPending();
-  if (state.conversation) state.drafts.set(state.conversation.thread_id, $('#message').value);
-  $('#message').value = '';
-  state.project = p;
-  state.conversation = null;
-  state.conversations = [];
-  state.loadingView = true;
-  $('#message').disabled = true;
-  $('#send').disabled = true;
-  $('#model').disabled = true;
-  $('#effort').disabled = true;
-  $('#newConversation').disabled = true;
-  $('#messages').replaceChildren();
-  paintProjects();
-  paintConversations();
+  const view = state.viewVersion;
+  state.expandedProjects.add(p.project_id);
+  const entry = browseProjectSessions(p);
   try {
-    const result = await api('conversations?project_id=' + encodeURIComponent(p.project_id));
+    await entry.loading;
     if (state.viewVersion !== view) return;
-    state.conversations = result.conversations;
-    if (!state.conversations.length) {
-      const conversation = await api('conversations', { project_id: p.project_id });
-      if (state.viewVersion !== view) return;
-      state.conversations.push(conversation);
+    if (!entry.items) throw entry.error;
+    if (!entry.items.length) {
+      entry.creating = true;
+      paintProjects();
+      try {
+        entry.items.push(await api('conversations', { project_id: p.project_id }));
+      } finally {
+        entry.creating = false;
+        paintProjects();
+      }
     }
-    $('#newConversation').disabled = false;
-    await openConversation(state.conversations[0]);
+    if (state.viewVersion !== view) return;
+    const selected = entry.items.find((conversation) => conversation.thread_id === state.conversation?.thread_id);
+    await openConversation(selected || entry.items[0], p);
   } catch (e) {
     if (state.viewVersion === view) showError('无法加载项目会话：' + e.message);
   }
 }
-async function openConversation(conversation) {
-  const project = state.project;
-  if (!project) return;
+async function openConversation(conversation, project = state.project) {
+  if (!project || !conversation) return;
   clearPending();
   await loadProject(project, conversation);
   if (state.conversation?.thread_id === conversation.thread_id && !state.loadingView) {
@@ -1450,7 +1727,7 @@ $('#send').onclick = send;
 const memoryRollback = document.createElement('button');
 memoryRollback.className = 'secondary';
 memoryRollback.textContent = '撤销未完成的记忆写回';
-$('#reconcilePanel').append(memoryRollback);
+$('#reconcileControls').append(memoryRollback);
 memoryRollback.onclick = async () => {
   const project = state.project?.project_id,
     view = state.viewVersion;
@@ -1495,18 +1772,33 @@ runtimeSection.innerHTML = `
   <label class="field">PM 数据目录（可选）<input id="pmDataDir"></label>
   <label class="field">独立轨迹目录（可选）<input id="pmTraceDir"></label>
   <label class="field"><input id="pmTraceStrict" type="checkbox" style="display:inline;width:auto"> 轨迹记录失败时停止本次运行</label>
-  <label class="field">额外 Worker 配置（JSON 数组）<textarea id="pmExtraWorkers" rows="4"></textarea></label>
-  <label class="field">PM 子代理角色配置（JSON 数组）<textarea id="pmExtraAgents" rows="4"></textarea></label>
-  <div class="notice">Worker 的 env 值保存后转入 .env；再次打开时只显示环境变量引用。</div>
   <button class="secondary" id="savePmRuntime">保存 PM 运行设置</button>
   <div id="pmRuntimeStatus" class="notice"></div>`;
-$('#settingsError').before(runtimeSection);
+$('#runtimeSettings').append(runtimeSection);
+
+const workerConfigSection = document.createElement('section');
+workerConfigSection.hidden = true;
+workerConfigSection.innerHTML = `
+  <h2>自定义 Worker 与角色</h2>
+  <label class="field">Worker 配置（JSON 数组）<textarea id="pmExtraWorkers" rows="6"></textarea></label>
+  <label class="field">PM 子代理角色配置（JSON 数组）<textarea id="pmExtraAgents" rows="4"></textarea></label>
+  <div class="notice">此处显示已保存的配置。同一 Worker 已启用托管设置时，以托管设置为准。环境变量只显示 .env 引用。</div>
+  <button class="secondary" id="saveWorkerConfig">保存自定义 Worker 与角色</button>
+  <div id="workerConfigStatus" class="notice" role="status"></div>`;
+modeSection.before(workerConfigSection);
+
+function paintWorkerConfig(data) {
+  workerConfigSection.hidden = false;
+  $('#pmExtraWorkers').value = JSON.stringify(data.acp_workers || [], null, 2);
+  $('#pmExtraAgents').value = JSON.stringify(data.acp_subagents || [], null, 2);
+}
 
 async function loadRuntimeSettings() {
   try {
     const data = await api('runtime-settings');
     runtimeSection.hidden = false;
     $('#pmDatabase').value = '';
+    $('#pmDatabase').placeholder = data.database.configured ? '已配置，留空保持不变' : '输入 PostgreSQL 连接地址';
     $('#pmDatabaseState').textContent = data.database.store_ready
       ? '数据库已连接。'
       : '数据库未连接；请填写连接地址、保存并重启 PM 服务。';
@@ -1519,8 +1811,7 @@ async function loadRuntimeSettings() {
     $('#pmDataDir').value = data.data_dir || '';
     $('#pmTraceDir').value = data.trajectory_directory || '';
     $('#pmTraceStrict').checked = data.trajectory_stop_on_error;
-    $('#pmExtraWorkers').value = JSON.stringify(data.acp_workers || [], null, 2);
-    $('#pmExtraAgents').value = JSON.stringify(data.acp_subagents || [], null, 2);
+    paintWorkerConfig(data);
     $('#pmRuntimeStatus').textContent = '';
   } catch (e) {
     runtimeSection.hidden = e.status === 404;
@@ -1542,23 +1833,49 @@ $('#savePmRuntime').onclick = async () => {
       data_dir: $('#pmDataDir').value.trim(),
       trajectory_directory: $('#pmTraceDir').value.trim(),
       trajectory_stop_on_error: $('#pmTraceStrict').checked,
-      acp_workers: JSON.parse($('#pmExtraWorkers').value || '[]'),
-      acp_subagents: JSON.parse($('#pmExtraAgents').value || '[]'),
     };
     if ($('#pmDatabase').value) body.database_uri = $('#pmDatabase').value;
     await api('runtime-settings', body);
     $('#pmDatabase').value = '';
-    await loadRuntimeSettings();
+    if (body.database_uri) $('#pmDatabase').placeholder = '已配置，留空保持不变';
     $('#pmRuntimeStatus').textContent = '已保存；重启 PM 服务后生效。';
   } catch (e) {
     $('#pmRuntimeStatus').textContent = e.message;
   }
 };
 
+$('#saveWorkerConfig').onclick = async () => {
+  try {
+    await api('runtime-settings', {
+      acp_workers: JSON.parse($('#pmExtraWorkers').value || '[]'),
+      acp_subagents: JSON.parse($('#pmExtraAgents').value || '[]'),
+    });
+    paintWorkerConfig(await api('runtime-settings'));
+    await Promise.all([loadWorkerSettings(), loadReviewerSettings()]);
+    settingsFeedback('#workerConfigStatus', '已保存，重启 PM 服务后生效。');
+  } catch (e) {
+    settingsFeedback('#workerConfigStatus', e.message, true);
+  }
+};
+
 // One entry point opens all settings; each section reports its own load error.
+document.querySelectorAll('[data-settings]').forEach((button) => {
+  button.onclick = () => {
+    document.querySelectorAll('[data-settings]').forEach((item) => {
+      item.classList.toggle('active', item === button);
+      item.setAttribute('aria-pressed', String(item === button));
+    });
+    document.querySelectorAll('[data-settings-panel]').forEach((panel) => {
+      panel.hidden = panel.dataset.settingsPanel !== button.dataset.settings;
+    });
+    $('#settingsContent').scrollTop = 0;
+  };
+});
 $('#settingsButton').onclick = async () => {
   $('#settingsError').textContent = '';
-  $('#settingsDialog').hidden = false;
+  $('#defaultStatus').textContent = '';
+  $('#clefStatus').textContent = '';
+  $('#settingsDialog').showModal();
   await loadRuntimeSettings();
   await Promise.all([
     loadBaseSettings(),

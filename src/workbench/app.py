@@ -88,6 +88,13 @@ async def javascript(request):
     return FileResponse(_ROOT / "app.js", media_type="text/javascript", headers={"Cache-Control": "no-store"})
 
 
+async def stylesheet(request):
+    """Serve the local workbench styles."""
+    if not _local(request):
+        return _forbidden()
+    return FileResponse(_ROOT / "workbench.css", media_type="text/css", headers={"Cache-Control": "no-store"})
+
+
 async def projects(request):
     """List projects and their bound directories."""
     if not _local(request):
@@ -373,7 +380,7 @@ async def project_status(request):
                             "turns": turns} if decision or turns else None),
             "dispatch": dict(intent.value) if intent else None,
             "validation": validation.get(task.task_id),
-            "independent_codex_review": await workflow.codex_review_status(project_id, task.task_id),
+            "independent_review": await workflow.independent_review_status(project_id, task.task_id),
         })
     await reconcile_verified_jobs(store, project_id)
     quarantines = await store.asearch(("deep_loopminder", "project_worker_quarantine", project_id), limit=100)
@@ -459,8 +466,38 @@ async def stop_unconfirmed_worker(request):
     return JSONResponse({"status": "confirmed_stopped"})
 
 
+async def _human_review_notice(workflow, project_id, task, delivery=None):
+    """Show review evidence without making it a condition of human acceptance."""
+    review = await workflow.independent_review_status(project_id, task.task_id, delivery=delivery)
+    if review.get("review_id"):
+        status = {"pass": "通过", "fail": "未通过", "unknown": "结论未知"}[review["status"]]
+        summary = TrajectoryRecorder.clean_public(review.get("summary") or "")[:500]
+        return f"独立审查：{status}" + (f"。{summary}" if summary else "")
+    if delivery is None:
+        return "独立审查：当前交付没有可核验的审查结论。"
+    binding = await workflow.review_delivery_binding(project_id, task, delivery, exact=False)
+    if binding:
+        if not binding.get("result_ref"):
+            return "独立审查：已发起，结果尚未领取。"
+        return "独立审查：当前交付没有可核验的审查结论。"
+    intent = await workflow.store.aget(("deep_loopminder", "project_dispatch_intents", project_id), task.task_id)
+    if (intent and intent.value.get("phase") == "review" and intent.value.get("status") == "pending"
+            and intent.value.get("expected_review_subject") == delivery["subject"]):
+        return "独立审查：派工结果尚未确认。"
+    return "独立审查：当前交付未发起审查。"
+
+
+def _approval_directory_notice(validation, current):
+    reviewed = validation.get("directory_digest")
+    if not reviewed or not current:
+        return "\n无法核对项目目录自验收后是否变化，请结合当前交付判断。"
+    if reviewed != current:
+        return "\n项目目录自验收后有变化，系统无法判断是否影响本任务。"
+    return ""
+
+
 async def human_validation(request):
-    """Record explicit local-human acceptance separately from Codex review."""
+    """Record explicit local-human acceptance of the current delivery."""
     if not _local(request):
         return _forbidden()
     data = await request.json()
@@ -477,34 +514,27 @@ async def human_validation(request):
         _, task = await workflow.task(project_id, task_id)
         if set(criteria) != set(task.acceptance_criteria) or any(type(value) is not bool for value in criteria.values()):
             raise ValueError("必须逐条填写当前验收标准")
-        initial_review = await workflow.codex_review_status(project_id, task_id)
-        if initial_review.get("status") != "pass":
-            raise ValueError("当前交付缺少通过的独立 Codex 审查")
+        delivery = await workflow.delivery_subject(project_id, task_id, allow_unreadable_directory=True)
+        review_notice = await _human_review_notice(workflow, project_id, task, delivery)
         lines = [f"{'通过' if criteria[item] else '未通过'}：{TrajectoryRecorder.clean_public(item)}" for item in task.acceptance_criteria]
-        confirmed = await asyncio.to_thread(_confirm_local, "确认任务验收", f"任务：{TrajectoryRecorder.clean_public(task.title)}\n\n" + "\n".join(lines) + "\n\n确认记录以上验收结果？这一步不是人工批准。")
+        confirmed = await asyncio.to_thread(
+            _confirm_local, "确认任务验收",
+            f"任务：{TrajectoryRecorder.clean_public(task.title)}\n{review_notice}\n\n"
+            + "\n".join(lines) + "\n\n确认记录以上逐项验收结果？",
+        )
         if not confirmed:
             return JSONResponse({"status": "cancelled"})
         async with project_write_lock(project_id):
             _, current = await workflow.task(project_id, task_id)
-            if current.acceptance_criteria != task.acceptance_criteria:
+            if set(current.acceptance_criteria) != set(criteria):
                 raise ValueError("验收标准已变化，请重新核对")
             if await store.asearch(("deep_loopminder", "project_worker_quarantine", project_id), limit=1):
                 raise ValueError("Worker 尚未确认停止")
-            review = await workflow.codex_review_status(project_id, task_id)
-            if review.get("status") != "pass" or review.get("review_id") != initial_review.get("review_id"):
-                raise ValueError("审查结论或交付已变化，请重新核对")
-            run_ids = (review["developer_run_id"], review["review_run_id"])
-            evidence = []
-            for run_id in run_ids:
-                source = await store.aget(("deep_loopminder", "project_execution_refs", project_id), run_id)
-                if source is None or source.value.get("reference") not in current.execution_refs:
-                    raise ValueError("任务含未知的 Run 来源")
-                evidence.append(source.value.get("result_ref"))
-            if not evidence or any(not ref for ref in evidence):
-                raise ValueError("最新 Run 尚未全部领取结果")
             reference = await workflow._record_validation(
                 project_id, task_id, validator_id="local-human", criteria=criteria,
-                evidence_refs=tuple(evidence), required_run_ids=run_ids,
+                evidence_refs=(delivery["developer_result_ref"],), required_run_ids=(delivery["developer_run_id"],),
+                directory_digest=delivery["project_content_digest"],
+                delivery_input_version=delivery["input_version"],
             )
         return JSONResponse({"status": "recorded", "validation_ref": reference})
     except (ValueError, TypeError) as exc:
@@ -523,25 +553,40 @@ async def human_approval(request):
     project_id, task_id, approved = data.get("project_id"), data.get("task_id"), data.get("approved")
     if not isinstance(project_id, str) or not project_id or not isinstance(task_id, str) or not task_id or type(approved) is not bool:
         return JSONResponse({"error": "项目、任务和明确决定不能为空"}, status_code=400)
+    from src.middlewares.project_state.models import TaskStatus
     from src.middlewares.project_state.workflow import ProjectWorkflow
 
     store = await get_store()
     workflow = ProjectWorkflow(store)
     try:
-        _, task = await workflow.task(project_id, task_id)
-        initial_review = await workflow.codex_review_status(project_id, task_id)
-        if initial_review.get("status") != "pass":
-            raise ValueError("当前交付缺少通过的独立 Codex 审查")
+        snapshot, task = await workflow.task(project_id, task_id)
+        namespace = ("deep_loopminder", "project_validations", project_id)
+        if not (await workflow.facts(snapshot, task_id, TaskStatus.PASSED)).validation_accepted:
+            raise ValueError("没有有效的人工验收记录，不能批准")
+        validation = (await store.aget(namespace, task_id)).value
+        try:
+            delivery = await workflow.delivery_subject(project_id, task_id, allow_unreadable_directory=True)
+        except ValueError:
+            delivery = None
+        notice = await _human_review_notice(workflow, project_id, task, delivery)
+        directory_digest = (delivery["project_content_digest"] if delivery is not None
+                            else await ProjectFolders(store).content_digest(project_id, allow_unreadable=True))
+        notice += _approval_directory_notice(validation, directory_digest)
         choice = "批准" if approved else "拒绝"
-        confirmed = await asyncio.to_thread(_confirm_local, "确认人工决定", f"任务：{TrajectoryRecorder.clean_public(task.title)}\n\n确认{choice}当前已验收的交付？")
+        confirmed = await asyncio.to_thread(
+            _confirm_local, "确认人工决定",
+            f"任务：{TrajectoryRecorder.clean_public(task.title)}\n{notice}\n\n确认{choice}这份验收记录？",
+        )
         if not confirmed:
             return JSONResponse({"status": "cancelled"})
         async with project_write_lock(project_id):
             if await store.asearch(("deep_loopminder", "project_worker_quarantine", project_id), limit=1):
                 raise ValueError("Worker 尚未确认停止")
-            review = await workflow.codex_review_status(project_id, task_id)
-            if review.get("status") != "pass" or review.get("review_id") != initial_review.get("review_id"):
-                raise ValueError("审查结论或交付已变化，请重新核对")
+            snapshot, _ = await workflow.task(project_id, task_id)
+            current_validation = await store.aget(namespace, task_id)
+            if (current_validation is None or current_validation.value["reference"] != validation["reference"]
+                    or not (await workflow.facts(snapshot, task_id, TaskStatus.PASSED)).validation_accepted):
+                raise ValueError("人工验收记录已变化，请重新核对")
             decision_id = uuid.uuid4().hex
             decision_ref = "local-human-decision://" + decision_id
             await store.aput(("deep_loopminder", "human_decisions", project_id), decision_id,
@@ -873,6 +918,7 @@ routes = [
     Route("/workbench", index),
     Route("/workbench/", index),
     Route("/workbench/assets/app.js", javascript),
+    Route("/workbench/assets/workbench.css", stylesheet),
     Route("/workbench/api/projects", projects, methods=["GET"]),
     Route("/workbench/api/projects", create_project, methods=["POST"]),
     Route("/workbench/api/projects/bind", bind_project, methods=["POST"]),

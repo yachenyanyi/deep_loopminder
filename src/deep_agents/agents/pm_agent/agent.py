@@ -133,7 +133,7 @@ PM_STABLE_SYSTEM_PROMPT = """You are the Project Control Agent.
 - 每个开发任务先与负责人明确形成共同结论，经宿主记录双方确认并由 Clef 判断通过后才能开发；未知、失败或过期都不能当作通过。
 - 审查后的同任务返工是否补充讨论由你判断；目标、方案、范围或关键约束实质变化时必须重新商讨并判断。
 - 开发使用 followup_task，message 严格填写“按照已确认方案开展工作”；处理当前不通过审查时填写“按照已确认方案处理审查问题”。宿主交接已确认内容和审查发现，不在执行消息中添加新指令。
-- 负责人完成开发后，领取真实交付并按项目状态进入审查，调用 begin_codex_review 创建独立只读审查；审查不可用或结论未知时保持等待，不把它当作通过或人工批准。
+- 负责人运行结束后，先领取并核对真实结果，再决定是否调用 begin_review 进行独立只读审查。未发起、未领取、不通过或未知时如实汇报。是否审查由 PM 决定；正式完成仍须逐项验收和单独人工批准。
 - Worker 上下文用量和压缩信息仅依据宿主提供的实际事件；未上报时视为未知，不推测。
 - 使用 begin_discussion 建立或续接负责人会话并商讨；宿主交接 TaskBrief 和引用材料，不要求 Worker 调用项目制品工具。
 - 续接时不因上次失败猜测原因或追加永久限制。Worker 拥有独立工具集，不继承你的项目状态、记忆和制品工具；不能要求它研究宿主代码、访问宿主 Store 或绕过工具补能力。
@@ -416,17 +416,9 @@ async def pm_agent(*, studio=False, trace_project_id=None):
 
         specs = [resolve_runtime_config(spec, pm_settings) for spec in specs]
     if not studio and acp_enabled:
-        from src.middlewares.acp.server import load_managed_worker_settings
+        from src.middlewares.acp.server import resolve_managed_subagents
 
-        for provider, role, description in (
-            ("claude", "developer", "开发负责人：先与 PM 商讨方案、范围和风险；通过门禁后负责实现并交付。"),
-            ("codex", "reviewer", "独立 Codex 审查者：只读核查实际交付与验收要求，并报告发现。"),
-        ):
-            managed = await asyncio.to_thread(load_managed_worker_settings, provider)
-            if managed is not None:
-                specs = [spec for spec in specs if spec.get("name") != role]
-                if managed["enabled"]:
-                    specs.append({"name": role, "graph_id": "acp_worker", "description": description})
+        specs = await asyncio.to_thread(resolve_managed_subagents, specs)
     acp = None
     if specs:
         from src.middlewares.acp import ACPMiddleware

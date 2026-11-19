@@ -115,6 +115,7 @@ class PMModelSelectionState(AgentState):
 
     pm_model_selection: NotRequired[dict | None]
     pm_model_changed: NotRequired[bool]
+    pm_model_selection_run_id: NotRequired[str | None]
 
 
 async def configured_pm_model(catalog: ModelCatalog, selected: dict, *, expected_endpoint_hash: str | None = None):
@@ -186,15 +187,38 @@ class PMModelSelectionMiddleware(AgentMiddleware):
 
     state_schema = PMModelSelectionState
 
+    async def abefore_agent(self, state, runtime):
+        """Make this run's selection available to the memory middleware."""
+        return await self._select_for_run(state, runtime)
+
     async def abefore_model(self, state, runtime):
-        """Record a selection only when the host requests a change."""
+        """Apply selections on resumed runs that bypass the agent entry hook."""
+        return await self._select_for_run(state, runtime)
+
+    async def aafter_model(self, state, runtime):
+        if state.get("pm_model_changed"):
+            return {"pm_model_changed": False}
+
+    async def _select_for_run(self, state, runtime):
+        info = runtime.execution_info
+        run_id = info.run_id if info else None
+        if run_id is not None and state.get("pm_model_selection_run_id") == run_id:
+            return None
+
+        changes = await self._resolve_selection(state, runtime.store)
+        if run_id is None and state.get("pm_model_changed"):
+            # Direct graph calls can omit the run ID. Keep the notice until a model call completes.
+            changes["pm_model_changed"] = True
+        return {**changes, "pm_model_selection_run_id": run_id}
+
+    async def _resolve_selection(self, state, store):
         configured = get_config().get("configurable", {})
         provider = configured.get("model_provider")
         model_name = configured.get("model_name")
         if configured.get("model_use_default") is True:
             if provider or model_name:
                 raise ValueError("模型选择相互冲突")
-            default = await pm_model_catalog(runtime.store).get_default() if runtime.store is not None else None
+            default = await pm_model_catalog(store).get_default() if store is not None else None
             if default is None:
                 raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
             return {"pm_model_selection": default,
@@ -202,8 +226,8 @@ class PMModelSelectionMiddleware(AgentMiddleware):
         if bool(provider) != bool(model_name):
             raise ValueError("切换模型时必须同时提供模型服务和模型名称")
         if not provider:
-            if state.get("pm_model_selection") is None and runtime.store is not None:
-                default = await pm_model_catalog(runtime.store).get_default()
+            if state.get("pm_model_selection") is None and store is not None:
+                default = await pm_model_catalog(store).get_default()
                 if default is None:
                     raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
                 return {"pm_model_selection": default, "pm_model_changed": False}
