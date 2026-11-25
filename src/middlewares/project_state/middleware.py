@@ -131,15 +131,7 @@ class ProjectStateMiddleware(AgentMiddleware):
                     fact["independent_review"] = await self.workflow.independent_review_status(
                         project_id, fact["task_id"]
                     )
-            content += (
-                "\n当前可信验收事实（缺记录不表示拒绝；继续运行不表示批准）：\n"
-                + json.dumps(review_facts, ensure_ascii=False)
-            )
-        content += (
-            "\n本轮公开分析、派工和回复使用中文。派工只讲目标和必要约束，技术步骤由负责人决定。"
-            "Worker没有PM制品工具，不安排它调查宿主仓库；材料由宿主交接。"
-            "project_command/followup_task/wait_agent不要混批；遇批次拒绝逐次重发即可。"
-        )
+            content += "\n项目验收事实：" + json.dumps(review_facts, ensure_ascii=False)
         pending = [
             tracked["run_id"]
             for tracked in request.state.get("async_tasks", {}).values()
@@ -148,10 +140,7 @@ class ProjectStateMiddleware(AgentMiddleware):
             and not request.state.get("acp_delivered", {}).get(tracked["run_id"])
         ]
         if pending:
-            content += (
-                "\n后台Run尚未领取项目制品，请先wait_agent，不能直接当作任务已验收："
-                + ", ".join(pending[:20])
-            )
+            content += "\n未领取的后台运行：" + json.dumps(pending[:20], ensure_ascii=False)
         if request.system_message:
             system = request.system_message.model_copy(
                 update={

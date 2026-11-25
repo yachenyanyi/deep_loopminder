@@ -32,13 +32,6 @@ Worker 不继承父 Agent 的工具。只能要求其使用能力目录和角色
 成果通过会话交接，项目集成的 wait_agent 自动保存最终结果，不要求 Worker 调用父 Agent 的制品工具。
 wait_agent 默认只领取未读结果。历史重读必须明确指定单个 target 和 run_id；超时仅结束等待，不取消 Worker。
 根据 errors 和 next_action 处理问题，不盲目重试写操作；Run 成功不等于任务验收或人工批准。"""
-_PM_INSTRUCTIONS = """项目开发先使用 begin_discussion 与负责人商讨，明确双方一致后调用 assess_discussion。
-只有当前任务版本通过 Clef 后，才用 followup_task 续接该负责人开发；执行指令按 PM 规则填写。
-独立审查使用 begin_review；在途自由消息不可用。wait_agent 默认领取未读结果，超时不取消 Worker。
-派工或商讨发出后立即交还控制权，不要调用 wait_agent 阻塞等待：负责人完成时，官方后台通知会在下一次模型调用前送达，宿主也会在会话空闲时提示领取；收到通知后用 wait_agent 领取结果再推进。
-Worker 的能力与 PM 不同，材料由宿主交接；Run 成功不等于验收或人工批准。"""
-
-
 def _merge(existing: dict | None, update: dict) -> dict:
     """Merge labels or delivery receipts; neither is an execution catalog."""
     return {**(existing or {}), **update}
@@ -100,7 +93,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
         pm_governed: bool = False,
     ):
         """Configure trusted role endpoints and bound individual SDK requests."""
-        super().__init__(async_subagents=async_subagents, system_prompt=_PM_INSTRUCTIONS if pm_governed else _INSTRUCTIONS)
+        super().__init__(async_subagents=async_subagents, system_prompt=_INSTRUCTIONS)
         if request_timeout <= 0:
             raise ValueError("request_timeout must be positive")
         self._specs = {spec["name"]: spec for spec in async_subagents}

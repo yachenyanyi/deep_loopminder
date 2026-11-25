@@ -14,6 +14,7 @@ from .agent import (
     project_pm_context,
     stable_pm_system_prompt,
 )
+from .prompts import build_pm_system_prompt
 
 __all__ = [
     "PMContextProjection",
@@ -28,4 +29,5 @@ __all__ = [
     "pm_role_requirement",
     "project_pm_context",
     "stable_pm_system_prompt",
+    "build_pm_system_prompt",
 ]
