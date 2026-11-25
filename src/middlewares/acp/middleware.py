@@ -32,6 +32,9 @@ Worker 不继承父 Agent 的工具。只能要求其使用能力目录和角色
 成果通过会话交接，项目集成的 wait_agent 自动保存最终结果，不要求 Worker 调用父 Agent 的制品工具。
 wait_agent 默认只领取未读结果。历史重读必须明确指定单个 target 和 run_id；超时仅结束等待，不取消 Worker。
 根据 errors 和 next_action 处理问题，不盲目重试写操作；Run 成功不等于任务验收或人工批准。"""
+_PM_TOOL_INSTRUCTIONS = """Worker 工具说明：wait_agent 默认只领取未读结果，历史重读须指定单个 target 和 run_id，超时只结束等待不取消 Worker；根据 errors 和 next_action 处理异常，不盲目重试写操作。"""
+
+
 def _merge(existing: dict | None, update: dict) -> dict:
     """Merge labels or delivery receipts; neither is an execution catalog."""
     return {**(existing or {}), **update}
@@ -93,7 +96,10 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
         pm_governed: bool = False,
     ):
         """Configure trusted role endpoints and bound individual SDK requests."""
-        super().__init__(async_subagents=async_subagents, system_prompt=_INSTRUCTIONS)
+        super().__init__(
+            async_subagents=async_subagents,
+            system_prompt=_PM_TOOL_INSTRUCTIONS if pm_governed else _INSTRUCTIONS,
+        )
         if request_timeout <= 0:
             raise ValueError("request_timeout must be positive")
         self._specs = {spec["name"]: spec for spec in async_subagents}
