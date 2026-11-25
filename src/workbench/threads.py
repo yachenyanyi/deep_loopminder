@@ -109,6 +109,18 @@ async def conversations(request):
             return JSONResponse({"error": "项目不存在"}, status_code=404)
         if request.method == "GET":
             return JSONResponse({"conversations": await list_conversations(store, project_id)})
+        if data.get("thread_id") and data.get("title") is not None:
+            thread_id = data.get("thread_id")
+            title = data.get("title")
+            if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
+                raise ValueError("会话名称无效")
+            item = await store.aget(THREADS, thread_id)
+            if item is None or item.value.get("project_id") != project_id:
+                raise ValueError("会话不存在或不属于当前项目")
+            record = dict(item.value)
+            record["title"] = title.strip()
+            await store.aput(THREADS, thread_id, record, index=False)
+            return JSONResponse(record)
         return JSONResponse(await create_conversation(store, get_client(url=None), project_id, data.get("title")))
     except (ValueError, TypeError, AttributeError) as exc:
         return JSONResponse({"error": str(exc) or "会话请求无效"}, status_code=400)

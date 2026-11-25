@@ -169,6 +169,26 @@ input[type=checkbox] { accent-color: var(--accent); }
 .fields-grid, .model-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; align-items: center; }
 .model-row { padding: 6px 0; border-bottom: 1px solid var(--border); }
 .model-row label { overflow-wrap: anywhere; }
+.task-status-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; margin: 8px 14px 0; border: 1px solid #d9d6f7; border-radius: 9px; background: #f5f3ff; color: #363276; font-size: 13px; }
+.run-status { margin: 7px 18px 8px; padding: 8px 12px; border-radius: 8px; background: #f2f1f8; color: #5b5f70; text-align: center; font-size: 13px; }
+.system-event { width: min(680px, calc(100% - 32px)); margin: 10px auto; border: 1px solid #d9dce4; border-radius: 8px; background: #f6f7f9; color: #5b6273; font-size: 13px; }
+.system-event summary { cursor: pointer; padding: 8px 11px; text-align: center; }
+.system-event > div { padding: 0 12px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.worker-reviews { padding: 0 18px; }
+.permission-card, .task-card { padding: 12px; margin: 8px 0; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.permission-card pre { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.permission-card button, .task-actions button { margin: 8px 8px 0 0; }
+.task-list { display: grid; gap: 10px; }
+.task-card header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.task-card h3 { margin: 0; font-size: 15px; }
+.task-status { border-radius: 999px; padding: 3px 8px; background: #ecebff; color: #433aab; font-size: 12px; white-space: nowrap; }
+.task-facts { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+.task-detail { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.task-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+pre { position: relative; }
+.copy-code { position: absolute; top: 6px; right: 6px; padding: 3px 7px; border: 1px solid #cbd2df; border-radius: 6px; background: #fff; color: #4a5161; font-size: 12px; }
+.formatted table { width: 100%; margin: 8px 0; border-collapse: collapse; font-size: 13px; }
+.formatted th, .formatted td { padding: 6px 8px; border: 1px solid var(--border); text-align: left; }
 
 @media (max-width: 860px) {
   .app { grid-template-columns: minmax(0, 1fr); }
@@ -178,7 +198,8 @@ input[type=checkbox] { accent-color: var(--accent); }
   .sidebar-open .sidebar-backdrop { display: block; position: fixed; inset: 0; z-index: 2; border: 0; border-radius: 0; background: #171c3966; }
 }
 @media (max-width: 560px) {
-  .header { padding: 7px 9px; min-height: 54px; gap: 5px; }
+  .header { padding: 12px 9px; min-height: 58px; gap: 5px; }
+  .headline { line-height: 1.35; }
   .headline { font-size: 14px; }
   .tabs .tab { padding-inline: 7px; }
   .banner { padding: 6px 12px; }

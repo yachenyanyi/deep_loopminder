@@ -88,6 +88,20 @@ async def javascript(request):
     return FileResponse(_ROOT / "app.js", media_type="text/javascript", headers={"Cache-Control": "no-store"})
 
 
+async def module_javascript(request):
+    """Serve one local ES module without allowing path traversal."""
+    if not _local(request):
+        return _forbidden()
+    name = request.path_params.get("name", "")
+    if not name.endswith(".js") or Path(name).name != name:
+        return Response("Not found", status_code=404)
+    path = (_ROOT / "modules" / name).resolve()
+    modules_root = (_ROOT / "modules").resolve()
+    if path.parent != modules_root or not path.is_file():
+        return Response("Not found", status_code=404)
+    return FileResponse(path, media_type="text/javascript", headers={"Cache-Control": "no-store"})
+
+
 async def stylesheet(request):
     """Serve the local workbench styles."""
     if not _local(request):
@@ -919,6 +933,7 @@ routes = [
     Route("/workbench", index),
     Route("/workbench/", index),
     Route("/workbench/assets/app.js", javascript),
+    Route("/workbench/assets/modules/{name:str}", module_javascript),
     Route("/workbench/assets/workbench.css", stylesheet),
     Route("/workbench/api/projects", projects, methods=["GET"]),
     Route("/workbench/api/projects", create_project, methods=["POST"]),

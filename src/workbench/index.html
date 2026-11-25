@@ -37,14 +37,25 @@
       <div id="banner" class="banner" role="status" hidden></div>
       <div class="body">
         <section class="view" id="activityView" hidden>
-          <details id="reconcilePanel" class="collaboration hidden">
-            <summary>任务与协作</summary>
+          <div id="taskList" class="task-list"></div>
+          <div id="taskDetailPanel" class="task-detail" hidden></div>
+          <details id="reconcilePanel" class="collaboration">
+            <summary>故障排障与高级核对</summary>
             <div id="reconcileControls" class="collaboration-controls">
-              <label class="task-field">任务编号 <input id="reconcileTask" placeholder="输入任务编号"></label>
+              <label class="task-field">任务编号 <input id="reconcileTask" placeholder="仅高级核对使用"></label>
+              <label class="task-field">候选负责人会话 <input id="candidateAgent" placeholder="首次创建中断时填写"></label>
               <button class="secondary" id="reconcileButton">核对待确认派工</button>
+              <button class="secondary" id="attachButton" hidden>关联已找到的 Run</button>
               <button class="secondary" id="usageButton">查看负责人上下文</button>
               <div id="reconcileResult" class="notice"></div>
               <div id="usageResult" class="notice"></div>
+              <div id="workerRecovery" class="notice"></div>
+              <div class="advanced-memory-actions">
+                <button class="secondary" id="memoryCheck">核对记忆写回</button>
+                <button class="secondary" id="memoryFix">解除未发生写入的阻断</button>
+                <button class="secondary" id="memoryRollback">撤销未完成的记忆写回</button>
+                <div id="memoryStatus" class="notice"></div>
+              </div>
             </div>
           </details>
           <div class="empty" id="traceEmpty">选择项目后查看运行轨迹。</div>
@@ -56,7 +67,10 @@
             <h1>项目工作台</h1>
             <p class="muted">选择一个项目，或新建项目与 PM 开始讨论。</p>
           </div>
+          <div id="taskStatusBar" class="task-status-bar" hidden></div>
           <div class="messages hidden" id="messages" aria-label="对话记录"></div>
+          <div id="workerReviewPanel" class="worker-reviews"></div>
+          <div id="runStatus" class="run-status" role="status" hidden></div>
           <div class="composer">
             <textarea id="message" aria-label="描述你的目标，或提出想讨论的问题" placeholder="描述你的目标，或提出想讨论的问题" disabled></textarea>
             <div class="bar">
@@ -99,7 +113,7 @@
     <div class="settings-layout">
       <nav class="settings-nav" aria-label="设置分类">
         <button class="tab active" data-settings="models" aria-pressed="true" autofocus>模型</button>
-        <button class="tab" data-settings="collaboration" aria-pressed="false">协作与审查</button>
+        <button class="tab" data-settings="workers" aria-pressed="false">协作与审查</button>
         <button class="tab" data-settings="runtime" aria-pressed="false">运行环境</button>
       </nav>
       <div id="settingsContent" class="settings-content">
@@ -116,6 +130,7 @@
               <button class="secondary" id="saveProvider">保存服务</button>
               <button class="secondary" id="discover">获取模型</button>
             </div>
+            <label class="field">搜索模型<input id="modelSearch" type="search" placeholder="输入模型名称过滤"></label>
             <div id="modelList"></div>
             <div class="actions settings-actions" id="modelActions" hidden>
               <button class="primary" id="saveModels">保存模型选择</button>
@@ -132,7 +147,7 @@
             <div id="defaultStatus" class="notice" role="status"></div>
           </section>
         </div>
-        <div id="collaborationSettings" data-settings-panel="collaboration" hidden>
+        <div id="collaborationSettings" data-settings-panel="workers" hidden>
           <section>
             <h3>Clef 设置</h3>
             <label class="field">Cloudflare Account ID<input id="clefAccount"></label>
@@ -140,11 +155,76 @@
             <button class="secondary" id="saveClef">保存 Clef 设置</button>
             <div id="clefStatus" class="notice" role="status"></div>
           </section>
+          <section id="workerSection">
+            <h3>开发负责人</h3>
+            <label class="field"><input id="workerEnabled" type="checkbox"> 启用 Claude 负责人</label>
+            <label class="field">Node 可执行文件<input id="workerNode"></label>
+            <label class="field">负责人 API 地址<input id="workerEndpoint"></label>
+            <label class="field">负责人模型<input id="workerModel"></label>
+            <label class="field">ACP 适配器目录<input id="workerRuntime"></label>
+            <label class="field">负责人 API 凭据<input id="workerToken" type="password"></label>
+            <button class="secondary" id="workerSave">保存负责人设置</button>
+            <div id="workerStatus" class="notice"></div>
+          </section>
+          <section id="reviewerSection">
+            <h3>独立审查者</h3>
+            <label class="field"><input id="reviewerEnabled" type="checkbox"> 启用审查者</label>
+            <label class="field">Node 可执行文件<input id="reviewerNode"></label>
+            <label class="field">Agent API 地址<input id="reviewerEndpoint"></label>
+            <label class="field">审查模型<input id="reviewerModel"></label>
+            <label class="field">ACP 适配器目录<input id="reviewerRuntime"></label>
+            <label class="field">API 凭据<input id="reviewerToken" type="password"></label>
+            <button class="secondary" id="reviewerSave">保存审查设置</button>
+            <div id="reviewerStatus" class="notice"></div>
+          </section>
+          <section id="modeSection">
+            <h3>商讨模式</h3>
+            <label class="field">Worker<select id="modeProvider"><option value="claude">开发负责人</option><option value="codex">审查者</option></select></label>
+            <label class="field">项目默认模式<select id="modeChoice"></select></label>
+            <div class="notice" id="modeStatus"></div>
+            <div class="notice">保存的是目标模式。每次商讨会记录适配器实际回报的模式。所选模式可能允许写入，商讨仍不能替代双方确认与 Clef 开发门禁。</div>
+            <div class="notice" id="modeWriteWarning"></div>
+            <button class="secondary" id="saveMode">保存项目默认模式</button>
+          </section>
         </div>
-        <div id="runtimeSettings" data-settings-panel="runtime" hidden></div>
+        <div id="runtimeSettings" data-settings-panel="runtime" hidden>
+          <section>
+            <h3>PM 运行设置</h3>
+            <label class="field">PostgreSQL 连接地址<input id="pmDatabase" type="password" autocomplete="off"></label>
+            <div id="pmDatabaseState" class="notice"></div>
+            <label class="field"><input id="pmMemory" type="checkbox"> 启用项目记忆</label>
+            <label class="field"><input id="pmTrajectory" type="checkbox"> 启用轨迹中间件</label>
+            <label class="field"><input id="pmAcp" type="checkbox"> 启用 Worker 协作</label>
+            <label class="field">PM 服务端口<input id="pmPort" type="number"></label>
+            <label class="field">并行运行数<input id="pmJobs" type="number"></label>
+            <label class="field">完成领取轮询间隔（秒）<input id="pmPoll" type="number"></label>
+            <label class="field">PM 数据目录<input id="pmDataDir"></label>
+            <label class="field">独立轨迹目录<input id="pmTraceDir"></label>
+            <label class="field"><input id="pmTraceStrict" type="checkbox"> 轨迹记录失败时停止本次运行</label>
+            <button class="secondary" id="savePmRuntime">保存 PM 运行设置</button>
+            <div id="pmRuntimeStatus" class="notice"></div>
+          </section>
+          <section>
+            <h3>自定义 Worker 与角色</h3>
+            <label class="field">Worker 配置（JSON 数组）<textarea id="pmExtraWorkers" rows="6"></textarea></label>
+            <label class="field">PM 子代理角色配置（JSON 数组）<textarea id="pmExtraAgents" rows="4"></textarea></label>
+            <button class="secondary" id="saveWorkerConfig">保存自定义 Worker 与角色</button>
+            <div id="workerConfigStatus" class="notice"></div>
+          </section>
+          <section id="workspaceSection">
+            <h3>验收与轨迹</h3>
+            <div class="notice">验收和批准由本机用户分别确认，不能关闭。</div>
+            <label class="field"><input id="traceEnabled" type="checkbox"> 记录后续运行轨迹</label>
+            <label class="field">PM 压缩启动阈值（token，默认 300000）<input id="compactionThreshold" type="number" min="1000"></label>
+            <label class="field">PM 上下文上限（token，默认 500000）<input id="contextLimit" type="number" min="1000"></label>
+            <div class="notice">阈值留空时沿用已保存值或默认值。保存后重启服务生效。已有轨迹保留。</div>
+            <button class="secondary" id="saveWorkspace">保存轨迹与压缩设置</button>
+            <div id="workspaceStatus" class="notice"></div>
+          </section>
+        </div>
       </div>
     </div>
   </dialog>
-  <script src="/workbench/assets/app.js"></script>
+  <script type="module" src="/workbench/assets/app.js"></script>
 </body>
 </html>
