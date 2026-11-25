@@ -1,6 +1,9 @@
 """Live PM Worker permission requests and their local workbench endpoints."""
 
 import asyncio
+import os
+import re
+from pathlib import Path
 from uuid import uuid4
 
 from starlette.responses import JSONResponse
@@ -42,6 +45,8 @@ class WorkerReview:
         owner = await self._owner_for_worker(ref)
         if not owner:
             return False
+        if self._owner_for_worker is _owner_for_worker and await self._allow_cleared_development(request, ref):
+            return True
         request_id = uuid4().hex
         future = asyncio.get_running_loop().create_future()
         visible = TrajectoryRecorder.clean_for_judgment({
@@ -65,6 +70,36 @@ class WorkerReview:
             return False
         finally:
             self._pending.pop(request_id, None)
+
+    async def _allow_cleared_development(self, request, ref):
+        """Allow ordinary Clef-approved development actions inside its project."""
+        tool = request.tool_name
+        if tool not in {"acp.read", "acp.edit", "acp.execute"}:
+            return False
+        if tool == "acp.execute":
+            command = str((request.tool_input or {}).get("command") or "")
+            if not command or re.search(
+                    r"(?i)(\b(format|shutdown|reboot|rmdir|del|erase)\b|git\s+reset\s+--hard|\b(remove-item|stop-process)\b|powershell\s+[^\n]*-enc)",
+                    command):
+                return False
+            working_directory = (request.tool_input or {}).get("cwd") or ref.get("cwd")
+            return self._inside_project(working_directory, ref.get("cwd"))
+        path = (request.tool_input or {}).get("file_path") or (request.tool_input or {}).get("path")
+        return self._inside_project(path, ref.get("cwd"))
+
+    @staticmethod
+    def _inside_project(candidate, project_directory):
+        if not isinstance(candidate, str) or not isinstance(project_directory, str):
+            return False
+        try:
+            root = Path(project_directory).resolve()
+            path = Path(candidate)
+            if not path.is_absolute():
+                path = root / path
+            path = path.resolve()
+            return os.path.commonpath((str(root), str(path))) == str(root)
+        except (OSError, ValueError):
+            return False
 
     def pending(self, project_id, thread_id):
         """Return only requests belonging to the displayed conversation."""

@@ -89,3 +89,18 @@ def test_worker_review_times_out_and_shutdown_denies():
         assert not registry.pending("p", "owner")
 
     asyncio.run(scenario())
+
+
+def test_cleared_development_allows_project_edit_and_safe_test_command(tmp_path):
+    async def scenario():
+        registry = WorkerReview(owner_for_worker=lambda _ref: asyncio.sleep(0, result="owner"))
+        ref = {"project_id": "project", "task_id": "task", "thread_id": "worker",
+               "cwd": str(tmp_path)}
+        edit = SimpleNamespace(tool_name="acp.edit", tool_input={"file_path": str(tmp_path / "app.py")})
+        execute = SimpleNamespace(tool_name="acp.execute", tool_input={"command": "python -m unittest -v"})
+        dangerous = SimpleNamespace(tool_name="acp.execute", tool_input={"command": "git reset --hard"})
+        assert await registry._allow_cleared_development(edit, ref)
+        assert await registry._allow_cleared_development(execute, ref)
+        assert not await registry._allow_cleared_development(dangerous, ref)
+
+    asyncio.run(scenario())

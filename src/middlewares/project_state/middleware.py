@@ -182,8 +182,28 @@ class ProjectStateMiddleware(AgentMiddleware):
         """允许独立制品并行，拒绝多次快照写或混合写，避免快照覆盖与依赖竞态。"""
         name = request.tool_call["name"]
         configured = request.runtime.config.get("configurable", {})
+        claim_discussion_task = None
+        if self.pm_discussion_gate and configured.get("_pm_claim_event") is True:
+            successful_runs = configured.get("_pm_claim_successful_runs") or ()
+            project_id = configured.get("project_id")
+            if self.workflow and isinstance(project_id, str):
+                for run_id in successful_runs:
+                    binding = await self.workflow.store.aget(
+                        ("deep_loopminder", "project_execution_refs", project_id), run_id
+                    )
+                    value = binding.value if binding else {}
+                    if (value.get("phase") == "discussion"
+                            and value.get("owner_thread") == configured.get("thread_id")
+                            and isinstance(value.get("task_id"), str)):
+                        claim_discussion_task = value["task_id"]
+                        break
+        claim_task = request.tool_call.get("args", {}).get("task_id")
+        claim_followup = name == "followup_task" and claim_discussion_task is not None
+        claim_discussion = (claim_discussion_task is not None
+                            and name == "begin_discussion" and claim_task == claim_discussion_task)
         if (self.pm_discussion_gate and configured.get("_pm_claim_event") is True
-                and (name in {"spawn_agent", "followup_task", "begin_discussion"} or (
+                and ((name in {"spawn_agent", "followup_task", "begin_discussion"}
+                      and not (claim_followup or claim_discussion)) or (
                     name == "begin_review" and not (
                         configured.get("_pm_claim_successful_runs") and request.tool_call["args"].get("task_id")
                     )

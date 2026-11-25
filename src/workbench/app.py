@@ -363,9 +363,10 @@ async def project_status(request):
                         raise ValueError("invalid discussion source")
                     turn.update({"status": result.get("status", "unknown"), "result": result.get("result")})
                 except (ValueError, TypeError, KeyError, AttributeError):
-                    turn = {"unavailable": True}
+                    turn = {"run_id": run_id, "unavailable": True}
             turns.append(turn)
         intent = await store.aget(("deep_loopminder", "project_dispatch_intents", project_id), task.task_id)
+        last_turn_run_id = turns[-1].get("run_id") if turns else None
         tasks.append({
             "task_id": task.task_id, "title": task.title, "status": task.status.value,
             "owner_role": task.owner_role, "acceptance_criteria": list(task.acceptance_criteria),
@@ -374,8 +375,8 @@ async def project_status(request):
                             "created_at": decision.get("created_at") if decision else None,
                             "current_pass": current,
                             "pm_confirmation": decision.get("pm_confirmation") if decision else None,
-                            "mode_record": (await _merged_mode_record(store, project_id, turns[-1]["run_id"])
-                                            if turns else (decision.get("mode_record") if decision else None)),
+                            "mode_record": (await _merged_mode_record(store, project_id, last_turn_run_id)
+                                            if last_turn_run_id else (decision.get("mode_record") if decision else None)),
                             "content_digest_scope": decision.get("project_content_digest_scope") if decision else None,
                             "turns": turns} if decision or turns else None),
             "dispatch": dict(intent.value) if intent else None,

@@ -332,7 +332,8 @@ class PMDiscussionMiddleware(AgentMiddleware):
                            "reported_mode": None, "reported_mode_source": None, "confirmed_at": None}
             operation = "followup_task" if target else "spawn_agent"
             message = ("请作为开发负责人，与 PM 平等商讨目标、范围、可行方案、约束和风险。"
-                       "本轮只讨论和调查，不实施或改变项目；有不确定之处请明确提出。\n"
+                       "本轮只讨论和调查，不实施或改变项目；有不确定之处请明确提出。"
+                       "请直接用文字回复方案和结论，不要调用 ExitPlanMode 退出计划模式，也不要为简单目录反复拉起多个子代理。\n"
                        "项目目标：\n" + snapshot.goal
                        + "\n项目约束：\n" + json.dumps(list(snapshot.constraints), ensure_ascii=False)
                        + "\n验收标准：\n" + json.dumps(list(task.acceptance_criteria), ensure_ascii=False)
