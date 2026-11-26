@@ -1,6 +1,6 @@
 import { $, api, showError, state, setRunning } from './modules/state.js';
 import { initSidebar, loadProjects, paintProjects, browseProjectSessions, setSidebarOpen } from './modules/sidebar.js';
-import { checkPending, clearPending, initChat, msg, refreshWorkerReviews, sendMessage } from './modules/chat.js';
+import { checkPending, clearPending, initChat, msg, paintDiscussionMode, refreshWorkerReviews, sendMessage } from './modules/chat.js';
 import { initTasks, loadTasks } from './modules/tasks.js';
 import { initSettings, loadProviders } from './modules/settings.js';
 
@@ -25,6 +25,7 @@ async function watchRestoredRun(project, thread, view, previous = null) {
     if (active) {
       state.busy = true;
       $('#send').disabled = true;
+      state.actions?.paintDiscussionMode?.();
     } else if (previous && (previous.active || changed) && state.busyThreads.has(thread)) {
       setTimeout(() => watchRestoredRun(project, thread, view, previous), 3000);
       return;
@@ -62,8 +63,10 @@ async function loadProject(p, conversation) {
   if (state.conversation) state.drafts.set(state.conversation.thread_id, $('#message').value);
   state.project = p;
   state.conversation = conversation;
+  state.discussionMode = !!conversation.discussion_mode;
   state.busy = state.busyThreads.has(conversation.thread_id);
   state.loadingView = true;
+  paintDiscussionMode();
   paintProjects();
   $('#title').textContent = p.goal;
   $('#title').title = [p.goal, p.directory || '未绑定目录'].join(' · ');
@@ -86,13 +89,21 @@ async function loadProject(p, conversation) {
   let loaded = false;
   let baseline = null;
   try {
+    const pendingModeUpdate = state.discussionModeUpdates.get(conversation.thread_id);
+    if (pendingModeUpdate) await pendingModeUpdate.catch(() => {});
+    if (state.viewVersion !== view) return;
     try {
       const status = await api('trace/status?project_id=' + encodeURIComponent(p.project_id) + '&thread_id=' + encodeURIComponent(conversation.thread_id));
       baseline = { id: status.run?.run_id, active: ['pending', 'running'].includes(status.run?.status) };
     } catch (_) { /* History may still be readable. */ }
     if (state.viewVersion !== view) return;
+    if (baseline?.active) state.busy = true;
     const history = await api('history?project_id=' + encodeURIComponent(p.project_id) + '&thread_id=' + encodeURIComponent(conversation.thread_id));
     if (state.viewVersion !== view) return;
+    if (typeof history.discussion_mode === 'boolean') {
+      state.discussionMode = history.discussion_mode;
+      conversation.discussion_mode = history.discussion_mode;
+    }
     if (history.memory_model_error) showError('后台记忆暂不可用：' + history.memory_model_error);
     if (history.model_selection) {
       const value = JSON.stringify({ provider: history.model_selection.provider_id, model: history.model_selection.model_id });
@@ -112,6 +123,7 @@ async function loadProject(p, conversation) {
       $('#model').disabled = !loaded;
       $('#effort').disabled = !loaded;
       $('#send').disabled = !loaded || state.busy || !state.project;
+      paintDiscussionMode();
       loadTasks();
       checkPending();
       refreshWorkerReviews();
@@ -187,6 +199,7 @@ state.actions = {
   send,
   watchRestoredRun,
   loadTasks,
+  paintDiscussionMode,
   paintEffort: (keepUnknown = false) => {
     const select = $('#model');
     const effort = $('#effort');

@@ -105,7 +105,15 @@ export function renderReply(container, text) {
   }
 }
 
-export function msg(role, text) {
+export function paintDiscussionMode() {
+  const button = $('#discussionModeToggle');
+  button.classList.toggle('active', state.discussionMode);
+  button.setAttribute('aria-pressed', String(state.discussionMode));
+  button.textContent = state.discussionMode ? '商讨模式 · 开' : '商讨模式';
+  button.disabled = !state.project || !state.conversation || state.loadingView || state.busy;
+}
+
+export function msg(role, text, { discussionMode = false } = {}) {
   const isHostNotice = typeof text === 'string' && text.startsWith('[宿主通知]');
   if (isHostNotice) {
     const details = document.createElement('details');
@@ -122,7 +130,17 @@ export function msg(role, text) {
   const element = document.createElement('div');
   element.className = 'message ' + role;
   if (role === 'assistant') renderReply(element, text);
-  else element.textContent = text;
+  else if (role === 'user' && (discussionMode || text.startsWith('[当前模式：商讨模式]'))) {
+    const badge = document.createElement('span');
+    badge.className = 'mode-badge';
+    badge.textContent = '商讨模式';
+    const body = document.createElement('div');
+    body.className = 'message-text';
+    const separator = text.indexOf('\n\n');
+    body.textContent = text.startsWith('[当前模式：商讨模式]') && separator !== -1
+      ? text.slice(separator + 2) : text;
+    element.append(badge, body);
+  } else element.textContent = text;
   $('#messages').append(element);
   $('#messages').scrollTop = $('#messages').scrollHeight;
   return element;
@@ -199,12 +217,14 @@ export async function sendMessage() {
   const project = state.project.project_id;
   const thread = state.conversation.thread_id;
   const view = state.viewVersion;
+  const discussionMode = !!state.discussionMode;
   state.busy = true;
   state.busyThreads.add(thread);
   $('#send').disabled = true;
+  paintDiscussionMode();
   setRunning('PM 正在思考与处理…');
   input.value = '';
-  msg('user', text);
+  msg('user', text, { discussionMode });
   const current = state.projectConversations.get(project)?.items?.find((item) => item.thread_id === thread);
   if (current && (!current.title || current.title === '新会话')) {
     current.title = text.slice(0, 18);
@@ -213,7 +233,7 @@ export async function sendMessage() {
   }
   let response = false;
   try {
-    const result = await fetch('/workbench/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: project, thread_id: thread, message: text, ...selectedModelParams() }) });
+    const result = await fetch('/workbench/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_id: project, thread_id: thread, message: text, discussion_mode: discussionMode, ...selectedModelParams() }) });
     if (!result.ok) { const value = await result.json(); throw Error(value.error || '请求失败'); }
     const reader = result.body.getReader();
     const decoder = new TextDecoder();
@@ -244,6 +264,7 @@ export async function sendMessage() {
       state.busy = false;
       $('#send').disabled = !state.project || state.loadingView;
       setRunning('');
+      paintDiscussionMode();
       await state.actions.loadTasks?.();
     }
   }
@@ -303,15 +324,17 @@ export async function checkPending() {
     ? '缺少可核对的检查点，当前无法提交。请查看运行轨迹。'
     : '提交普通聊天消息不会恢复该决策；恢复只能在这里进行。';
   submit.onclick = async () => {
+    if (state.viewVersion !== view || state.busyThreads.has(thread)) return;
     const answers = boxes.map((box) => box.value.trim());
     if (answers.some((answer) => !answer)) { status.textContent = '请先填写全部答复。'; return; }
     submit.disabled = true;
     boxes.forEach((box) => { box.disabled = true; });
     state.busy = true;
     state.busyThreads.add(thread);
+    paintDiscussionMode();
     setRunning('后台任务运行中…');
     try {
-      await api('submit-decision', { project_id: project.project_id, thread_id: thread, answers, fingerprint: data.fingerprint, interrupt_id: data.interrupt_id || null, checkpoint_id: data.checkpoint_id || null, ...selectedModelParams() });
+      await api('submit-decision', { project_id: project.project_id, thread_id: thread, answers, fingerprint: data.fingerprint, interrupt_id: data.interrupt_id || null, checkpoint_id: data.checkpoint_id || null, discussion_mode: !!state.discussionMode, ...selectedModelParams() });
       status.textContent = '决策已提交，正在等待 PM 恢复运行…';
       // The decision request has returned. The restored-run observer now owns
       // the lifecycle and will refresh this conversation when the Run ends.
@@ -322,8 +345,11 @@ export async function checkPending() {
       submit.disabled = false;
       boxes.forEach((box) => { box.disabled = false; });
       state.busyThreads.delete(thread);
-      state.busy = false;
-      setRunning('');
+      if (state.viewVersion === view) {
+        state.busy = false;
+        setRunning('');
+        paintDiscussionMode();
+      }
     }
   };
   card.append(submit, status);
@@ -333,6 +359,39 @@ export async function checkPending() {
 }
 
 export function initChat() {
+  $('#discussionModeToggle').onclick = async () => {
+    if (!state.project || !state.conversation || state.busy || state.loadingView) return;
+    const project = state.project.project_id;
+    const conversation = state.conversation;
+    const view = state.viewVersion;
+    const previous = state.discussionMode;
+    const next = !previous;
+    state.discussionMode = next;
+    paintDiscussionMode();
+    $('#discussionModeToggle').disabled = true;
+    $('#send').disabled = true;
+    const update = api('conversations', { project_id: project, thread_id: conversation.thread_id, discussion_mode: next });
+    state.discussionModeUpdates.set(conversation.thread_id, update);
+    try {
+      await update;
+      conversation.discussion_mode = next;
+      const item = state.projectConversations.get(project)?.items?.find((entry) => entry.thread_id === conversation.thread_id);
+      if (item) item.discussion_mode = next;
+    } catch (error) {
+      if (state.viewVersion === view) {
+        state.discussionMode = previous;
+        showError(error.message);
+      }
+    } finally {
+      if (state.discussionModeUpdates.get(conversation.thread_id) === update) {
+        state.discussionModeUpdates.delete(conversation.thread_id);
+      }
+      if (state.viewVersion === view) {
+        paintDiscussionMode();
+        $('#send').disabled = !state.project || state.loadingView || state.busy;
+      }
+    }
+  };
   $('#model').onchange = () => state.actions.paintEffort?.();
   $('#send').onclick = () => state.actions.send?.();
   $('#message').onkeydown = (event) => {

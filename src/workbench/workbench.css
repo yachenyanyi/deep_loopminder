@@ -120,8 +120,12 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .project-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; background: none; border: 0; padding: 3px 5px; text-align: left; }
 .project-label:not(:disabled) { color: var(--accent); text-decoration: underline; }
 .project-label:disabled { opacity: 1; cursor: default; }
-.composer-controls { flex: 0 1 380px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto) 42px; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
+.composer-controls { flex: 0 1 510px; display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, .7fr) 42px; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
 .composer-controls select { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); min-width: 0; max-width: 230px; width: 100%; min-height: 36px; padding: 4px 5px; }
+.mode-toggle { min-height: 36px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); white-space: nowrap; }
+.mode-toggle.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+.mode-badge { display: inline-block; margin-bottom: 4px; padding: 1px 7px; border-radius: 999px; background: #d9d4ff; color: #362a9b; font-size: 11px; font-weight: 650; line-height: 1.6; }
+.message-text { white-space: pre-wrap; }
 .send { width: 42px; height: 42px; border-radius: 10px; font-size: 21px; }
 .empty { margin: auto; padding: 24px; text-align: center; color: var(--muted); }
 
@@ -206,7 +210,7 @@ pre { position: relative; }
   .messages { padding-inline: 12px; }
   .composer { width: calc(100% - 20px); margin-bottom: 9px; padding: 7px; }
   .bar { display: grid; gap: 4px; }
-  .composer-controls { grid-template-columns: minmax(0, 1fr) minmax(0, .8fr) 42px; }
+  .composer-controls { grid-template-columns: auto minmax(0, 1fr) minmax(0, .8fr) 42px; }
   .composer-controls select { max-width: none; }
   .view { padding: 7px; }
   .collaboration-controls { padding-inline: 9px; }

@@ -10,6 +10,8 @@ export const state = {
   busyThreads: new Set(),
   drafts: new Map(),
   busy: false,
+  discussionMode: false,
+  discussionModeUpdates: new Map(),
   loadingView: false,
   modelFormProvider: null,
   ephemeral: false,
