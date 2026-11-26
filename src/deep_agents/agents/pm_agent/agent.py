@@ -23,7 +23,6 @@ from src.middlewares.approval import (
 from src.middlewares.context_projection import (
     ContextBlock,
     ContextProjection,
-    make_context_projection_prompt,
 )
 from src.middlewares.memory.pm_agent_memory import (
     PMAgentMemoryMiddleware,
@@ -43,6 +42,8 @@ from src.middlewares.project_state.service import ProjectCommand as ProjectComma
 from src.middlewares.project_state.service import apply_project_command
 from src.runtime.routing import RoleRequirement as RoleRequirement
 from src.runtime.routing import role_requirement_from_task
+
+from .prompts import build_pm_system_prompt
 
 if TYPE_CHECKING:
     from src.middlewares.acp import ACPMiddleware
@@ -118,7 +119,6 @@ def default_pm_profile(*, acp_enabled: bool = False, memory_enabled: bool = True
 
 # 2. 固定提示词：定义 PM 的身份和治理规则；实时项目数据由中间件补充。
 
-from .prompts import build_pm_system_prompt
 
 
 def stable_pm_system_prompt() -> str:
@@ -244,9 +244,8 @@ def assemble_pm_user_middleware(
             "PM middleware_profile must exactly match the reviewed PM requirements"
         )
 
-    # 基础提示词先注入，再接入人工审批、项目状态和历史记忆。
+    # 固定提示词由 Agent 入口提供，工具按需读取项目状态和历史记忆。
     middleware = (
-        make_context_projection_prompt(stable_pm_system_prompt()),
         PMModelSelectionMiddleware(),
         PMDiscussionMiddleware(acp),
         HumanDecisionRequestMiddleware(),

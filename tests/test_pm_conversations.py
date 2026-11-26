@@ -1,6 +1,8 @@
 """Conversation ownership across project workbench endpoints."""
 
 import asyncio
+import json
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import httpx
@@ -14,6 +16,435 @@ from src.workbench import threads
 from src.workbench.claims import ClaimWatcher
 from src.workbench.context import THREADS
 from src.workbench.worker_reviews import _owner_for_worker
+
+
+@dataclass
+class StepRuntime:
+    store: object
+    config: dict
+    state: dict
+
+
+@dataclass
+class StepRequest:
+    runtime: StepRuntime
+    state: dict
+    messages: list | None = None
+    system_message: object = None
+    tool_call: dict | None = None
+    tools: tuple = ()
+
+    def override(self, **changes):
+        return replace(self, **changes)
+
+
+async def step_project(store):
+    from src.middlewares.project_state.models import Task, TaskStatus
+    from src.middlewares.project_state.workflow import ProjectWorkflow
+
+    workflow = ProjectWorkflow(store)
+    brief = await workflow.artifacts.create("p", "t", "task_brief", "实现任务，保留现有行为。")
+    task = Task("t", "功能", TaskStatus.READY, "developer", frozenset(), frozenset(),
+                ("功能可用",), artifact_refs=(brief["reference"],))
+    await ProjectStore(store).save(ProjectSnapshot("p", "目标", (), (task,)))
+    return workflow
+
+
+def test_pm_static_system_and_latest_human_copy(monkeypatch):
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from src.deep_agents.agents.pm_agent.prompts import PM_STABLE_SYSTEM_PROMPT
+    from src.middlewares.acp.middleware import ACPMiddleware
+    from src.middlewares.memory.pm_agent_memory import middleware as memory_module
+    from src.middlewares.project_state import middleware as project_module
+
+    async def scenario():
+        store = InMemoryStore()
+        workflow = await step_project(store)
+        config = {"configurable": {"project_id": "p", "thread_id": "owner"}}
+        project = project_module.ProjectStateMiddleware(workflow=workflow, pm_discussion_gate=True)
+        memory = memory_module.PMAgentMemoryMiddleware()
+        acp = ACPMiddleware(async_subagents=[{"name": "developer", "description": "开发负责人", "graph_id": "worker"}], pm_governed=True)
+        first = HumanMessage(content="旧问题")
+        latest = HumanMessage(content=[{"type": "text", "text": "当前问题"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}])
+        baseline = SystemMessage(content=PM_STABLE_SYSTEM_PROMPT)
+        captured = []
+
+        async def model(request):
+            captured.append(request)
+            return request
+
+        async def with_acp(request):
+            return await acp.awrap_model_call(request, model)
+
+        async def with_memory(request):
+            return await memory.awrap_model_call(request, with_acp)
+
+        for index in range(3):
+            await ProjectStore(store).save(ProjectSnapshot("p", f"目标{index}", (), ()))
+            await store.aput(("deep_loopminder", "pm_memory", "p"), str(index), {"content": "变化的记忆"})
+            state = {"messages": [first, latest], "pm_memory_model_error": "模型暂不可用",
+                     "async_tasks": {"w": {"run_id": f"r{index}", "status": "success"}}}
+            request = StepRequest(StepRuntime(store, config, state), state, [first, latest], baseline)
+            await project.awrap_model_call(request, with_memory)
+        config["configurable"]["pm_discussion_mode"] = True
+        await project.awrap_model_call(request, with_memory)
+        assert all(item.system_message.model_dump_json() == baseline.model_dump_json() for item in captured)
+        assert captured[-1].messages[0] is first
+        assert all(item.messages[-1] is latest for item in captured)
+        assert latest.content[0]["text"] == "当前问题"
+        assert captured[-1].messages[-1].content[-1] == latest.content[-1]
+        memory.context_token_limit = 100
+        short_system = SystemMessage(content="固定提示词")
+        long_messages = [HumanMessage(content="旧历史" * 10000), HumanMessage(content="当前问题")]
+        trimmed = await memory.awrap_model_call(
+            replace(request, system_message=short_system, messages=long_messages), model
+        )
+        assert trimmed.system_message is short_system
+        assert len(trimmed.messages) == 1 and trimmed.messages[0].content == "当前问题"
+
+    asyncio.run(scenario())
+
+
+def test_pm_tools_and_project_read_live_facts():
+    from src.deep_agents.agents.pm_agent.discussion import PMDiscussionMiddleware
+    from src.middlewares.acp.middleware import ACPMiddleware
+    from src.middlewares.approval.human_decision import HumanDecisionRequestMiddleware
+    from src.middlewares.memory.pm_agent_memory.jobs import PMMemory
+    from src.middlewares.memory.pm_agent_memory.middleware import (
+        PMAgentMemoryMiddleware,
+    )
+    from src.middlewares.project_state.middleware import ProjectStateMiddleware
+
+    async def scenario():
+        store = InMemoryStore()
+        workflow = await step_project(store)
+        project = ProjectStateMiddleware(workflow=workflow, pm_discussion_gate=True)
+        memory = PMAgentMemoryMiddleware(PMMemory(store))
+        acp = ACPMiddleware(async_subagents=[{"name": "developer", "description": "开发负责人", "graph_id": "worker"}], pm_governed=True)
+        tools = [tool for middleware in (project, memory, acp, PMDiscussionMiddleware(acp), HumanDecisionRequestMiddleware()) for tool in middleware.tools]
+        names = {tool.name for tool in tools}
+        assert len(tools) == len(names) == 21
+        assert not names & {"project_context", "pm_memory_status"}
+        assert {"spawn_agent", "followup_task", "send_message", "submit_pm_memory", "pm_read_bookmark"} <= names
+        runtime = StepRuntime(store, {"configurable": {"project_id": "p", "thread_id": "owner"}},
+                              {"async_tasks": {"w": {"run_id": "done", "status": "success"}}, "acp_delivered": {}})
+        read = next(tool for tool in tools if tool.name == "project_read")
+        value = await read.coroutine(runtime=runtime)
+        assert value["unclaimed_runs"] == ["done"]
+        assert value["review_facts"][0]["discussion_mode"] is False
+        assert value["review_facts"][0]["clef_passed"] is False
+        assert "validation_state" in value["review_facts"][0]
+        task = await read.coroutine(runtime=runtime, task_id="t")
+        assert task["task"]["task_id"] == "t" and "independent_review" in task
+        runtime.config["configurable"]["pm_discussion_mode"] = True
+        runtime.state["acp_delivered"] = {"done": True}
+        updated = await read.coroutine(runtime=runtime)
+        assert updated["discussion_mode"] is True and not updated["unclaimed_runs"]
+        assert updated["review_facts"][0]["phase_label"] == "待商讨"
+
+    asyncio.run(scenario())
+
+
+def test_pm_bookmark_discovery_and_two_level_pagination():
+    from langchain_core.messages import (
+        AIMessage,
+        HumanMessage,
+        ToolMessage,
+        messages_to_dict,
+    )
+
+    from src.middlewares.memory.pm_agent_memory.jobs import PMMemory
+    from src.middlewares.memory.pm_agent_memory.middleware import (
+        PMAgentMemoryMiddleware,
+    )
+
+    async def scenario():
+        store = InMemoryStore()
+        source = {"thread_id": "owner", "created_at": "2026-11-27", "purpose": "记录", "project_snapshot": {"project_id": "p", "goal": "目标", "tasks": []},
+                  "snapshot": messages_to_dict([HumanMessage(content="第一轮"), AIMessage(content="早期结论"),
+                      HumanMessage(content="第二轮"), AIMessage(content="", tool_calls=[{"name": "project_read", "args": {}, "id": "c1"}]),
+                      ToolMessage(content="重要输出" * 100, tool_call_id="c1", name="project_read"), AIMessage(content="当前结论")])}
+        await store.aput(PMMemory.namespace("p"), "job", source)
+        tool = next(tool for tool in PMAgentMemoryMiddleware(PMMemory(store)).tools if tool.name == "pm_read_bookmark")
+        runtime = StepRuntime(store, {"configurable": {"project_id": "p", "thread_id": "owner"}}, {})
+        listed = json.loads(await tool.coroutine(runtime=runtime))
+        assert listed["bookmarks"][0]["job_id"] == "job"
+        latest = json.loads(await tool.coroutine(runtime=runtime, job_id="job", turn_limit=1, item_limit=2))
+        assert latest["boundary"] and latest["turns"][0]["turn"] == 2
+        assert "输出已折叠" in latest["turns"][0]["items"][0]["output"]
+        earlier_items = json.loads(await tool.coroutine(runtime=runtime, job_id="job", item_cursor=latest["turns"][0]["next_item_cursor"]))
+        assert [item["type"] for item in earlier_items["items"]] == ["user_message", "tool_call"]
+        earlier = json.loads(await tool.coroutine(runtime=runtime, job_id="job", cursor=latest["page"]["next_cursor"]))
+        assert earlier["turns"][0]["turn"] == 1
+        expanded = json.loads(await tool.coroutine(runtime=runtime, job_id="job", turn_limit=1, include_outputs=True, max_output_chars_per_item=100))
+        result = next(item for item in expanded["turns"][0]["items"] if item["type"] == "tool_result")
+        assert result["output"].startswith("重要输出") and len(result["output"]) == 101
+
+    asyncio.run(scenario())
+
+
+def test_pm_direct_dispatch_and_discussion_gate(monkeypatch):
+    from langchain_core.messages import ToolMessage
+    from langgraph.types import Command
+
+    from src.deep_agents.agents.pm_agent.collaboration import PMWorkerGovernance
+    from src.deep_agents.agents.pm_agent.discussion import DiscussionGate
+    from src.middlewares.acp import server
+    from src.middlewares.acp.correlation import WorkerRef
+    from src.middlewares.project_state import workflow as workflow_module
+    from src.middlewares.project_state.middleware import ProjectStateMiddleware
+    from src.runtime.routing import WorkerCandidate
+
+    async def scenario():
+        store = InMemoryStore()
+        workflow = await step_project(store)
+        middleware = ProjectStateMiddleware(workflow=workflow, pm_discussion_gate=True)
+        config = {"configurable": {"project_id": "p", "thread_id": "owner", "project_state_single_writer": True}}
+        state = {"messages": [], "async_tasks": {}, "acp_task_names": {}}
+        runtime = StepRuntime(store, config, state)
+        observed = []
+        candidate = WorkerCandidate("claude", "acp", frozenset({"developer"}), frozenset(), True)
+        monkeypatch.setattr(server, "worker_catalog", lambda: [candidate])
+
+        async def handler(request):
+            observed.append(request)
+            return Command(update={"async_tasks": {"worker": {"run_id": "r1", "agent_name": "developer", "status": "running"}}})
+
+        request = StepRequest(runtime, state, tool_call={"name": "spawn_agent", "id": "c", "args": {"task_id": "t", "task_name": "feature", "message": "直接实现"}})
+        result = await middleware._execute_tool_call(request, handler)
+        assert isinstance(result, Command)
+        delegated = observed[-1]
+        assert delegated.runtime.config["configurable"]["_pm_phase"] == "execution"
+        assert delegated.runtime.config["configurable"]["_pm_discussion_required"] is False
+        binding = await store.aget(("deep_loopminder", "project_execution_refs", "p"), "r1")
+        assert binding.value["phase"] == "execution"
+        intent = await store.aget(("deep_loopminder", "project_dispatch_intents", "p"), "t")
+        assert intent.value["status"] == "confirmed"
+        ref = WorkerRef("claude", "native", "p", "t", "worker", "developer", "C:/demo")
+        governance = PMWorkerGovernance(lambda: store)
+        envelope = {"pm_phase": "execution", "discussion_required": False, "pm_dispatch_id": intent.value["intent_id"],
+                    "owner_thread_id": "owner", "message": delegated.tool_call["args"]["message"]}
+        await governance.authorize_execution(envelope, ref, {"metadata": {"run_id": "r1"}})
+        import pytest
+        with pytest.raises(PermissionError):
+            await governance.authorize_execution({**envelope, "message": "篡改"}, ref, {"metadata": {"run_id": "r1"}})
+        with pytest.raises(PermissionError):
+            await governance.authorize_execution({**envelope, "owner_thread_id": "other"}, ref, {"metadata": {"run_id": "r1"}})
+        namespace = ("deep_loopminder", "project_dispatch_intents", "p", "history")
+        legacy = {key: value for key, value in intent.value.items() if key != "discussion_required"}
+        await store.aput(namespace, intent.value["intent_id"], legacy)
+        with pytest.raises(ValueError):
+            await governance.authorize_execution(envelope, ref, {"metadata": {"run_id": "r1"}})
+        await store.aput(namespace, intent.value["intent_id"], intent.value)
+        state["async_tasks"] = {"worker": {"run_id": "r1", "agent_name": "developer", "status": "success"}}
+        state["acp_task_names"] = {"worker": "feature"}
+
+        async def steer_handler(request):
+            return "injected"
+
+        steer = replace(request, tool_call={"name": "send_message", "id": "s", "args": {"target": "feature", "message": "调整"}})
+        assert await middleware._execute_tool_call(steer, steer_handler) == "injected"
+
+        async def run_get(*args):
+            return {"status": "success"}
+
+        monkeypatch.setattr(workflow_module, "get_client", lambda **_: SimpleNamespace(runs=SimpleNamespace(get=run_get)))
+
+        async def general_followup(request):
+            observed.append(request)
+            return Command(update={"async_tasks": {"worker": {"run_id": "r-general", "agent_name": "developer", "status": "pending"}}})
+
+        follow = replace(request, tool_call={"name": "followup_task", "id": "f", "args": {"target": "feature", "message": "补充按钮交互"}})
+        assert isinstance(await middleware._execute_tool_call(follow, general_followup), Command)
+        assert observed[-1].runtime.config["configurable"]["_pm_discussion_required"] is False
+        assert "补充按钮交互" in observed[-1].tool_call["args"]["message"]
+        config["configurable"]["pm_discussion_mode"] = True
+        rejected = await middleware._execute_tool_call(request, handler)
+        assert isinstance(rejected, ToolMessage) and "discussion_mode_active" in rejected.content
+        config["configurable"]["pm_discussion_mode"] = False
+        await store.aput(("deep_loopminder", "pm_discussions", "p", "t"), "latest", {"decision_id": "d"})
+        await store.aput(("deep_loopminder", "pm_discussions", "p", "t"), "d", {"decision": "pass"})
+        assert "discussion_mode_active" in (await middleware._execute_tool_call(request, handler)).content
+        await store.aput(("deep_loopminder", "project_execution_refs", "p"), "r1", {**binding.value, "phase": "discussion"})
+        await store.adelete(("deep_loopminder", "pm_discussions", "p", "t"), "latest")
+        assert "discussion_mode_active" in (await middleware._execute_tool_call(request, handler)).content
+        assert "steering_requires_versioned_authorization" in (await middleware._execute_tool_call(steer, steer_handler)).content
+
+        async def require_pass(self, *args, **kwargs):
+            return {"decision_id": "d", "pm_confirmation": "已确认方案"}
+
+        monkeypatch.setattr(DiscussionGate, "require_pass", require_pass)
+
+        async def followup(request):
+            observed.append(request)
+            return Command(update={"async_tasks": {"worker": {"run_id": "r2", "agent_name": "developer", "status": "pending"}}})
+
+        follow = replace(request, tool_call={"name": "followup_task", "id": "f", "args": {"target": "feature", "message": "请实现已讨论的按钮交互并报告验证结果"}})
+        assert isinstance(await middleware._execute_tool_call(follow, followup), Command)
+        assert "按钮交互" in observed[-1].tool_call["args"]["message"]
+        assert observed[-1].runtime.config["configurable"]["_pm_phase"] == "execution"
+
+    asyncio.run(scenario())
+
+
+def test_conversation_discussion_mode_persists_to_history_chat_and_claims(monkeypatch):
+    from src.workbench import app as workbench
+    from src.workbench import context
+
+    async def scenario():
+        store = InMemoryStore()
+        await step_project(store)
+        calls = []
+        inputs = []
+
+        class OfficialThreads:
+            async def get(self, identity):
+                return {"thread_id": identity, "metadata": {"loopminder_project_id": "p", "loopminder_purpose": "pm_workbench"}}
+
+            async def get_state(self, identity):
+                return {"values": {"messages": []}}
+
+        class Runs:
+            async def stream(self, *args, **kwargs):
+                calls.append(kwargs["config"])
+                inputs.append(kwargs["input"])
+                yield SimpleNamespace(event="updates", data={})
+
+            async def create(self, *args, **kwargs):
+                calls.append(kwargs["config"])
+                return {"run_id": "claim"}
+
+        client = SimpleNamespace(threads=OfficialThreads(), runs=Runs())
+        await store.aput(THREADS, "owner", {"project_id": "p", "thread_id": "owner", "title": "会话"})
+
+        async def provider():
+            return store
+
+        monkeypatch.setattr(context, "_injected_store", store)
+        monkeypatch.setattr(threads, "get_store", provider)
+        monkeypatch.setattr(workbench, "get_client", lambda **_: client)
+        app = Starlette(routes=workbench.routes)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 3000)), base_url="http://127.0.0.1") as http:
+            response = await http.post("/workbench/api/conversations", json={"project_id": "p", "thread_id": "owner", "discussion_mode": True})
+            assert response.status_code == 200 and response.json()["discussion_mode"] is True
+            assert (await http.get("/workbench/api/history?project_id=p&thread_id=owner")).json()["discussion_mode"] is True
+            assert (await http.post("/workbench/api/chat", json={"project_id": "p", "thread_id": "owner", "message": "你好"})).status_code == 200
+            assert calls[-1]["configurable"]["pm_discussion_mode"] is True
+            assert inputs[-1]["messages"][0]["content"].startswith("[当前模式：商讨模式]")
+            await http.post("/workbench/api/chat", json={"project_id": "p", "thread_id": "owner", "message": "你好", "discussion_mode": False})
+            assert calls[-1]["configurable"]["pm_discussion_mode"] is False
+            assert inputs[-1]["messages"][0]["content"] == "你好"
+            assert (await store.aget(THREADS, "owner")).value["discussion_mode"] is False
+        watcher = ClaimWatcher(store)
+        assert await watcher._wake(client, "p", "owner", [("worker", {"run_id": "r", "agent_name": "developer"}, "success")], {})
+        assert calls[-1]["configurable"]["pm_discussion_mode"] is False
+
+    asyncio.run(scenario())
+
+
+def test_direct_worker_graph_defers_execution_and_uses_job_lifecycle(tmp_path, monkeypatch):
+    from langchain_core.messages import HumanMessage
+
+    from src.middlewares.acp import graph as graph_module
+    from src.middlewares.acp.correlation import WorkerRef
+    from src.middlewares.project_state.folders import ProjectFolders
+    from src.runtime.routing import WorkerCandidate
+
+    async def scenario():
+        store = InMemoryStore()
+        await step_project(store)
+        await ProjectFolders(store).bind("p", str(tmp_path))
+        events = []
+
+        class Worker:
+            process = SimpleNamespace(returncode=None)
+
+            async def new(self, **kwargs):
+                events.append("new_readonly_session")
+                return WorkerRef("claude", "native", "p", "t", "worker", "developer", str(tmp_path), isolation="native-readonly")
+
+            async def resume(self, ref):
+                events.append("resume")
+
+            async def control(self, ref, action, payload, **kwargs):
+                events.append(action)
+                if action == "steer":
+                    return {"outcome": "injected"}
+                return SimpleNamespace(stop_reason="end_turn")
+
+        worker = Worker()
+
+        class Pool:
+            async def get_readonly(self, *args, **kwargs):
+                events.append("readonly")
+                return worker
+
+            async def get(self, *args, **kwargs):
+                raise AssertionError("不能在 prepare 启动无监管可写连接")
+
+            def execution_ticket(self, *args):
+                return {"intent_id": "intent"}
+
+            async def get_execution(self, ref, intent_id, **kwargs):
+                assert events.index("begin_execution") < len(events)
+                assert kwargs["job_status"] == "job-status"
+                events.append("get_execution")
+                return worker
+
+            async def release_execution(self, ref):
+                events.append("release")
+
+            def active_execution(self, ref):
+                return worker
+
+        class Governance:
+            async def readonly_mode(self, *args):
+                return "plan"
+
+            async def authorize_execution(self, request, ref, config):
+                assert request["pm_phase"] == "execution" and request["discussion_required"] is False
+                events.append("authorize")
+
+            async def begin_execution(self, *args):
+                events.append("begin_execution")
+                return {"job_status": "job-status"}
+
+            async def apply_execution_mode(self, *args):
+                events.append("execution_mode")
+
+            async def apply_discussion_mode(self, *args):
+                return None
+
+            async def finish_execution(self, *args):
+                events.append("finish")
+
+        monkeypatch.setattr(graph_module, "get_store", lambda: store)
+        monkeypatch.setattr(graph_module, "project_recorder", lambda _: None)
+        graph = graph_module.create_worker_graph(
+            {"claude": worker}, [WorkerCandidate("claude", "acp", frozenset({"developer"}), frozenset(), True)],
+            project_workers=Pool(), governance=Governance(),
+        )
+        payload = {"operation": "spawn", "owner_thread_id": "owner", "project_id": "p", "task_id": "t",
+                   "agent_type": "developer", "message": "开发", "pm_governed": True, "pm_phase": "execution", "discussion_required": False,
+                   "pm_provider_id": "claude", "pm_dispatch_id": "intent"}
+        result = await graph.ainvoke({"messages": [HumanMessage(content=json.dumps(payload))]},
+                                     {"configurable": {"thread_id": "worker"}, "metadata": {"run_id": "run"}})
+        assert events.index("new_readonly_session") < events.index("begin_execution") < events.index("get_execution") < events.index("ask")
+        assert events[-2:] == ["release", "finish"]
+
+        async def get_state(target):
+            return {"values": result}
+
+        monkeypatch.setattr(graph_module, "get_client", lambda **_: SimpleNamespace(threads=SimpleNamespace(get_state=get_state)))
+        control = graph_module.create_control_graph({"claude": worker}, project_workers=Pool())
+        steered = await control.ainvoke({"target": "worker", "owner_thread_id": "owner", "message": "调整"})
+        assert json.loads(steered["messages"][-1].content)["outcome"] == "injected"
+        result["request"] = {**result["request"], "pm_phase": "discussion"}
+        blocked = await control.ainvoke({"target": "worker", "owner_thread_id": "owner", "message": "调整"})
+        assert json.loads(blocked["messages"][-1].content)["reason"] == "steering_requires_versioned_authorization"
+
+    asyncio.run(scenario())
 
 
 def test_conversations_are_independent_and_bound_to_project(monkeypatch):
@@ -221,7 +652,8 @@ def test_human_acceptance_survives_passive_task_and_directory_changes(tmp_path, 
     from src.middlewares.project_state.commands import TransitionTaskCommand
     from src.middlewares.project_state.models import TaskStatus
     from src.middlewares.project_state.service import apply_project_command
-    from src.workbench import app as workbench, context
+    from src.workbench import app as workbench
+    from src.workbench import context
 
     async def scenario():
         store = InMemoryStore()
@@ -288,7 +720,10 @@ def test_claim_review_is_scoped_to_received_delivery_and_skips_existing_review(t
 
     from src.deep_agents.agents.pm_agent.discussion import PMDiscussionMiddleware
     from src.middlewares.acp import server
-    from src.middlewares.execution.security_policy import EnforcementCapability, EnforcementFact
+    from src.middlewares.execution.security_policy import (
+        EnforcementCapability,
+        EnforcementFact,
+    )
     from src.runtime.routing import WorkerCandidate
 
     @dataclass

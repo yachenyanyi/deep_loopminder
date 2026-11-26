@@ -21,7 +21,12 @@ async def _owner_for_worker(ref):
     store = await get_store()
     item = await store.aget(("deep_loopminder", "project_dispatch_intents", project_id), task_id)
     value = item.value if item else {}
-    if (value.get("phase") != "execution" or value.get("worker_agent_id") != worker_id
+    worker = value.get("worker_agent_id") or value.get("agent_id")
+    if value.get("phase") == "execution" and value.get("discussion_required", True) is False and worker is None:
+        active = await store.aget(("deep_loopminder", "project_worker_quarantine", project_id), worker_id)
+        if active and active.value.get("intent_id") == value.get("intent_id"):
+            worker = worker_id
+    if (value.get("phase") != "execution" or worker != worker_id
             or not isinstance(value.get("owner_thread"), str) or not value["owner_thread"]):
         return None
     return value["owner_thread"]

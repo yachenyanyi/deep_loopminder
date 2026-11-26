@@ -298,6 +298,10 @@ class ProjectWorkerPool:
         return {"context_usage": observed.get("context_usage"),
                 "compaction_visibility": observed.get("compaction_visibility", "unknown")}
 
+    def active_execution(self, ref):
+        """获取当前受 Job 监管的连接，供运行中调整复用。"""
+        return self._execution_connections.get((ref.provider_id, ref.cwd, ref.config_version, ref.thread_id))
+
     async def get_execution(self, ref, intent_id, *, job_status=None):
         """Continue an idle read-only session as a writable developer session."""
         if ref.isolation != READONLY_ISOLATION:

@@ -39,13 +39,13 @@ class TaskDraft(BaseModel):
     """新任务的输入结构：固定从待办开始，不接收验收或审批结果。"""
 
     model_config = ConfigDict(extra="forbid")
-    task_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
-    title: str = Field(min_length=1)
-    task_brief_ref: str = Field(min_length=1)
-    acceptance_criteria: list[str] = Field(min_length=1)
+    task_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$", description="任务 task_id，以字母开头的唯一标识")
+    title: str = Field(min_length=1, description="简洁任务标题")
+    task_brief_ref: str = Field(min_length=1, description="project_create_artifact 返回的任务简报制品引用")
+    acceptance_criteria: list[str] = Field(min_length=1, description="可逐项核验的验收标准")
     # Routing identifier only; a display name such as "开发负责人" routes to no
     # worker and would leave the task permanently blocked.
-    owner_role: Literal["developer", "reviewer", "tester", "researcher"] | None = None
+    owner_role: Literal["developer", "reviewer", "tester", "researcher"] | None = Field(default=None, description="仅填 developer/reviewer/tester/researcher 角色标识，不填显示名称")
     # Exact-match routing requirements drawn from the provider capability
     # vocabulary; free text here makes the task unroutable.
     required_capabilities: list[
@@ -58,9 +58,9 @@ class TaskDraft(BaseModel):
             "test.execute",
             "web.search",
         ]
-    ] = Field(default_factory=list)
-    dependencies: list[str] = Field(default_factory=list)
-    priority: int = 0
+    ] = Field(default_factory=list, description="精确能力标识，无额外能力要求时留空")
+    dependencies: list[str] = Field(default_factory=list, description="须先完成 DONE 的依赖任务 task_id")
+    priority: int = Field(default=0, description="任务优先级数值")
 
 
 def project_scope(runtime) -> tuple[str, ProjectStore]:
@@ -99,7 +99,7 @@ async def project_context(runtime: ToolRuntime) -> str:
 
 @tool
 async def project_read(runtime: ToolRuntime, task_id: str | None = None) -> dict:
-    """Read project facts. Supply task_id for one task plus allowed transitions, blockers and recovery guidance. Without task_id returns the full snapshot."""
+    """读取最新权威项目事实的主入口。回答进度、验收/批准状态或派工前必须先调用。task_id 可限定单个任务及其允许操作。"""
     project_id, store = project_scope(runtime)
     snapshot = await store.load(project_id)
     if snapshot and task_id is not None:
@@ -115,6 +115,82 @@ async def project_read(runtime: ToolRuntime, task_id: str | None = None) -> dict
         if snapshot
         else {"project_id": project_id, "found": False}
     )
+
+
+async def requires_discussion(workflow, project_id, task, configurable):
+    """会话开关及任务的持久化商讨记录共同决定门禁。"""
+    if configurable.get("pm_discussion_mode") is True:
+        return True
+    from src.deep_agents.agents.pm_agent.discussion import DiscussionGate
+
+    if await DiscussionGate(workflow.store).latest(project_id, task.task_id):
+        return True
+    for reference in task.execution_refs:
+        item = await workflow.store.aget(
+            ("deep_loopminder", "project_execution_refs", project_id), reference.rsplit("/", 1)[-1]
+        )
+        if item and item.value.get("phase") == "discussion":
+            return True
+    return False
+
+
+def make_project_read(workflow=None, *, pm_discussion_gate=False):
+    """绑定工作流事实，保持无工作流调用方的原快照契约。"""
+    if workflow is None:
+        return project_read
+
+    @tool("project_read")
+    async def read(runtime: ToolRuntime, task_id: str | None = None) -> dict:
+        """读取最新权威项目事实的主入口。回答进度、验收/批准状态或派工前必须先调用。省略 task_id 读取项目快照、各任务阶段、商讨门禁、验收审查及未领取运行；指定 task_id 读取该任务与允许操作。"""
+        project_id, store = project_scope(runtime)
+        snapshot = await store.load(project_id)
+        configured = runtime.config.get("configurable", {})
+        from src.deep_agents.agents.pm_agent.discussion import DiscussionGate
+
+        gate = DiscussionGate(runtime.store)
+        facts = await workflow.review_status(snapshot, include_all_tasks=True) if snapshot else []
+        for fact in facts:
+            identity = fact["task_id"]
+            review = await workflow.independent_review_status(project_id, identity)
+            discussion = await gate.latest(project_id, identity)
+            task = next(task for task in snapshot.tasks if task.task_id == identity)
+            in_discussion = pm_discussion_gate and await requires_discussion(workflow, project_id, task, configured)
+            passed = False
+            if discussion:
+                try:
+                    await gate.require_pass(project_id, identity, worker_agent_id=discussion.get("worker_agent_id", ""))
+                    passed = True
+                except ValueError:
+                    pass
+            phase = "商讨已过·可开发" if passed else "待商讨" if in_discussion else "可直接委派"
+            if task.status == TaskStatus.IN_PROGRESS:
+                phase = "开发中"
+            if task.status in {TaskStatus.DEV_COMPLETE, TaskStatus.REVIEW, TaskStatus.TESTING}:
+                phase = "待人工验收" if review.get("status") == "pass" else "待审查"
+            if task.status in {TaskStatus.PASSED, TaskStatus.WAITING_HUMAN, TaskStatus.APPROVED}:
+                phase = "待人工验收"
+            if task.status == TaskStatus.DONE:
+                phase = "已完成"
+            discussion_state = {"status": "not_recorded"} if discussion is None else {
+                "decision_id": discussion.get("decision_id"), "decision": discussion.get("decision"),
+                "current_pass": passed, "worker_agent_id": discussion.get("worker_agent_id"),
+            }
+            fact.update(independent_review=review, discussion=discussion_state,
+                        discussion_mode=in_discussion, clef_passed=passed, phase_label=phase)
+        unclaimed = [task["run_id"] for task in runtime.state.get("async_tasks", {}).values()
+                     if task.get("status") in {"success", "error", "interrupted", "timeout", "cancelled"}
+                     and not runtime.state.get("acp_delivered", {}).get(task["run_id"])]
+        common = {"discussion_mode": configured.get("pm_discussion_mode") is True,
+                  "unclaimed_runs": unclaimed}
+        if task_id is not None:
+            result = await project_read.coroutine(runtime=runtime, task_id=task_id)
+            fact = next((fact for fact in facts if fact["task_id"] == task_id), {})
+            return {**result, **common, "review_fact": fact,
+                    "independent_review": fact.get("independent_review"), "discussion": fact.get("discussion")}
+        return {"snapshot": _snapshot_to_value(snapshot) if snapshot else None,
+                **common, "review_facts": facts}
+
+    return read
 
 
 def make_project_command(
@@ -157,24 +233,16 @@ def make_project_command(
             ]
         ] | None = None,
     ) -> dict:
-        """Mutate the current project using deterministic rules.
+        """逐次修改当前项目并读取结果，禁止混批或自行伪造验收与批准。
 
-        Call one command at a time and read its result before the next command. create_project
-        requires goal; update_project replaces supplied goal/constraints;
-        create_task requires task (including TaskBrief ref and acceptance criteria);
-        transition_task requires task_id/target_status. passed/approved require
-        trusted host evidence, never self-reported approval. Runtime binds scope.
-        update_task_dependencies requires task_id/dependencies and only edits unexecuted backlog/ready tasks,
-        resetting them to backlog. Cannot drop an active dependency of an executed, unfinished task.
-        create_task's owner_role and update_task_owner_role take routing identifiers only
-        (developer/reviewer/tester/researcher), never display names; update_task_owner_role
-        corrects an unexecuted task whose role is wrong.
-        required_capabilities draws only on the provider vocabulary
-        (repo.read/repo.write/files.read/files.write/shell.execute/test.execute/web.search);
-        update_task_capabilities corrects an unexecuted task whose capabilities are unanswerable.
-        dependencies always wait for DONE; do not make a review depend on its
-        own subject being DONE. Use spawn_agent with same task_id/new task_name for review/testing.
-        On rejection read controls; missing trusted evidence requires host/human action, not status guessing.
+        8 个 action 及必填参数：create_project 需 goal；update_project 需 goal 或 constraints；
+        create_task 需 task（含 task_id、task_brief_ref、acceptance_criteria）；
+        update_task_brief 需 task_id、task_brief_ref；transition_task 需 task_id、target_status；
+        update_task_dependencies 需 task_id、dependencies；update_task_owner_role 需 task_id、owner_role；
+        update_task_capabilities 需 task_id、required_capabilities。
+        owner_role 只能填 developer/reviewer/tester/researcher，required_capabilities 无额外要求时留空。
+        依赖任务必须完成 DONE，审查用 begin_review。依赖、角色和能力修正只允许未执行的任务。
+        passed/approved/done 需要宿主可信人工依据。被拒绝时读取 controls，不猜状态。
         """
         require_writer(runtime)
         project_id, store = project_scope(runtime)

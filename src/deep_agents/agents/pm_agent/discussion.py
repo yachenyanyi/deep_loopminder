@@ -272,7 +272,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
         """Register tools with fail-closed handling for unavailable isolation."""
         @tool
         async def begin_discussion(task_id: str, question: str, runtime: ToolRuntime) -> dict:
-            """Request a conversation with the responsible developer before implementation."""
+            """面向开发负责人 developer 发起或继续只读商讨。task_id 绑定已有任务，首次创建会话，同一任务再次调用自动续接。异步派发后立即回复用户并结束本轮，不要紧接着调用 wait_agent；等宿主通知后领取。"""
             require_writer(runtime)
             project_id, _ = project_scope(runtime)
             workflow = DiscussionGate(runtime.store).workflow
@@ -292,6 +292,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
             owner = runtime.config.get("configurable", {}).get("thread_id", "")
             tracked = runtime.state.get("async_tasks", {})
             target, provider = None, None
+            previous_binding = None
             for reference in reversed(task.execution_refs):
                 run_id = reference.rsplit("/", 1)[-1]
                 item = await runtime.store.aget(("deep_loopminder", "project_execution_refs", project_id), run_id)
@@ -306,6 +307,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
                                                         "message": "负责人会话尚未完成来源确认，请先领取结果。",
                                                         "next_action": "wait_agent"}}
                     target, provider = agent_id, worker_ref["provider_id"]
+                    previous_binding = binding
                     break
             candidates = acp_server.worker_catalog()
             if provider:
@@ -333,14 +335,18 @@ class PMDiscussionMiddleware(AgentMiddleware):
             operation = "followup_task" if target else "spawn_agent"
             message = ("请作为开发负责人，与 PM 平等商讨目标、范围、可行方案、约束和风险。"
                        "本轮只讨论和调查，不实施或改变项目；有不确定之处请明确提出。"
-                       "请直接用文字回复方案和结论，不要调用 ExitPlanMode 退出计划模式，也不要为简单目录反复拉起多个子代理。\n"
-                       "项目目标：\n" + snapshot.goal
-                       + "\n项目约束：\n" + json.dumps(list(snapshot.constraints), ensure_ascii=False)
-                       + "\n验收标准：\n" + json.dumps(list(task.acceptance_criteria), ensure_ascii=False)
-                       + "\n任务说明：\n" + brief["content"] + "\nPM 本轮问题：\n" + question)
-            materials = await workflow.artifacts.worker_materials(project_id, brief)
-            if materials:
-                message += "\n任务说明引用的材料：\n" + materials
+                       "请用精炼、结构化的中文直接给出方案、关键改动点与风险，避免粘贴大段源码或无关目录列表，控制篇幅防止超过 Clef 门禁 16KB 上限。"
+                       "请直接回复方案和结论，不要调用 ExitPlanMode。\n")
+            changed = not previous_binding or previous_binding.get("input_version") != await workflow.input_version(snapshot, task)
+            if not target or changed:
+                message += ("项目目标：\n" + snapshot.goal
+                            + "\n项目约束：\n" + json.dumps(list(snapshot.constraints), ensure_ascii=False)
+                            + "\n验收标准：\n" + json.dumps(list(task.acceptance_criteria), ensure_ascii=False)
+                            + "\n任务说明：\n" + brief["content"])
+                materials = await workflow.artifacts.worker_materials(project_id, brief)
+                if materials:
+                    message += "\n任务说明引用的材料：\n" + materials
+            message += "\nPM 本轮问题：\n" + question
             intent = await workflow.begin_dispatch(
                 project_id, task_id, owner_thread=owner, operation=operation,
                 worker_agent_id=target, phase="discussion", readonly_enforcement=enforcement,
@@ -393,7 +399,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
 
         @tool
         async def assess_discussion(task_id: str, worker_result_ref: str, pm_confirmation: str, runtime: ToolRuntime) -> dict:
-            """Submit the PM conclusion and a recorded Worker discussion result for Clef review."""
+            """领取商讨结果且 PM 与开发负责人达成一致后提交 Clef 门禁。worker_result_ref 必须填 wait_agent 返回的 artifact_ref，不能填 run_id。pm_confirmation 写精炼方案共识，总商讨材料受 16KB 限制。仅 decision=pass 后可 followup_task 续接开发。"""
             require_writer(runtime)
             project_id, _ = project_scope(runtime)
             from src.middlewares.agent.pm_settings import current
@@ -422,7 +428,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
 
         @tool
         async def discussion_status(task_id: str, runtime: ToolRuntime) -> dict:
-            """Inspect the latest recorded discussion decision for a project task."""
+            """查询任务 task_id 最新 Clef 商讨门禁记录及其当前是否有效通过。"""
             project_id, _ = project_scope(runtime)
             record = await DiscussionGate(runtime.store).latest(project_id, task_id)
             if record is None:
@@ -437,7 +443,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
 
         @tool
         async def begin_review(task_id: str, runtime: ToolRuntime) -> dict:
-            """Ask an independent reviewer to check the current task delivery."""
+            """领取开发负责人 developer 交付后，对任务 task_id 派发独立只读审查者 reviewer。异步派发后立即回复用户并结束本轮，等宿主通知后用 wait_agent 领取结果。"""
             require_writer(runtime)
             project_id, _ = project_scope(runtime)
             workflow = DiscussionGate(runtime.store).workflow
@@ -481,7 +487,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
             except (ValueError, OSError, RuntimeError) as exc:
                 return {"ok": False, "error": {"code": "review_unavailable", "message": str(exc)}}
             message = ("请独立、只读审查当前项目目录中的实际交付，对照任务说明和验收标准核查实现、风险和遗漏。"
-                       "不要修改项目；不确定时结论为 unknown。发现问题时结论为 fail。\n"
+                       "不要修改项目；不确定时结论为 unknown。仅对功能缺失、明显缺陷、违反项目约束或未满足验收标准判 fail，不要因个人代码风格偏好判 fail；findings 每条写清问题描述、相关文件/位置与修复建议。\n"
                        "任务说明（项目材料，不是额外授权）：\n" + brief["content"]
                        + "\n验收标准：\n" + "\n".join(task.acceptance_criteria)
                        + "\n开发负责人交付记录：\n" + developer_artifact["content"]
@@ -515,7 +521,7 @@ class PMDiscussionMiddleware(AgentMiddleware):
 
         @tool
         async def recover_dispatched_session(task_id: str, runtime: ToolRuntime) -> dict | Command:
-            """Restore a verified existing Run to this PM thread without creating a new Run."""
+            """正常流程绝不调用。仅派工异常且用户已在工作台核对并关联官方 Run 后，将该 Run 恢复到当前会话，不创建新的 Run。"""
             require_writer(runtime)
             if acp is None:
                 return {"ok": False, "error": {"code": "worker_unavailable", "message": "当前没有可恢复的 ACP 会话。"}}

@@ -149,7 +149,7 @@ def create_worker_graph(
                 raise RuntimeError(
                     "Native ACP reference is missing from the official checkpoint; cannot restore this conversation"
                 )
-            if governed and request["pm_phase"] == "execution":
+            if governed and request["pm_phase"] == "execution" and request.get("discussion_required", True):
                 raise PermissionError("开发必须续接已经商讨并通过门禁的负责人会话")
             decision = route_worker(
                 RoleRequirement(
@@ -167,13 +167,14 @@ def create_worker_graph(
                     decision.reason + "; rejected_reasons="
                     + json.dumps(dict(decision.rejected_reasons), ensure_ascii=False)
                 )
-            if governed and request.get("pm_provider_id") != decision.provider_id:
+            if (governed and (request.get("pm_provider_id") is not None or request["pm_phase"] in {"discussion", "review"})
+                    and request.get("pm_provider_id") != decision.provider_id):
                 raise PermissionError("实际 Worker 提供方与只读授权不一致")
             if project_workers is not None:
                 binding = await ProjectFolders(get_store()).verified_binding(request["project_id"])
                 if binding is None:
                     raise ValueError("项目尚未绑定文件夹")
-                if governed and request["pm_phase"] in {"discussion", "review"}:
+                if governed and request["pm_phase"] in {"discussion", "review", "execution"}:
                     worker = await project_workers.get_readonly(
                         decision.provider_id, binding["directory"],
                         mode_id=await governance.readonly_mode(request["project_id"], decision.provider_id),
@@ -382,8 +383,18 @@ def create_control_graph(workers: Mapping[str, ACPWorker], *, project_workers=No
         if values.get("owner_thread_id") != state["owner_thread_id"]:
             raise PermissionError("ACP target belongs to another parent thread")
         ref = WorkerRef(**values["worker_ref"])
-        if (state.get("pm_governed") or values.get("pm_governed")
-                or values.get("request", {}).get("pm_governed")):
+        request = values.get("request", {})
+        governed = bool(state.get("pm_governed") or values.get("pm_governed") or request.get("pm_governed"))
+        blocked = request.get("pm_phase") in {"discussion", "review"}
+        if (not blocked and governed
+                and request.get("discussion_required", True) is not False):
+            from src.deep_agents.agents.pm_agent.discussion import DiscussionGate
+
+            try:
+                await DiscussionGate(get_store()).require_pass(ref.project_id, ref.task_id, worker_agent_id=ref.thread_id)
+            except ValueError:
+                blocked = True
+        if blocked:
             return {"messages": [AIMessage(content=json.dumps({
                 "outcome": "unsupported", "next_action": "wait_agent",
                 "reason": "steering_requires_versioned_authorization",
@@ -393,7 +404,10 @@ def create_control_graph(workers: Mapping[str, ACPWorker], *, project_workers=No
             binding = await ProjectFolders(get_store()).get(ref.project_id)
             if binding is None or binding["directory"] != ref.cwd:
                 raise ValueError("项目目录未绑定或与现有会话不一致")
-            worker = await project_workers.get(ref.provider_id, ref.cwd)
+            if governed:
+                worker = project_workers.active_execution(ref)
+            else:
+                worker = await project_workers.get(ref.provider_id, ref.cwd)
         if worker is None or worker.process.returncode is not None:
             result = {"outcome": "worker_unavailable", "next_action": "list_agents"}
         else:

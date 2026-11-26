@@ -32,7 +32,6 @@ Worker 不继承父 Agent 的工具。只能要求其使用能力目录和角色
 成果通过会话交接，项目集成的 wait_agent 自动保存最终结果，不要求 Worker 调用父 Agent 的制品工具。
 wait_agent 默认只领取未读结果。历史重读必须明确指定单个 target 和 run_id；超时仅结束等待，不取消 Worker。
 根据 errors 和 next_action 处理问题，不盲目重试写操作；Run 成功不等于任务验收或人工批准。"""
-_PM_TOOL_INSTRUCTIONS = """Worker 工具说明：wait_agent 默认只领取未读结果，历史重读须指定单个 target 和 run_id，超时只结束等待不取消 Worker；根据 errors 和 next_action 处理异常，不盲目重试写操作。"""
 
 
 def _merge(existing: dict | None, update: dict) -> dict:
@@ -98,10 +97,11 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
         """Configure trusted role endpoints and bound individual SDK requests."""
         super().__init__(
             async_subagents=async_subagents,
-            system_prompt=_PM_TOOL_INSTRUCTIONS if pm_governed else _INSTRUCTIONS,
+            system_prompt=None if pm_governed else _INSTRUCTIONS,
         )
         if request_timeout <= 0:
             raise ValueError("request_timeout must be positive")
+        self.pm_governed = pm_governed
         self._specs = {spec["name"]: spec for spec in async_subagents}
         if default_agent_type is not None and default_agent_type not in self._specs:
             raise ValueError("default_agent_type must name a configured role")
@@ -124,7 +124,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                 str | None, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
             ] = None,
         ) -> dict | Command:
-            """Start a background subagent. task_name is a unique worker alias (letters/digits/underscore/hyphen, case-sensitive). task_id optionally binds an existing business task; defaults to task_name. For an independent review use a new alias with the same task_id. Omit agent_type only when a default role is configured."""
+            """一般模式下直接委派开发负责人 developer 等角色开工。task_name 为唯一会话别名，task_id 绑定任务，agent_type 指定角色。商讨模式禁用直接派工，改用 begin_discussion。异步派发后立即交还控制权回复用户，勿立刻 wait_agent。"""
             owner = self._owner(runtime)
             self._text(message)
             role = agent_type or self._default
@@ -191,7 +191,8 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                 "project_id": context.get("project_id") or owner,
                 "task_id": context.get("task_id") or task_id or task_name,
                 "required_capabilities": context.get("required_capabilities", []),
-                **({"pm_governed": True, "pm_phase": context.get("_pm_phase")}
+                **({"pm_governed": True, "pm_phase": context.get("_pm_phase"),
+                    "discussion_required": context.get("_pm_discussion_required", True)}
                    if context.get("_pm_governed") is True else {}),
                 **({"pm_dispatch_id": context["_pm_dispatch_id"]} if context.get("_pm_dispatch_id") else {}),
                 **({"pm_provider_id": context["_pm_provider_id"]} if context.get("_pm_provider_id") else {}),
@@ -224,7 +225,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                 },
             )
 
-        spawn_agent.description += " Available roles: " + "; ".join(
+        spawn_agent.description += " 可用角色：" + "; ".join(
             f"{name}: {spec['description']}" for name, spec in self._specs.items()
         )
 
@@ -233,7 +234,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
         async def followup_task(
             target: _TARGET, message: _MESSAGE, runtime: ToolRuntime
         ) -> dict | Command:
-            """在同一原生会话继续工作，保留已有上下文；message只补变化和待办，不重贴完整简报。target接受agent_id或task_name；历史结果仍由wait_agent领取。"""
+            """在 target 对应的同一原生会话续接工作并保留上下文，message 交代本轮变化。商讨模式任务必须先通过 Clef 门禁再续接开发。异步派发后立即交还控制权回复用户。"""
             key, tracked = self._resolve(runtime, target)
             self._text(message)
             current = await self._api(
@@ -259,7 +260,8 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
                 "message": message,
                 "agent_type": tracked["agent_name"],
                 "owner_thread_id": self._owner(runtime),
-                **({"pm_governed": True, "pm_phase": runtime.config.get("configurable", {}).get("_pm_phase")}
+                **({"pm_governed": True, "pm_phase": runtime.config.get("configurable", {}).get("_pm_phase"),
+                    "discussion_required": runtime.config.get("configurable", {}).get("_pm_discussion_required", True)}
                    if runtime.config.get("configurable", {}).get("_pm_governed") is True else {}),
                 **({"pm_dispatch_id": runtime.config["configurable"]["_pm_dispatch_id"]}
                    if runtime.config.get("configurable", {}).get("_pm_dispatch_id") else {}),
@@ -298,7 +300,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
         async def send_message(
             target: _TARGET, message: _MESSAGE, runtime: ToolRuntime
         ) -> dict:
-            """Inject instructions into active work using native steer. Idle/unsupported sessions suggest followup_task; never simulate a mailbox."""
+            """一般模式下向运行中的负责人 target 发送实时调整 message。商讨或审查阶段禁止插话，等待结果后续接。"""
             key, tracked = self._resolve(runtime, target)
             self._text(message)
             result = await self._api(
@@ -343,7 +345,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
             ]
             | None = None,
         ) -> dict | Command:
-            """List this parent's subagents; filter task_name prefix and fresh run status. Connection failures are explicit; cached status is marked stale."""
+            """即时探测当前会话后台负责人的真实运行状态，并返回可用角色能力目录，汇报后台状态前调用。"""
             self._owner(runtime)
             keys = [
                 key
@@ -385,7 +387,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
             include_completed: bool = False,
             run_id: str | None = None,
         ) -> dict | Command:
-            """领取未读结果（完成通知到达后调用，timeout_ms=0 立即查询）。每个Run默认返回一次；历史重读必须提供单个target和run_id。超时不取消远端工作。"""
+            """仅收到 [宿主通知] 或确认后台结束后领取结果，建议 timeout_ms=0 立即领取。严禁刚派工就调用死等。返回 artifact_ref 可直接传给 assess_discussion。重读历史必须指定单个 targets 与 run_id。"""
             self._owner(runtime)
             history_notice = None
             if include_completed and run_id is None:
@@ -519,7 +521,7 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
         async def interrupt_agent(
             target: _TARGET, runtime: ToolRuntime
         ) -> dict | Command:
-            """Cancel queued and active turns, preserve native history, and report observed status. Repeating after completion is a harmless no-op."""
+            """取消目标排队及运行任务并保留历史。仅用户明确要求中止或已确认卡死时调用。"""
             key, tracked = self._resolve(runtime, target)
             client = self._client(tracked)
             runs = await self._runs(tracked)
@@ -607,6 +609,8 @@ class ACPMiddleware(AsyncSubAgentMiddleware):
 
     async def awrap_model_call(self, request, handler):
         """按现有官方状态提供角色及会话摘要，不另建一份协作记忆。"""
+        if self.pm_governed:
+            return await super().awrap_model_call(request, handler)
         if self._specs:
             text = (
                 "当前可用角色及精确能力目录（required_capabilities 只能选同一集合内的原始标识；"

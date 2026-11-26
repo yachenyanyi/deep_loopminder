@@ -27,10 +27,10 @@ from src.middlewares.trajectory.middleware import TrajectoryRecorder
 from src.middlewares.trajectory.paths import trajectory_directory
 from src.middlewares.trajectory.web import read_events
 
+from .context import DISCUSSION_MODE_PREFIX, THREADS, get_store, run_config
 from .context import ROOT as _ROOT
 from .context import WRITE_LOCK as _write_lock
 from .context import forbidden as _forbidden
-from .context import get_store, run_config
 from .context import local as _local
 from .decisions import pending_decision, submit_decision
 from .settings_routes import (
@@ -287,7 +287,9 @@ async def history(request):
             if selected["reasoning_effort"] in (known.get("reasoning_levels") or []):
                 cleaned["reasoning_effort"] = selected["reasoning_effort"]
         selected = cleaned
-    return JSONResponse({"messages": [TrajectoryRecorder.clean_public(message) for message in messages],
+    record = await store.aget(THREADS, thread_id)
+    return JSONResponse({"discussion_mode": bool(record and record.value.get("discussion_mode")),
+                         "messages": [TrajectoryRecorder.clean_public(message) for message in messages],
                          "model_selection": selected,
                          "memory_model_error": TrajectoryRecorder.clean_public(values.get("pm_memory_model_error"))})
 
@@ -816,7 +818,17 @@ async def chat(request):
             raise ValueError("项目不存在")
         client = get_client(url=None)
         thread_id = await project_thread(store, client, project_id, data.get("thread_id"))
+        async with _write_lock:
+            record = await store.aget(THREADS, thread_id)
+            saved = dict(record.value) if record else {}
+            if type(data.get("discussion_mode")) is bool:
+                if data["discussion_mode"] != saved.get("discussion_mode", False):
+                    await store.aput(THREADS, thread_id, {**saved, "discussion_mode": data["discussion_mode"]}, index=False)
+            else:
+                data["discussion_mode"] = bool(saved.get("discussion_mode", False))
         config = run_config(project_id, data)
+        if config["configurable"].get("pm_discussion_mode") is True:
+            text = DISCUSSION_MODE_PREFIX + text
     except (ValueError, TypeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 

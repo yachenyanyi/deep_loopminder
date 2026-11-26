@@ -9,10 +9,9 @@ from starlette.responses import JSONResponse
 
 from src.middlewares.project_state.persistence import ProjectStore
 
+from .context import THREADS, get_store, run_config
 from .context import forbidden as _forbidden
-from .context import get_store
 from .context import local as _local
-from .context import run_config
 from .threads import project_thread
 
 
@@ -223,6 +222,9 @@ async def submit_decision(request):
     command = {"resume": {"decisions": [
         {"type": "respond", "message": answer.strip()} for answer in answers
     ]}}
+    if type(data.get("discussion_mode")) is not bool:
+        record = await store.aget(THREADS, thread_id)
+        data["discussion_mode"] = bool(record and record.value.get("discussion_mode"))
     config = run_config(project_id, data)
     try:
         run = await client.runs.create(

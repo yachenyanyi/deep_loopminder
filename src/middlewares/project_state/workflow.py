@@ -184,7 +184,7 @@ class ProjectWorkflow:
     async def begin_dispatch(self, project_id, task_id, *, owner_thread, operation, decision_id=None,
                              worker_agent_id=None, phase="execution", readonly_enforcement=None,
                              message_digest=None, discussion_question=None, expected_review_subject=None,
-                             mode_record=None):
+                             mode_record=None, discussion_required: bool = True):
         """Persist a dispatch intent before contacting Agent Server.
 
         The caller must serialize project writers. A pending intent is deliberately
@@ -196,11 +196,12 @@ class ProjectWorkflow:
         readonly_authorized = (readonly_enforcement is not None
                                and readonly_enforcement.capability
                                in {EnforcementCapability.ENFORCEABLE, EnforcementCapability.PARTIAL})
-        if (operation not in {"spawn_agent", "followup_task"} or not owner_thread
+        if (type(discussion_required) is not bool
+                or operation not in {"spawn_agent", "followup_task"} or not owner_thread
                 or phase not in {"execution", "discussion", "review"}
                 or not message_digest
-                or (phase == "execution" and not decision_id)
-                or (phase != "execution" and not readonly_authorized)
+                or (phase == "execution" and discussion_required and not decision_id)
+                or (phase in {"discussion", "review"} and not readonly_authorized)
                 or (phase == "discussion" and not discussion_question)
                 or (phase == "review" and not expected_review_subject)
                 or (operation == "followup_task" and not worker_agent_id)):
@@ -233,6 +234,7 @@ class ProjectWorkflow:
         value = {
             "project_id": project_id, "task_id": task_id, "owner_thread": owner_thread,
             "operation": operation, "decision_id": decision_id,
+            "discussion_required": bool(discussion_required),
             "message_digest": message_digest,
             "phase": phase,
             "readonly_mechanism": readonly_enforcement.mechanism if readonly_enforcement else None,
@@ -799,11 +801,11 @@ class ProjectWorkflow:
             ("deep_loopminder", "project_approvals", project_id), task_id
         )
 
-    async def review_status(self, snapshot):
+    async def review_status(self, snapshot, *, include_all_tasks=False):
         """给PM提供真实门禁事实，不能从未验收推断宿主拒绝。"""
         statuses = []
         for task in snapshot.tasks:
-            if task.status not in {
+            if not include_all_tasks and task.status not in {
                 TaskStatus.REVIEW,
                 TaskStatus.TESTING,
                 TaskStatus.PASSED,
@@ -847,6 +849,6 @@ class ProjectWorkflow:
                     else "请求宿主核验；可继续无依赖阻塞的任务，不修改真实前置依赖",
                 }
             )
-            if len(statuses) >= 30:
+            if not include_all_tasks and len(statuses) >= 30:
                 break
         return statuses

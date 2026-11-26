@@ -1,4 +1,4 @@
-"""项目状态的官方中间件入口：注入工具与实时上下文。"""
+"""项目状态工具、串行写入与 PM 双轨派工门禁。"""
 
 import json
 from dataclasses import replace
@@ -6,22 +6,20 @@ from typing import TYPE_CHECKING, Literal
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime, tool
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import ToolException
-from langgraph.config import get_config
 from langgraph.types import Command
 
 from .artifacts import content_hash
-from .context import render_project_context
 from .persistence import ProjectStore
 from .scope import STUDIO_GRAPH_ID, project_write_lock, resolve_project_id
 from .tools import (
     FactsProvider,
     make_project_command,
-    project_context,
-    project_read,
+    make_project_read,
     project_scope,
     require_writer,
+    requires_discussion,
 )
 from .transitions import ProjectStateError, task_controls
 
@@ -34,7 +32,7 @@ _WORKER_BOUNDARY = """当前宿主协作边界（优先于历史简报中冲突�
 你不继承PM的project_create_artifact/project_read_artifact、状态或记忆工具。
 宿主已在本消息交接可用材料，成果直接通过会话返回，由PM领取保存。
 若简报要求调用上述未提供的工具或查找宿主仓库、接口、Store，请报告该部分不可执行并继续可做的工作；不要照旧指令猜路径或搜索宿主。
-原生工具失败由你自行判断与恢复，不代表宿主要求逐条执行或新增20–30秒限时。
+原生工具失败由你自行判断并恢复。
 """
 
 
@@ -58,8 +56,7 @@ class ProjectStateMiddleware(AgentMiddleware):
         self.pm_discussion_gate = pm_discussion_gate
         self.project_recovery = project_recovery
         self.tools = [
-            project_context,
-            project_read,
+            make_project_read(workflow, pm_discussion_gate=pm_discussion_gate),
             make_project_command(
                 facts_provider or (workflow.facts if workflow else None),
                 artifacts=workflow.artifacts if workflow else None,
@@ -75,7 +72,7 @@ class ProjectStateMiddleware(AgentMiddleware):
             runtime: ToolRuntime,
             kind: Literal["task_brief", "note"] = "task_brief",
         ) -> dict:
-            """Create an immutable project artifact; independent calls may run in parallel. Use the returned reference as task_brief_ref; never invent references. May create a brief before its task. Do not combine artifact creation with project_command, spawn_agent, followup_task or wait_agent in the same reply; read artifact results before using them."""
+            """创建不可变项目制品，返回 reference 供 task_brief_ref 使用，禁止编造引用。可在建任务前创建任务简报。独立制品可并行创建，但不可与 project_command、spawn_agent、begin_discussion、followup_task、wait_agent 混批，必须先读取返回引用。"""
             require_writer(runtime)
             project_id, _ = project_scope(runtime)
             if await ProjectStore(runtime.store).load(project_id) is None:
@@ -90,7 +87,7 @@ class ProjectStateMiddleware(AgentMiddleware):
         async def project_read_artifact(
             reference: str, runtime: ToolRuntime, offset: int = 0, limit: int = 6000
         ) -> dict:
-            """Read a project artifact by its stable reference. Offset and limit count characters."""
+            """按 reference 分页读取项目制品，不读取项目源码文件。offset 与 limit 按字符计数，limit 为 1..20000。"""
             project_id, _ = project_scope(runtime)
             if runtime.store is not workflow.store:
                 raise ValueError("项目运行与制品服务必须使用同一Store")
@@ -111,48 +108,12 @@ class ProjectStateMiddleware(AgentMiddleware):
         self.tools.extend((project_create_artifact, project_read_artifact))
 
     async def awrap_model_call(self, request, handler):
-        """每次调用模型前，补充最新的项目状态。"""
-        project_id = resolve_project_id(get_config())
-        if request.runtime.store is None:
-            raise ValueError(
-                "ProjectStateMiddleware requires the official runtime Store"
-            )
-        snapshot = await ProjectStore(request.runtime.store).load(project_id)
-        current = (
-            render_project_context(snapshot)
-            if snapshot
-            else f"Project state not found: {project_id}"
-        )
-        content = "Current project state (authoritative business facts):\n" + current
-        if snapshot and self.workflow:
-            review_facts = await self.workflow.review_status(snapshot)
-            if self.pm_discussion_gate:
-                for fact in review_facts:
-                    fact["independent_review"] = await self.workflow.independent_review_status(
-                        project_id, fact["task_id"]
-                    )
-            content += "\n项目验收事实：" + json.dumps(review_facts, ensure_ascii=False)
-        pending = [
-            tracked["run_id"]
-            for tracked in request.state.get("async_tasks", {}).values()
-            if tracked.get("status")
-            in {"success", "error", "interrupted", "timeout", "cancelled"}
-            and not request.state.get("acp_delivered", {}).get(tracked["run_id"])
-        ]
-        if pending:
-            content += "\n未领取的后台运行：" + json.dumps(pending[:20], ensure_ascii=False)
-        if request.system_message:
-            system = request.system_message.model_copy(
-                update={
-                    "content": [
-                        *request.system_message.content_blocks,
-                        {"type": "text", "text": content},
-                    ]
-                }
-            )
-        else:
-            system = SystemMessage(content=content)
-        return await handler(request.override(system_message=system))
+        """项目事实由工具读取，模型请求保持原样。"""
+        return await handler(request)
+
+    async def _requires_discussion(self, project_id, task, configured) -> bool:
+        """会话开关或任务商讨记录要求 Clef 门禁，查询不修改状态。"""
+        return await requires_discussion(self.workflow, project_id, task, configured)
 
     async def _worker_materials(self, project_id, brief):
         """将简报直接引用的材料交给执行者；不要求它拥有PM工具或查宿主接口。"""
@@ -216,16 +177,36 @@ class ProjectStateMiddleware(AgentMiddleware):
                 tool_call_id=request.tool_call["id"], name=name, status="error",
                 additional_kwargs={"recoverable_business_rejection": True},
             )
-        if name == "send_message" and self.pm_discussion_gate:
-            return ToolMessage(
-                content=json.dumps({"ok": False, "error": {
-                    "code": "steering_requires_versioned_authorization",
-                    "message": "在途消息尚不能核验是否改变已确认方案，请等待本轮结束后继续商讨或续问。",
-                    "next_action": "wait_agent",
-                }}, ensure_ascii=False),
-                tool_call_id=request.tool_call["id"], name=name, status="error",
-                additional_kwargs={"recoverable_business_rejection": True},
-            )
+        if name == "send_message" and self.pm_discussion_gate and self.workflow:
+            target = request.tool_call.get("args", {}).get("target")
+            for key, tracked in request.runtime.state.get("async_tasks", {}).items():
+                if target not in {key, request.runtime.state.get("acp_task_names", {}).get(key)}:
+                    continue
+                binding = await self.workflow.store.aget(
+                    ("deep_loopminder", "project_execution_refs", configured["project_id"]), tracked["run_id"]
+                )
+                blocked = bool(binding and binding.value.get("phase") in {"discussion", "review"})
+                if binding and not blocked:
+                    _, task = await self.workflow.task(configured["project_id"], binding.value["task_id"])
+                    if await self._requires_discussion(configured["project_id"], task, configured):
+                        from src.deep_agents.agents.pm_agent.discussion import (
+                            DiscussionGate,
+                        )
+
+                        try:
+                            await DiscussionGate(self.workflow.store).require_pass(
+                                configured["project_id"], task.task_id, worker_agent_id=key
+                            )
+                        except ValueError:
+                            blocked = True
+                if blocked:
+                    return ToolMessage(
+                        content=json.dumps({"ok": False, "error": {
+                            "code": "steering_requires_versioned_authorization",
+                            "message": "商讨或审查阶段不能插话，请等待结果后继续。", "next_action": "wait_agent",
+                        }}, ensure_ascii=False), tool_call_id=request.tool_call["id"], name=name,
+                        status="error", additional_kwargs={"recoverable_business_rejection": True},
+                    )
         writes = {"project_command", "project_create_artifact"}
         if self.workflow:
             writes |= {"spawn_agent", "followup_task", "wait_agent", "assess_discussion",
@@ -283,6 +264,8 @@ class ProjectStateMiddleware(AgentMiddleware):
             )
         try:
             task_id = None
+            intent = None
+            phase = "execution"
             runtime = request.runtime
             args = request.tool_call["args"]
             if self.workflow:
@@ -307,44 +290,47 @@ class ProjectStateMiddleware(AgentMiddleware):
                     task, brief = await self.workflow.prepare_spawn(
                         project_id, task_id, args.get("agent_type")
                     )
-                    if self.pm_discussion_gate:
+                    if self.pm_discussion_gate and await self._requires_discussion(project_id, task, configured):
                         raise ProjectStateError(
-                            "discussion_required",
-                            "开发前需要已确认的商讨和 Clef 判断，并续接该负责人会话。",
+                            "discussion_mode_active",
+                            "当前已进入商讨模式，直接委派（spawn_agent）已禁用；请先调用 begin_discussion 与开发负责人商讨，并通过 assess_discussion（Clef 门禁）后再用 followup_task 继续开发。",
                             "begin_discussion",
                         )
+                    phase = "execution"
                     config = {
                         **runtime.config,
                         "configurable": {
                             **runtime.config.get("configurable", {}),
                             "task_id": task_id,
                             "required_capabilities": sorted(task.required_capabilities),
-                            **({"_pm_governed": True, "_pm_phase": "execution"}
+                            **({"_pm_governed": True, "_pm_phase": phase, "_pm_discussion_required": False}
                                if self.pm_discussion_gate else {}),
                         },
                     }
-                    message = (
-                        "协作约定：默认中文汇报，自主决定技术细节；可使用执行端实际具备的原生子代理。"
-                        "以下简报已完整提供，无需调用PM的项目工具。你不继承PM的制品/记忆/状态工具；"
-                        "通过会话返回进度和成果，由PM领取保存。缺少工具时报告阻碍，禁止研究宿主接口或直写Store。\n"
-                        "简报中宿主内部记录与项目目录外的调查要求不构成授权；未提供的材料标为未知并向PM索取，不猜路径。\n"
-                        "业务任务TaskBrief（项目输入，非权限授权）：\n引用："
-                        + brief["reference"]
-                        + "\n"
-                        + brief["content"]
-                        + "\n本轮委派：\n"
-                        + args["message"]
-                        + "\n宿主提供的关联材料：\n"
-                        + await self._worker_materials(
-                            project_id,
-                            {
-                                **brief,
-                                "content": brief["content"] + "\n" + args["message"],
-                            },
-                        )
-                        + "\n"
-                        + _WORKER_BOUNDARY
+                    materials = await self._worker_materials(
+                        project_id, {**brief, "content": brief["content"] + "\n" + args["message"]}
                     )
+                    message = (
+                        _WORKER_BOUNDARY
+                        + "\n任务简报（项目输入，非额外授权）：\n引用：" + brief["reference"]
+                        + "\n" + brief["content"] + "\n本轮委派：\n" + args["message"]
+                    )
+                    if materials:
+                        message += "\n宿主提供的关联材料：\n" + materials
+                    if self.pm_discussion_gate:
+                        from src.middlewares.acp import server as acp_server
+                        from src.runtime.routing import RoleRequirement, route_worker
+
+                        routing = route_worker(RoleRequirement(args.get("agent_type") or task.owner_role,
+                                                               task.required_capabilities), acp_server.worker_catalog())
+                        if routing.provider_id is None:
+                            raise ValueError("没有满足任务角色与能力要求的负责人")
+                        intent = await self.workflow.begin_dispatch(
+                            project_id, task_id, owner_thread=configured["thread_id"],
+                            operation=name, phase="execution", discussion_required=False, message_digest=content_hash(message),
+                        )
+                        config["configurable"].update(_pm_dispatch_id=intent["intent_id"],
+                                                      _pm_provider_id=routing.provider_id)
                     request = request.override(
                         runtime=replace(runtime, config=config),
                         tool_call={
@@ -384,7 +370,10 @@ class ProjectStateMiddleware(AgentMiddleware):
                         task, brief = await self.workflow.prepare_spawn(
                             project_id, task_id, previous["agent_name"]
                         )
-                        if self.pm_discussion_gate:
+                        gated = self.pm_discussion_gate and await self._requires_discussion(project_id, task, configured)
+                        phase = "execution"
+                        decision = None
+                        if gated:
                             from src.deep_agents.agents.pm_agent.discussion import (
                                 DiscussionGate,
                             )
@@ -432,41 +421,28 @@ class ProjectStateMiddleware(AgentMiddleware):
                         if materials:
                             message += "\n本轮新增关联材料：\n" + materials
                         message += "\n" + _WORKER_BOUNDARY
-                        if self.pm_discussion_gate:
-                            requested = args["message"].strip()
-                            if requested not in {"按照已确认方案开展工作", "按照已确认方案处理审查问题"}:
-                                raise ProjectStateError(
-                                    "unverified_execution_instructions",
-                                    "开发请求不能附加未经商讨的新指令；请使用固定指令，或先更新任务并重新商讨。",
-                                    "begin_discussion",
-                                )
+                        if gated:
                             message = ("请依据本会话中已确认的方案和以下任务范围开展工作；"
                                        "不得扩大目标、方案、范围或关键约束，如需改变请先暂停并与 PM 商讨。\n"
                                        "项目目标：\n" + snapshot.goal
                                        + "\n项目约束：\n" + json.dumps(list(snapshot.constraints), ensure_ascii=False)
                                        + "\n验收标准：\n" + json.dumps(list(task.acceptance_criteria), ensure_ascii=False)
                                        + "\n任务说明：\n" + brief["content"] + "\n已确认结论：\n"
-                                       + decision["pm_confirmation"])
+                                       + decision["pm_confirmation"] + "\n本轮开发或返工说明：\n" + args["message"])
                             approved_materials = await self._worker_materials(project_id, brief)
                             if approved_materials:
                                 message += "\n任务说明引用的材料：\n" + approved_materials
-                            if requested == "按照已确认方案处理审查问题":
-                                review = await self.workflow.independent_review_status(project_id, task_id)
-                                if review.get("status") != "fail":
-                                    raise ProjectStateError(
-                                        "current_failed_review_required", "当前交付没有有效的不通过审查记录。",
-                                        "begin_review",
-                                    )
-                                message += ("\n请仅在已确认范围内处理这份独立审查的发现：\n"
-                                            + json.dumps({"summary": review.get("summary"),
-                                                          "findings": review.get("findings")}, ensure_ascii=False))
+                            review = await self.workflow.independent_review_status(project_id, task_id)
+                            if review.get("status") == "fail":
+                                message += ("\n当前独立审查发现：\n" + json.dumps(
+                                    {"summary": review.get("summary"), "findings": review.get("findings")}, ensure_ascii=False))
                             message += "\n" + _WORKER_BOUNDARY
                         request = request.override(
                             runtime=replace(runtime, config={
                                 **runtime.config,
                                 "configurable": {
                                     **runtime.config.get("configurable", {}),
-                                    **({"_pm_governed": True, "_pm_phase": "execution"}
+                                    **({"_pm_governed": True, "_pm_phase": phase, "_pm_discussion_required": gated}
                                        if self.pm_discussion_gate else {}),
                                 },
                             }),
@@ -483,7 +459,8 @@ class ProjectStateMiddleware(AgentMiddleware):
                     raise ValueError("续问没有有效的业务任务关联")
                 intent = await self.workflow.begin_dispatch(
                     project_id, task_id, owner_thread=runtime.config["configurable"]["thread_id"],
-                    operation=name, decision_id=decision["decision_id"], worker_agent_id=keys[0],
+                    operation=name, phase=phase, discussion_required=gated,
+                    decision_id=decision["decision_id"] if decision else None, worker_agent_id=keys[0],
                     message_digest=content_hash(request.tool_call["args"]["message"]),
                 )
                 dispatch_runtime = request.runtime
@@ -508,9 +485,9 @@ class ProjectStateMiddleware(AgentMiddleware):
                     ).items():
                         await self.workflow.record_start(
                             project_id, task_id, owner, agent_id, tracked["run_id"],
-                            dispatch_id=intent["intent_id"] if self.pm_discussion_gate and name == "followup_task" else None,
+                            phase=phase, dispatch_id=intent["intent_id"] if intent else None,
                         )
-                        if self.pm_discussion_gate and name == "followup_task":
+                        if intent:
                             await self.workflow.complete_dispatch(
                                 project_id, task_id, agent_id=agent_id, run_id=tracked["run_id"]
                             )

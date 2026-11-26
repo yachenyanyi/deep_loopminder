@@ -57,7 +57,7 @@ def _claim_message(entries, names):
     return (
         "[宿主通知] 以下后台任务的 Run 已结束且结果尚未领取：\n"
         + "\n".join(lines)
-        + "\n请先用 wait_agent 领取并核对结果。若是刚领取的商讨结果，可按当前任务继续商讨、提交 Clef 判断并推进已确认开发；若是刚领取的当前开发交付，可按需发起独立只读审查；审查或失败结果只记录并向用户汇报。"
+        + "\n请先用 wait_agent 领取并核对结果。若是刚领取的商讨结果，可按当前任务继续商讨、提交 Clef 判断并推进已确认开发；若是刚领取的一般模式或商讨后开发交付，可按需发起独立只读审查；审查或失败结果只记录并向用户汇报。"
     )
 
 
@@ -156,6 +156,9 @@ class ClaimWatcher:
     async def _wake(self, client, project_id: str, thread_id: str, entries, names) -> bool:
         """Start one claim run; an unknown create outcome is not retried blindly."""
         try:
+            store = self.store
+            record = await store.aget(_THREADS, thread_id) if store is not None else None
+            discussion_mode = bool(record and record.value.get("discussion_mode"))
             claim = await client.runs.create(
                 thread_id,
                 "pm_agent",
@@ -165,6 +168,7 @@ class ClaimWatcher:
                     "project_state_single_writer": True,
                     "workbench_trace": True,
                     "_pm_claim_event": True,
+                    "pm_discussion_mode": discussion_mode,
                     "_pm_claim_successful_runs": [task["run_id"] for _, task, status in entries if status == "success"],
                 }},
                 multitask_strategy="enqueue",

@@ -17,7 +17,7 @@ HUMAN_DECISION_TOOL_NAME = "request_human_decision"
 
 @tool(HUMAN_DECISION_TOOL_NAME)
 def request_human_decision(question: str, context: str = "") -> str:
-    """Request a human decision for an authority boundary the agent cannot cross."""
+    """仅用于超出 PM 权限或必须由用户正式拍板的关键取舍。question 写待决定问题，context 写必要背景。调用后会话暂停，等待用户在界面答复。普通沟通提问直接文字回复，勿滥用。"""
     raise RuntimeError(
         "request_human_decision must be intercepted by HumanInTheLoopMiddleware"
     )
@@ -35,8 +35,7 @@ def human_decision_interrupt_on() -> dict[str, bool | InterruptOnConfig]:
         HUMAN_DECISION_TOOL_NAME: {
             "allowed_decisions": ["respond"],
             "description": (
-                "A project decision exceeds the agent's authority. "
-                "Provide the human decision that should guide the project."
+                "当前项目决定超出 PM 权限，请给出指导项目继续推进的正式决定。"
             ),
         }
     }

@@ -30,15 +30,14 @@
 from __future__ import annotations
 
 import logging
-from hashlib import sha256
 from collections.abc import Awaitable, Callable
+from hashlib import sha256
 from typing import Any, NotRequired
 from urllib.parse import urlsplit
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import SystemMessage
 from langgraph.config import get_config
 
 from .model_catalog import ModelCatalog, validate_model_base_url
@@ -196,6 +195,7 @@ class PMModelSelectionMiddleware(AgentMiddleware):
         return await self._select_for_run(state, runtime)
 
     async def aafter_model(self, state, runtime):
+        """模型调用后清除本轮切换标记。"""
         if state.get("pm_model_changed"):
             return {"pm_model_changed": False}
 
@@ -243,18 +243,9 @@ class PMModelSelectionMiddleware(AgentMiddleware):
         """Resolve the enabled model; do not silently fall back on errors."""
         selected = request.state.get("pm_model_selection")
         if selected is None:
-            if request.state.get("pm_model_changed"):
-                notice = "本会话使用的模型已切换；请保留既有项目上下文与决定。"
-                system = request.system_message
-                system = (system.model_copy(update={"content": [*system.content_blocks, {"type": "text", "text": notice}]}) if system else SystemMessage(content=notice))
-                return await handler(request.override(system_message=system))
             return await handler(request)
         if request.runtime.store is None:
             raise ValueError("模型选择需要配置 Store")
         catalog = pm_model_catalog(request.runtime.store)
         model_instance = await configured_pm_model(catalog, selected)
-        system = request.system_message
-        if request.state.get("pm_model_changed"):
-            notice = "本会话使用的模型已切换；请保留既有项目上下文与决定。"
-            system = (system.model_copy(update={"content": [*system.content_blocks, {"type": "text", "text": notice}]}) if system else SystemMessage(content=notice))
-        return await handler(request.override(model=model_instance, system_message=system))
+        return await handler(request.override(model=model_instance))

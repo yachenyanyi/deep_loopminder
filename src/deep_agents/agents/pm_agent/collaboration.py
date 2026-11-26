@@ -404,9 +404,6 @@ class PMWorkerGovernance:
         """Check the current decision and exact authorized dispatch."""
         from .discussion import DiscussionGate
 
-        decision = await DiscussionGate(self.get_store()).require_pass(
-            ref.project_id, ref.task_id, worker_agent_id=ref.thread_id
-        )
         intent_id = request.get("pm_dispatch_id")
         if not isinstance(intent_id, str) or not intent_id:
             raise PermissionError("开发请求缺少持久化派工意图")
@@ -414,13 +411,23 @@ class PMWorkerGovernance:
             ("deep_loopminder", "project_dispatch_intents", ref.project_id, "history"), intent_id
         )
         value = intent.value if intent else {}
+        require_clef = value.get("discussion_required", True)
+        if type(require_clef) is not bool:
+            raise PermissionError("派工意图的商讨门禁标记无效")
+        decision = None
+        if require_clef is True:
+            decision = await DiscussionGate(self.get_store()).require_pass(
+                ref.project_id, ref.task_id, worker_agent_id=ref.thread_id
+            )
         run_id = str(config.get("metadata", {}).get("run_id", ""))
         if (value.get("intent_id") != intent_id or value.get("phase") != "execution"
                 or value.get("project_id") != ref.project_id or value.get("task_id") != ref.task_id
-                or value.get("worker_agent_id") != ref.thread_id
+                or ((require_clef is True or value.get("worker_agent_id"))
+                    and value.get("worker_agent_id") != ref.thread_id)
+                or (value.get("agent_id") and value["agent_id"] != ref.thread_id)
                 or value.get("owner_thread") != request.get("owner_thread_id")
-                or value.get("decision_id") != decision.get("decision_id")
-                or value.get("input_version") != decision.get("input_version")
+                or (decision is not None and (value.get("decision_id") != decision.get("decision_id")
+                                             or value.get("input_version") != decision.get("input_version")))
                 or not isinstance(request.get("message"), str)
                 or value.get("message_digest") != content_hash(request["message"])
                 or value.get("status") not in {"pending", "confirmed"}

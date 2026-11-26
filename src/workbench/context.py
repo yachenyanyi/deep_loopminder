@@ -9,6 +9,10 @@ from starlette.responses import JSONResponse
 
 ROOT = Path(__file__).parent
 THREADS = ("deep_loopminder", "workbench_threads")
+DISCUSSION_MODE_PREFIX = (
+    "[当前模式：商讨模式] 直接委派（spawn_agent）已禁用；请先使用 begin_discussion 与开发负责人商讨"
+    "并通过 Clef 门禁（assess_discussion）后再继续开发。\n\n"
+)
 WRITE_LOCK = asyncio.Lock()
 _injected_store = None
 
@@ -21,6 +25,8 @@ def run_config(project_id, data):
         "workbench_trace": True,
         "_pm_claim_event": False,
     }
+    if type(data.get("discussion_mode")) is bool:
+        configurable["pm_discussion_mode"] = data["discussion_mode"]
     for key in ("model_use_default",):
         if data.get(key) is True:
             configurable[key] = True

@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 
 from src.middlewares.project_state.persistence import ProjectStore
 
-from .context import THREADS, forbidden, get_store, local
+from .context import THREADS, WRITE_LOCK, forbidden, get_store, local
 
 
 async def list_conversations(store, project_id):
@@ -38,7 +38,7 @@ async def create_conversation(store, client, project_id, title=None):
     if thread.get("thread_id") != thread_id or any(returned_metadata.get(k) != v for k, v in metadata.items()):
         raise ValueError("官方会话身份不匹配")
     record = {"thread_id": thread_id, "project_id": project_id, "title": (title or "").strip() or "新会话",
-              "created_at": datetime.now(UTC).isoformat()}
+              "created_at": datetime.now(UTC).isoformat(), "discussion_mode": False}
     await store.aput(THREADS, thread_id, record, index=False)
     return record
 
@@ -109,17 +109,23 @@ async def conversations(request):
             return JSONResponse({"error": "项目不存在"}, status_code=404)
         if request.method == "GET":
             return JSONResponse({"conversations": await list_conversations(store, project_id)})
-        if data.get("thread_id") and data.get("title") is not None:
+        if data.get("thread_id") and ("title" in data or "discussion_mode" in data):
             thread_id = data.get("thread_id")
             title = data.get("title")
-            if not isinstance(title, str) or not title.strip() or len(title.strip()) > 120:
+            if title is not None and (not isinstance(title, str) or not title.strip() or len(title.strip()) > 120):
                 raise ValueError("会话名称无效")
-            item = await store.aget(THREADS, thread_id)
-            if item is None or item.value.get("project_id") != project_id:
-                raise ValueError("会话不存在或不属于当前项目")
-            record = dict(item.value)
-            record["title"] = title.strip()
-            await store.aput(THREADS, thread_id, record, index=False)
+            async with WRITE_LOCK:
+                item = await store.aget(THREADS, thread_id)
+                if item is None or item.value.get("project_id") != project_id:
+                    raise ValueError("会话不存在或不属于当前项目")
+                record = dict(item.value)
+                if title is not None:
+                    record["title"] = title.strip()
+                if "discussion_mode" in data:
+                    if type(data["discussion_mode"]) is not bool:
+                        raise ValueError("discussion_mode 必须为布尔值")
+                    record["discussion_mode"] = data["discussion_mode"]
+                await store.aput(THREADS, thread_id, record, index=False)
             return JSONResponse(record)
         return JSONResponse(await create_conversation(store, get_client(url=None), project_id, data.get("title")))
     except (ValueError, TypeError, AttributeError) as exc:
