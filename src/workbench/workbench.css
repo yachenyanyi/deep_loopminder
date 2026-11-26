@@ -124,7 +124,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .composer-controls select { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); min-width: 0; max-width: 230px; width: 100%; min-height: 36px; padding: 4px 5px; }
 .mode-toggle { min-height: 36px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); white-space: nowrap; }
 .mode-toggle.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); font-weight: 650; }
-.mode-badge { display: inline-block; margin-bottom: 4px; padding: 1px 7px; border-radius: 999px; background: #d9d4ff; color: #362a9b; font-size: 11px; font-weight: 650; line-height: 1.6; }
+.message-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.mode-badge { display: inline-block; padding: 1px 7px; border-radius: 999px; background: #d9d4ff; color: #362a9b; font-size: 11px; font-weight: 650; line-height: 1.6; }
 .message-text { white-space: pre-wrap; }
 .send { width: 42px; height: 42px; border-radius: 10px; font-size: 21px; }
 .empty { margin: auto; padding: 24px; text-align: center; color: var(--muted); }
@@ -187,6 +188,7 @@ input[type=checkbox] { accent-color: var(--accent); }
 .task-card h3 { margin: 0; font-size: 15px; }
 .task-status { border-radius: 999px; padding: 3px 8px; background: #ecebff; color: #433aab; font-size: 12px; white-space: nowrap; }
 .task-facts { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+.task-usage { margin: 6px 0 0; color: #4a5161; font-size: 12px; white-space: pre-wrap; }
 .task-detail { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .task-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 pre { position: relative; }

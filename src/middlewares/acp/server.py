@@ -45,6 +45,9 @@ def _validate_managed_worker(value, provider_id="claude", *, check_runtime=True)
         raise ValueError("未知的 Worker 提供方")
     if not isinstance(value, dict) or type(value.get("enabled")) is not bool:
         raise ValueError("负责人配置无效")
+    timeout = value.get("timeout")
+    if timeout is not None and (type(timeout) is not int or not 30 <= timeout <= 7200):
+        raise ValueError("单轮超时必须是 30 到 7200 之间的整数秒")
     if not value["enabled"]:
         return
     endpoint, runtime, model = (value.get(key) for key in ("endpoint", "runtime_dir", "model"))
@@ -102,6 +105,7 @@ def load_managed_worker_settings(provider_id="claude"):
     if value is None:
         return None
     result = {key: value.get(key) for key in ("enabled", "endpoint", "runtime_dir", "model", "node", "revision")}
+    result["timeout"] = value.get("timeout", 300)
     if value.get("credential_env"):
         result["credential_env"] = value["credential_env"]
     return result
@@ -130,8 +134,10 @@ async def save_managed_worker_settings(value, token=None, provider_id="claude"):
     previous = await asyncio.to_thread(load_managed_worker_settings, provider_id)
     if value["enabled"]:
         public = {key: value.get(key) for key in ("enabled", "endpoint", "runtime_dir", "model", "node")}
+        public["timeout"] = value.get("timeout") if value.get("timeout") is not None else (previous or {}).get("timeout", 300)
     else:
         public = {key: (previous or {}).get(key) for key in ("endpoint", "runtime_dir", "model", "node")}
+        public["timeout"] = value.get("timeout") if value.get("timeout") is not None else (previous or {}).get("timeout", 300)
         public["enabled"] = False
     endpoint = public.get("endpoint") or ""
     from src.middlewares.agent.pm_settings import PMCredentials, current, secret_name
@@ -251,7 +257,7 @@ async def lifespan(app):
                                "worker.observe", "worker.steer", "worker.set_mode", "worker.set_config",
                                "external_tool.read", "external_tool.search",
                                "external_tool.edit", "external_tool.execute", "external_tool.fetch", "external_tool.other"],
-                    "env": worker_env, "revision": managed.get("revision"), "timeout": 300,
+                    "env": worker_env, "revision": managed.get("revision"), "timeout": managed.get("timeout", 300),
                     "approval": {"use": "src.middlewares.approval.builtin:YamlPolicyProvider", "config": {}},
                     "runtime_dir": managed["runtime_dir"], "node": managed.get("node"),
                     "managed": True,

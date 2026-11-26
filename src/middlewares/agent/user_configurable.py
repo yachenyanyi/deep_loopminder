@@ -42,6 +42,8 @@ from langgraph.config import get_config
 
 from .model_catalog import ModelCatalog, validate_model_base_url
 
+MODEL_SWITCHED_PREFIX = "[系统提示：模型已切换] 本会话使用的模型已切换；请保留既有项目上下文与决定。\n\n"
+
 
 def pm_model_catalog(store):
     """Use the PM settings file for every PM model selection."""
@@ -209,10 +211,25 @@ class PMModelSelectionMiddleware(AgentMiddleware):
         if run_id is None and state.get("pm_model_changed"):
             # Direct graph calls can omit the run ID. Keep the notice until a model call completes.
             changes["pm_model_changed"] = True
-        return {**changes, "pm_model_selection_run_id": run_id}
+        update = {**changes, "pm_model_selection_run_id": run_id}
+        if changes.get("pm_model_changed"):
+            messages = state.get("messages") or []
+            latest = messages[-1] if messages else None
+            if latest is not None and getattr(latest, "type", None) == "human" and getattr(latest, "id", None):
+                content = latest.content
+                if isinstance(content, str) and not content.startswith(MODEL_SWITCHED_PREFIX):
+                    update["messages"] = [latest.model_copy(update={"content": MODEL_SWITCHED_PREFIX + content})]
+                elif isinstance(content, list) and not (
+                    content and isinstance(content[0], dict) and content[0].get("text") == MODEL_SWITCHED_PREFIX
+                ):
+                    update["messages"] = [
+                        latest.model_copy(update={"content": [{"type": "text", "text": MODEL_SWITCHED_PREFIX}, *content]})
+                    ]
+        return update
 
     async def _resolve_selection(self, state, store):
         configured = get_config().get("configurable", {})
+        previous = state.get("pm_model_selection")
         provider = configured.get("model_provider")
         model_name = configured.get("model_name")
         if configured.get("model_use_default") is True:
@@ -222,11 +239,11 @@ class PMModelSelectionMiddleware(AgentMiddleware):
             if default is None:
                 raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
             return {"pm_model_selection": default,
-                    "pm_model_changed": default != state.get("pm_model_selection")}
+                    "pm_model_changed": previous is not None and default != previous}
         if bool(provider) != bool(model_name):
             raise ValueError("切换模型时必须同时提供模型服务和模型名称")
         if not provider:
-            if state.get("pm_model_selection") is None and store is not None:
+            if previous is None and store is not None:
                 default = await pm_model_catalog(store).get_default()
                 if default is None:
                     raise ValueError("尚未配置默认模型，请在设置中选择已启用的模型")
@@ -237,7 +254,7 @@ class PMModelSelectionMiddleware(AgentMiddleware):
         selected = {"provider_id": provider, "model_id": model_name,
                     "reasoning_effort": configured.get("reasoning_effort")}
         return {"pm_model_selection": selected,
-                "pm_model_changed": selected != state.get("pm_model_selection")}
+                "pm_model_changed": previous is not None and selected != previous}
 
     async def awrap_model_call(self, request: ModelRequest, handler):
         """Resolve the enabled model; do not silently fall back on errors."""

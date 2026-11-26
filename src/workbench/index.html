@@ -163,6 +163,7 @@
             <label class="field">负责人 API 地址<input id="workerEndpoint"></label>
             <label class="field">负责人模型<input id="workerModel"></label>
             <label class="field">ACP 适配器目录<input id="workerRuntime"></label>
+            <label class="field">单轮超时（秒，默认 300）<input id="workerTimeout" type="number" min="30" max="7200"></label>
             <label class="field">负责人 API 凭据<input id="workerToken" type="password"></label>
             <button class="secondary" id="workerSave">保存负责人设置</button>
             <div id="workerStatus" class="notice"></div>
@@ -174,6 +175,7 @@
             <label class="field">Agent API 地址<input id="reviewerEndpoint"></label>
             <label class="field">审查模型<input id="reviewerModel"></label>
             <label class="field">ACP 适配器目录<input id="reviewerRuntime"></label>
+            <label class="field">单轮超时（秒，默认 300）<input id="reviewerTimeout" type="number" min="30" max="7200"></label>
             <label class="field">API 凭据<input id="reviewerToken" type="password"></label>
             <button class="secondary" id="reviewerSave">保存审查设置</button>
             <div id="reviewerStatus" class="notice"></div>

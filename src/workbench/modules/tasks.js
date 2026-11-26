@@ -14,7 +14,19 @@ function statusForTask(task) {
   return task.discussion?.decision === 'pass' ? 'developing' : 'discussion';
 }
 
-function taskCard(task, view) {
+function formatWorkerUsage(item) {
+  const roleLabel = { developer: '开发负责人', reviewer: '独立审查者' }[item.role] || item.role || item.agent_id;
+  const usage = item.context_usage;
+  const compactionMap = { unknown: '未知', compacted: '已压缩', none: '未压缩' };
+  const compaction = compactionMap[item.compaction_visibility] || item.compaction_visibility || '未知';
+  if (!usage || typeof usage.used !== 'number' || typeof usage.size !== 'number') {
+    return `${roleLabel}上下文：用量未知 · 压缩状态：${compaction}`;
+  }
+  const remaining = typeof usage.remaining === 'number' ? usage.remaining : Math.max(0, usage.size - usage.used);
+  return `${roleLabel}上下文：已用 ${usage.used.toLocaleString()} / ${usage.size.toLocaleString()} · 剩余 ${remaining.toLocaleString()} · 压缩状态：${compaction}`;
+}
+
+function taskCard(task, view, workers = []) {
   const card = document.createElement('article');
   card.className = 'task-card';
   card.id = 'task-' + task.task_id;
@@ -33,6 +45,12 @@ function taskCard(task, view) {
   const validation = task.validation?.approval_state || task.validation?.validation_state || '未记录';
   facts.textContent = `商讨 ${discussion} · 独立审查 ${review} · 验收/批准 ${validation}`;
   card.append(facts);
+  if (workers.length) {
+    const usageLine = document.createElement('p');
+    usageLine.className = 'task-usage';
+    usageLine.textContent = workers.map(formatWorkerUsage).join('\n');
+    card.append(usageLine);
+  }
   const actions = document.createElement('div');
   actions.className = 'task-actions';
   const discuss = document.createElement('button');
@@ -122,10 +140,23 @@ export async function loadTasks() {
   const empty = $('#traceEmpty');
   if (!list || !state.project) return;
   try {
-    const data = await api('project-status?project_id=' + encodeURIComponent(state.project.project_id));
+    const projectId = state.project.project_id;
+    const threadId = state.conversation?.thread_id;
+    const [data, usageData] = await Promise.all([
+      api('project-status?project_id=' + encodeURIComponent(projectId)),
+      threadId
+        ? api('worker-usage?project_id=' + encodeURIComponent(projectId) + '&thread_id=' + encodeURIComponent(threadId)).catch(() => ({ workers: [] }))
+        : Promise.resolve({ workers: [] }),
+    ]);
+    const usageByTask = new Map();
+    for (const worker of usageData.workers || []) {
+      if (!worker.task_id) continue;
+      if (!usageByTask.has(worker.task_id)) usageByTask.set(worker.task_id, []);
+      usageByTask.get(worker.task_id).push(worker);
+    }
     currentTasks = data.tasks || [];
     list.replaceChildren();
-    currentTasks.forEach((task) => list.append(taskCard(task, state.viewVersion)));
+    currentTasks.forEach((task) => list.append(taskCard(task, state.viewVersion, usageByTask.get(task.task_id) || [])));
     if (!currentTasks.length) list.append(Object.assign(document.createElement('p'), { className: 'notice', textContent: '当前项目暂无任务。' }));
     const recovery = $('#workerRecovery');
     recovery.replaceChildren();
@@ -199,7 +230,7 @@ export function initTasks() {
     if (!state.project) return;
     try {
       const data = await api('worker-usage?project_id=' + encodeURIComponent(state.project.project_id) + '&thread_id=' + encodeURIComponent(state.conversation?.thread_id || ''));
-      $('#usageResult').textContent = data.workers?.length ? data.workers.map((item) => (item.role || item.agent_id) + '：' + (item.context_usage ? `已用 ${item.context_usage.used} / 容量 ${item.context_usage.size}` : '用量未知')).join('\n') : '当前没有已关联的负责人会话。';
+      $('#usageResult').textContent = data.workers?.length ? data.workers.map(formatWorkerUsage).join('\n') : '当前没有已关联的负责人会话。';
     } catch (error) { $('#usageResult').textContent = error.message; }
   });
   let memoryJournal = null;

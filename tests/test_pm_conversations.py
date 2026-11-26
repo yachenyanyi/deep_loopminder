@@ -1136,3 +1136,131 @@ vm.runInContext(OBSERVER, context);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """.replace("OBSERVER", json.dumps(observer))
     subprocess.run([node], input=script, text=True, check=True, capture_output=True)
+
+
+def test_model_switch_injects_notice_into_new_user_message_without_mutating_system_prompt(monkeypatch):
+    """Switching models prepends a notice to the new user message without touching System Prompt."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from src.middlewares.agent import user_configurable
+    from src.middlewares.agent.user_configurable import (
+        MODEL_SWITCHED_PREFIX,
+        PMModelSelectionMiddleware,
+    )
+
+    async def scenario():
+        store = InMemoryStore()
+        mw = PMModelSelectionMiddleware()
+        runtime = SimpleNamespace(store=store, execution_info=SimpleNamespace(run_id="run-1"))
+        cfg = {"configurable": {"model_provider": "local", "model_name": "m2"}}
+        monkeypatch.setattr(user_configurable, "get_config", lambda: cfg)
+
+        # First turn (no previous selection) does not emit model-switched prefix.
+        first_msg = HumanMessage(id="h0", content="首句")
+        first = await mw.abefore_agent({"messages": [first_msg]}, runtime)
+        assert first["pm_model_changed"] is False and "messages" not in first
+
+        # Switching from m1 to m2 prepends prefix to the new HumanMessage with same id.
+        switched_msg = HumanMessage(id="h1", content="切模型后继续")
+        runtime2 = SimpleNamespace(store=store, execution_info=SimpleNamespace(run_id="run-2"))
+        second = await mw.abefore_agent(
+            {"messages": [switched_msg], "pm_model_selection": {"provider_id": "local", "model_id": "m1", "reasoning_effort": None}},
+            runtime2,
+        )
+        assert second["pm_model_changed"] is True
+        assert second["messages"][0].id == "h1"
+        assert second["messages"][0].content == MODEL_SWITCHED_PREFIX + "切模型后继续"
+
+        # awrap_model_call keeps SystemMessage byte-for-byte identical.
+        system = SystemMessage(content="静态系统提示词")
+        seen = {}
+        monkeypatch.setattr(user_configurable, "configured_pm_model", lambda *_a, **_kw: asyncio.sleep(0, result="model-obj"))
+
+        async def handler(req):
+            seen["system"] = req.system_message
+            seen["model"] = req.model
+            return "ok"
+
+        req = SimpleNamespace(
+            state={"pm_model_selection": second["pm_model_selection"], "pm_model_changed": True},
+            runtime=runtime2,
+            system_message=system,
+            model="old",
+            override=lambda **kw: SimpleNamespace(
+                system_message=kw.get("system_message", system),
+                model=kw.get("model", "old"),
+            ),
+        )
+        await mw.awrap_model_call(req, handler)
+        assert seen["system"] is system and seen["model"] == "model-obj"
+
+    asyncio.run(scenario())
+
+
+def test_worker_usage_includes_task_id_remaining_and_compaction_visibility(monkeypatch):
+    """Worker usage endpoint exposes task_id, remaining tokens, and compaction visibility."""
+    from src.middlewares.acp import server as acp_server
+    from src.workbench import app as workbench
+    from src.workbench import context
+
+    async def scenario():
+        store = InMemoryStore()
+        await ProjectStore(store).save(ProjectSnapshot("p", "goal", (), ()))
+        await store.aput(THREADS, "owner", {"project_id": "p", "thread_id": "owner"})
+
+        class Threads:
+            async def get(self, thread_id):
+                return {"thread_id": thread_id, "metadata": {"loopminder_project_id": "p", "loopminder_purpose": "pm_workbench"}}
+
+            async def get_state(self, _thread_id):
+                return {"values": {"async_tasks": {"worker-1": {"agent_name": "developer", "run_id": "run-1"}}}}
+
+            async def get_history(self, _worker_id, **_kwargs):
+                return [{"values": {
+                    "owner_thread_id": "owner",
+                    "worker_ref": {"project_id": "p", "task_id": "t1", "thread_id": "worker-1"},
+                    "messages": [{"additional_kwargs": {
+                        "acp_run_id": "run-1",
+                        "context_usage": {"used": 12000, "size": 200000, "remaining": 188000},
+                        "compaction_visibility": "unknown",
+                    }}],
+                }}]
+
+        monkeypatch.setattr(context, "_injected_store", store)
+        monkeypatch.setattr(workbench, "get_client", lambda **_: SimpleNamespace(threads=Threads()))
+        monkeypatch.setattr(acp_server, "project_worker_pool", lambda: None)
+        app = Starlette(routes=workbench.routes)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 3000)),
+                                     base_url="http://127.0.0.1") as client:
+            res = await client.get("/workbench/api/worker-usage", params={"project_id": "p", "thread_id": "owner"})
+            assert res.status_code == 200
+            worker = res.json()["workers"][0]
+            assert worker["task_id"] == "t1"
+            assert worker["context_usage"]["remaining"] == 188000
+            assert worker["compaction_visibility"] == "unknown"
+
+    asyncio.run(scenario())
+
+
+def test_managed_worker_settings_persists_and_validates_timeout(tmp_path, monkeypatch):
+    """Managed worker settings validate timeout range and persist it without hardcoding 300."""
+    import pytest
+
+    from src.middlewares.acp import server as acp_server
+    from src.middlewares.agent import pm_settings as pm_settings_module
+
+    async def scenario():
+        settings_file = tmp_path / "worker-settings.json"
+        monkeypatch.setattr(pm_settings_module, "current", lambda: None)
+        monkeypatch.setattr(acp_server, "_worker_settings_path", lambda: settings_file)
+        saved = await acp_server.save_managed_worker_settings(
+            {"enabled": False, "timeout": 1200}, provider_id="claude"
+        )
+        assert saved["timeout"] == 1200
+        loaded = acp_server.load_managed_worker_settings("claude")
+        assert loaded["timeout"] == 1200
+        for bad in (10, 99999, True, "300"):
+            with pytest.raises(ValueError, match="单轮超时"):
+                await acp_server.save_managed_worker_settings({"enabled": False, "timeout": bad}, provider_id="claude")
+
+    asyncio.run(scenario())

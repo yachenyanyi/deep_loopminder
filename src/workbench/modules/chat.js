@@ -130,16 +130,40 @@ export function msg(role, text, { discussionMode = false } = {}) {
   const element = document.createElement('div');
   element.className = 'message ' + role;
   if (role === 'assistant') renderReply(element, text);
-  else if (role === 'user' && (discussionMode || text.startsWith('[当前模式：商讨模式]'))) {
-    const badge = document.createElement('span');
-    badge.className = 'mode-badge';
-    badge.textContent = '商讨模式';
-    const body = document.createElement('div');
-    body.className = 'message-text';
-    const separator = text.indexOf('\n\n');
-    body.textContent = text.startsWith('[当前模式：商讨模式]') && separator !== -1
-      ? text.slice(separator + 2) : text;
-    element.append(badge, body);
+  else if (role === 'user') {
+    const badges = [];
+    let bodyText = typeof text === 'string' ? text : '';
+    const prefixes = [
+      ['[系统提示：模型已切换]', '模型已切换'],
+      ['[当前模式：商讨模式]', '商讨模式'],
+    ];
+    let matched = true;
+    while (matched) {
+      matched = false;
+      for (const [prefix, label] of prefixes) {
+        if (bodyText.startsWith(prefix)) {
+          if (!badges.includes(label)) badges.push(label);
+          const separator = bodyText.indexOf('\n\n');
+          bodyText = separator !== -1 ? bodyText.slice(separator + 2) : '';
+          matched = true;
+        }
+      }
+    }
+    if (discussionMode && !badges.includes('商讨模式')) badges.push('商讨模式');
+    if (badges.length) {
+      const badgeRow = document.createElement('div');
+      badgeRow.className = 'message-badges';
+      badges.forEach((label) => {
+        const badge = document.createElement('span');
+        badge.className = 'mode-badge';
+        badge.textContent = label;
+        badgeRow.append(badge);
+      });
+      const body = document.createElement('div');
+      body.className = 'message-text';
+      body.textContent = bodyText;
+      element.append(badgeRow, body);
+    } else element.textContent = bodyText;
   } else element.textContent = text;
   $('#messages').append(element);
   $('#messages').scrollTop = $('#messages').scrollHeight;

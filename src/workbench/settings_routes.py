@@ -136,7 +136,7 @@ async def worker_settings(request):
             settings = {"enabled": False, "node": "",
                         "endpoint": "https://api.openai.com/v1" if provider == "codex" else "",
                         "model": "gpt-6-luna" if provider == "codex" else "",
-                        "runtime_dir": str(runtime) if runtime.is_dir() else "", "revision": None}
+                        "runtime_dir": str(runtime) if runtime.is_dir() else "", "timeout": 300, "revision": None}
         status = acp_server.managed_worker_status(provider)
         return JSONResponse({"settings": settings, "source": source,
                              "restart_required": settings.get("revision") != status["revision"],

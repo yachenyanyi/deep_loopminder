@@ -645,6 +645,7 @@ async def worker_usage(request):
         ref = values.get("worker_ref") or {}
         if values.get("owner_thread_id") != owner or ref.get("project_id") != project_id:
             continue
+        worker["task_id"] = ref.get("task_id")
         pool = acp_server.project_worker_pool()
         if pool is not None:
             try:
